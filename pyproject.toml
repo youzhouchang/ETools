@@ -1,0 +1,50 @@
+[project]
+name = "etools"
+version = "0.1.0"
+description = "EmbeddedTools — MCU firmware programming tool (ST-Link / J-Link / DAP-Link)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "ETools Contributors" }]
+dependencies = [
+    "PySide6>=6.5",
+    "pyocd>=0.40",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.4",
+]
+packaging = [
+    "pyinstaller>=6.0",
+]
+
+[project.scripts]
+etools = "etools.app:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["etools*"]
+
+[tool.setuptools.package-data]
+"etools.ui.forms" = ["*.ui"]
+"etools.ui" = ["forms/*.ui"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
