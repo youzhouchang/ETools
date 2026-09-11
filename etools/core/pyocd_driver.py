@@ -64,6 +64,11 @@ class PyOCDDriver(ProbeDriver):
         self._target: Optional[TargetInfo] = None
         self._details: Optional[TargetDetails] = None
 
+    @property
+    def session(self) -> Any:
+        """Active pyOCD Session or None."""
+        return self._session if self.connected else None
+
     # ------------------------------------------------------------------
     # Discovery
     # ------------------------------------------------------------------

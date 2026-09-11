@@ -122,6 +122,18 @@
           </attribute>
           <layout class="QVBoxLayout" name="tabDevicesLayout"/>
          </widget>
+         <widget class="QWidget" name="tabRtt">
+          <attribute name="title">
+           <string>RTT View</string>
+          </attribute>
+          <layout class="QVBoxLayout" name="tabRttLayout"/>
+         </widget>
+         <widget class="QWidget" name="tabSwo">
+          <attribute name="title">
+           <string>SWV</string>
+          </attribute>
+          <layout class="QVBoxLayout" name="tabSwoLayout"/>
+         </widget>
         </widget>
        </item>
       </layout>

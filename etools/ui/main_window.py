@@ -34,6 +34,8 @@ from etools.ui.widgets.flash_panel import FlashPanel
 from etools.ui.widgets.hex_preview import HexPreviewPanel
 from etools.ui.widgets.log_panel import LogPanel
 from etools.ui.widgets.probe_panel import ProbePanel
+from etools.ui.widgets.rtt_panel import RttPanel
+from etools.ui.widgets.swo_panel import SwvPanel
 from etools.ui.widgets.target_info_panel import TargetInfoPanel
 
 log = get_logger("ui.main")
@@ -265,6 +267,25 @@ class MainWindow(QMainWindow):
         lay_d.setContentsMargins(0, 0, 0, 0)
         lay_d.addWidget(self.device_manager)
 
+        # RTT / SWO tabs
+        self.rtt_panel = RttPanel()
+        self.swo_panel = SwvPanel()  # SWV page (object name kept as swo_panel)
+        tab_rtt = form.findChild(QWidget, "tabRtt")
+        tab_swo = form.findChild(QWidget, "tabSwo")
+        lay_r = tab_rtt.layout() or QVBoxLayout(tab_rtt)
+        lay_r.setContentsMargins(0, 0, 0, 0)
+        lay_r.addWidget(self.rtt_panel)
+        lay_s = tab_swo.layout() or QVBoxLayout(tab_swo)
+        lay_s.setContentsMargins(0, 0, 0, 0)
+        lay_s.addWidget(self.swo_panel)
+
+        # session accessor for RTT/SWO
+        def _sess():
+            return getattr(self.driver, "session", None)
+
+        self.rtt_panel.set_session_getter(_sess)
+        self.swo_panel.set_session_getter(_sess)
+
         # Compact right panels vertically
         self._compact_form_layout(self.flash_panel._form)
         self._compact_form_layout(self.target_info_panel._form)
@@ -417,7 +438,7 @@ class MainWindow(QMainWindow):
         tabs = self.centralWidget().findChild(QTabWidget, "mainTabs")
         if not tabs:
             return
-        keys = ["tab.info", "tab.hex", "tab.flash", "tab.devices"]
+        keys = ["tab.info", "tab.hex", "tab.flash", "tab.devices", "tab.rtt", "tab.swo"]
         # match by current index order
         for i, key in enumerate(keys):
             if i < tabs.count():
@@ -690,6 +711,8 @@ class MainWindow(QMainWindow):
                 self.probe_panel.set_connected(True, result.detail or result.message)
                 self.flash_panel.set_ops_enabled(True)
                 self.hex_preview.set_chip_read_enabled(True)
+                self.rtt_panel.set_connected(True)
+                self.swo_panel.set_connected(True)
                 self._set_status(f"已连接 · {target.target_override}", "ok")
                 self._log(result.message)
                 details = getattr(result, "data", None)
@@ -723,6 +746,8 @@ class MainWindow(QMainWindow):
         self.probe_panel.set_connected(False)
         self.flash_panel.set_ops_enabled(False)
         self.hex_preview.set_chip_read_enabled(False)
+        self.rtt_panel.set_connected(False)
+        self.swo_panel.set_connected(False)
         self.target_info_panel.clear()
         self._set_status("未连接", "warn")
         self._hide_progress()
@@ -850,6 +875,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         try:
+            self.rtt_panel.shutdown()
+            self.swo_panel.shutdown()
             self._runner.shutdown()
             self.service.disconnect()
         except Exception:
