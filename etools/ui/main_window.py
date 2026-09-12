@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QSizePolicy,
     QSplitter,
-    QStyle,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -27,6 +26,7 @@ from etools.core.operations import FlashService
 from etools.core.pyocd_driver import PyOCDDriver
 from etools.i18n import LANG_EN, LANG_ZH, set_language, tr
 from etools.logger import get_logger
+from etools.ui.icons import app_icon, refresh_icons, set_action_icon, set_tab_icon
 from etools.ui.styles import apply_combo_style, build_stylesheet, get_theme
 from etools.ui.ui_loader import load_form
 from etools.ui.widgets.device_manager import DeviceManagerPanel
@@ -193,8 +193,9 @@ class MainWindow(QMainWindow):
         # Root shell from .ui
         form = load_form("main_window", self)
         self.setCentralWidget(form)
-        self.resize(980, 680)
-        self.setMinimumSize(980, 680)
+        self.setWindowIcon(app_icon())
+        self.resize(1180, 720)
+        self.setMinimumSize(1080, 680)
         self._build_menu_and_toolbar()
 
         # No brand top-bar — status goes to QMainWindow status bar
@@ -304,7 +305,8 @@ class MainWindow(QMainWindow):
         if splitter is not None:
             splitter.setStretchFactor(0, 0)
             splitter.setStretchFactor(1, 1)
-            splitter.setSizes([260, 720])
+            # Left fixed-ish, right takes remaining width (avoid content crush)
+            splitter.setSizes([260, 920])
             splitter.setChildrenCollapsible(False)
             splitter.setSizePolicy(
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
@@ -325,9 +327,10 @@ class MainWindow(QMainWindow):
         ):
             w.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        # Right pane fills available width (no max cap — maximize should expand it)
+        # Right pane: keep a usable minimum so labels/tables don't overlap
         right = form.findChild(QWidget, "rightContainer")
         if right is not None:
+            right.setMinimumWidth(720)
             right.setMaximumWidth(16777215)
             right.setSizePolicy(
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
@@ -339,19 +342,23 @@ class MainWindow(QMainWindow):
         # Default page: 目标信息
         tabs = form.findChild(QTabWidget, "mainTabs")
         if tabs is not None:
+            for i, name in enumerate(
+                ("info", "hex", "program", "devices", "rtt", "swv")
+            ):
+                if i < tabs.count():
+                    set_tab_icon(tabs, i, name)
             tabs.setCurrentIndex(0)
 
     def _build_menu_and_toolbar(self) -> None:
         """Menu bar + icon toolbar for firmware / flash actions."""
-        from PySide6.QtGui import QAction
-        from PySide6.QtWidgets import QMenu, QToolBar
+        from PySide6.QtCore import QSize
+        from PySide6.QtGui import QAction, QActionGroup
+        from PySide6.QtWidgets import QToolBar
 
-        st = self.style()
-
-        def act(text: str, icon_sp=None, shortcut: str = "") -> QAction:
+        def act(text: str, icon_name: str | None = None, shortcut: str = "") -> QAction:
             a = QAction(text, self)
-            if icon_sp is not None:
-                a.setIcon(st.standardIcon(icon_sp))
+            if icon_name:
+                set_action_icon(a, icon_name, size=18)
             if shortcut:
                 a.setShortcut(shortcut)
             return a
@@ -361,38 +368,59 @@ class MainWindow(QMainWindow):
         mb.clear()
 
         m_file = mb.addMenu(tr("menu.file"))
-        a_open = act(tr("act.open"), QStyle.StandardPixmap.SP_DialogOpenButton, "Ctrl+O")
-        a_quit = act(tr("act.quit"), QStyle.StandardPixmap.SP_DialogCloseButton, "Ctrl+Q")
+        a_open = act(tr("act.open"), "open", "Ctrl+O")
+        a_quit = act(tr("act.quit"), "quit", "Ctrl+Q")
         m_file.addAction(a_open)
         m_file.addSeparator()
         m_file.addAction(a_quit)
 
         m_fw = mb.addMenu(tr("menu.firmware"))
-        a_prog = act(tr("act.program"), QStyle.StandardPixmap.SP_DialogApplyButton, "F5")
-        a_erase = act(tr("act.erase"), QStyle.StandardPixmap.SP_TrashIcon, "")
-        a_verify = act(tr("act.verify"), QStyle.StandardPixmap.SP_DialogYesButton, "")
-        a_reset = act(tr("act.reset"), QStyle.StandardPixmap.SP_BrowserReload, "F6")
-        a_read_chip = act(tr("act.read_chip"), QStyle.StandardPixmap.SP_ArrowDown, "")
+        a_prog = act(tr("act.program"), "program", "F5")
+        a_erase = act(tr("act.erase"), "erase", "")
+        a_verify = act(tr("act.verify"), "verify", "")
+        a_reset = act(tr("act.reset"), "reset", "F6")
+        a_read_chip = act(tr("act.read_chip"), "read", "")
         for a in (a_prog, a_erase, a_verify, a_reset, a_read_chip):
             m_fw.addAction(a)
 
         m_view = mb.addMenu(tr("menu.view"))
-        a_theme_dark = act(tr("act.theme_dark"), None, "")
-        a_theme_light = act(tr("act.theme_light"), None, "")
-        m_view.addAction(a_theme_dark)
-        m_view.addAction(a_theme_light)
+        m_theme = m_view.addMenu(tr("menu.theme"))
+        current_theme_name = (get_config().theme or "dark").lower()
+        a_theme_dark = act(tr("act.theme_dark"), "theme-dark", "")
+        a_theme_light = act(tr("act.theme_light"), "theme-light", "")
+        a_theme_dark.setCheckable(True)
+        a_theme_light.setCheckable(True)
+        a_theme_dark.setChecked(current_theme_name == "dark")
+        a_theme_light.setChecked(current_theme_name == "light")
+        theme_group = QActionGroup(self)
+        theme_group.setExclusive(True)
+        theme_group.addAction(a_theme_dark)
+        theme_group.addAction(a_theme_light)
+        m_theme.addAction(a_theme_dark)
+        m_theme.addAction(a_theme_light)
         m_view.addSeparator()
-        a_hex = act(tr("act.hex"), None, "Ctrl+H")
+        a_hex = act(tr("act.hex"), "hex", "Ctrl+H")
         m_view.addAction(a_hex)
         m_view.addSeparator()
         m_lang = m_view.addMenu(tr("menu.language"))
-        a_lang_zh = act(tr("act.lang_zh"), None, "")
-        a_lang_en = act(tr("act.lang_en"), None, "")
+        a_lang_zh = act(tr("act.lang_zh"), "language", "")
+        a_lang_en = act(tr("act.lang_en"), "language", "")
+        a_lang_zh.setCheckable(True)
+        a_lang_en.setCheckable(True)
+        from etools.i18n import current_language
+
+        cur_lang = current_language()
+        a_lang_zh.setChecked(cur_lang == LANG_ZH)
+        a_lang_en.setChecked(cur_lang == LANG_EN)
+        lang_group = QActionGroup(self)
+        lang_group.setExclusive(True)
+        lang_group.addAction(a_lang_zh)
+        lang_group.addAction(a_lang_en)
         m_lang.addAction(a_lang_zh)
         m_lang.addAction(a_lang_en)
 
         m_help = mb.addMenu(tr("menu.help"))
-        a_about = act(tr("act.about"), QStyle.StandardPixmap.SP_MessageBoxInformation, "")
+        a_about = act(tr("act.about"), "info", "")
         m_help.addAction(a_about)
 
         # rebuild toolbar
@@ -401,6 +429,7 @@ class MainWindow(QMainWindow):
         tb = QToolBar(tr("tb.main"), self)
         tb.setMovable(False)
         tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        tb.setIconSize(QSize(18, 18))
         self.addToolBar(tb)
         tb.addAction(a_open)
         tb.addSeparator()
@@ -512,10 +541,7 @@ class MainWindow(QMainWindow):
 
     def _toolbar_read_chip(self) -> None:
         self._goto_tab("Hex")
-        try:
-            addr = int(self.hex_preview.addr_edit.text().strip(), 0)
-        except Exception:
-            addr = 0x08000000
+        addr = int(self.hex_preview.addr_spin.value())
         size = self.hex_preview._read_size_bytes()
         self._start_read_chip(addr, size)
 
@@ -544,6 +570,7 @@ class MainWindow(QMainWindow):
         if app is not None:
             app.setStyleSheet(build_stylesheet(theme))
         self._refresh_combo_popups(theme)
+        refresh_icons(self, theme)
 
     def _refresh_combo_popups(self, theme) -> None:
         from PySide6.QtWidgets import QComboBox

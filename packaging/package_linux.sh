@@ -31,6 +31,8 @@ for arg in "$@"; do
 done
 
 APP_NAME="ETools"
+ICON_NAME="etools"
+ICON_SIZES=(16 24 32 48 64 128 256)
 ARCH="$(uname -m)"
 case "$ARCH" in
   x86_64|amd64) DEB_ARCH=amd64 ;;
@@ -40,6 +42,55 @@ esac
 
 VERSION="$(sed -n 's/^__version__ *= *"\(.*\)".*/\1/p' etools/__init__.py)"
 VERSION="${VERSION:-0.0.0}"
+
+# Install freestanding multi-size PNGs into a usr prefix (deb / AppImage).
+# $1 = prefix that contains share/ (e.g. "$DEB_ROOT/usr")
+install_hicolor_icons() {
+  local prefix="$1"
+  local size src dest
+  for size in "${ICON_SIZES[@]}"; do
+    dest="${prefix}/share/icons/hicolor/${size}x${size}/apps"
+    mkdir -p "$dest"
+    src="${ROOT}/docs/icons/png/logo-${size}.png"
+    if [[ -f "$src" ]]; then
+      cp -f "$src" "${dest}/${ICON_NAME}.png"
+    else
+      echo "WARN: missing ${src}" >&2
+    fi
+  done
+  # Scalable SVG for hi-DPI docks / file managers
+  mkdir -p "${prefix}/share/icons/hicolor/scalable/apps"
+  if [[ -f "${ROOT}/etools/ui/resources/icons/logo.svg" ]]; then
+    cp -f "${ROOT}/etools/ui/resources/icons/logo.svg" \
+      "${prefix}/share/icons/hicolor/scalable/apps/${ICON_NAME}.svg"
+  fi
+}
+
+write_desktop_file() {
+  local dest="$1"
+  local exec_line="$2"
+  cat > "$dest" <<EOF
+[Desktop Entry]
+Type=Application
+Name=ETools
+GenericName=MCU Programming Tool
+Comment=Embedded MCU programming tool (ST-Link / J-Link / DAP-Link)
+Exec=${exec_line}
+Icon=${ICON_NAME}
+Terminal=false
+Categories=Development;Electronics;
+Keywords=MCU;Flash;JTAG;SWD;pyOCD;STM32;ARM;
+StartupWMClass=${APP_NAME}
+StartupNotify=true
+EOF
+}
+
+update_icon_cache() {
+  local icons_dir="$1"
+  if command -v gtk-update-icon-cache >/dev/null; then
+    gtk-update-icon-cache -q -t -f "$icons_dir" 2>/dev/null || true
+  fi
+}
 
 echo "============================================================"
 echo " ETools Linux packaging  v${VERSION}  (${ARCH})"
@@ -97,9 +148,63 @@ mkdir -p "${RELEASE_DIR}"
 
 echo
 echo "[4/6] Creating portable tar.gz..."
+PORTABLE_STAGE="${ROOT}/build/portable-stage"
+rm -rf "$PORTABLE_STAGE"
+mkdir -p "$PORTABLE_STAGE"
+cp -a "${APP_DIR}" "${PORTABLE_STAGE}/${APP_NAME}"
+
+# Desktop integration assets for portable installs (optional install_desktop.sh)
+PORTABLE_SHARE="${PORTABLE_STAGE}/${APP_NAME}/share"
+mkdir -p "${PORTABLE_SHARE}/applications"
+# Placeholder desktop file; install_desktop.sh rewrites Exec to the real path
+write_desktop_file "${PORTABLE_SHARE}/applications/etools.desktop" \
+  "REPLACE_WITH_FULL_PATH/ETools"
+# Icons live under <app>/share/icons/... (function expects a prefix that owns share/)
+install_hicolor_icons "${PORTABLE_STAGE}/${APP_NAME}"
+cat > "${PORTABLE_STAGE}/${APP_NAME}/install_desktop.sh" <<'EOF'
+#!/usr/bin/env bash
+# Install .desktop entry + hicolor icons for a portable ETools folder.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN="${HERE}/ETools"
+ICON_NAME="etools"
+if [[ ! -x "$BIN" ]]; then
+  echo "ETools binary not found at $BIN" >&2
+  exit 1
+fi
+XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+mkdir -p "${XDG_DATA_HOME}/applications"
+mkdir -p "${XDG_DATA_HOME}/icons/hicolor"
+if [[ -d "${HERE}/share/icons/hicolor" ]]; then
+  cp -a "${HERE}/share/icons/hicolor/." "${XDG_DATA_HOME}/icons/hicolor/"
+fi
+cat > "${XDG_DATA_HOME}/applications/etools.desktop" <<DESK
+[Desktop Entry]
+Type=Application
+Name=ETools
+GenericName=MCU Programming Tool
+Comment=Embedded MCU programming tool (ST-Link / J-Link / DAP-Link)
+Exec=${BIN}
+Icon=${ICON_NAME}
+Terminal=false
+Categories=Development;Electronics;
+Keywords=MCU;Flash;JTAG;SWD;pyOCD;STM32;ARM;
+StartupWMClass=ETools
+StartupNotify=true
+DESK
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database -q "${XDG_DATA_HOME}/applications" || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -q -t -f "${XDG_DATA_HOME}/icons/hicolor" || true
+fi
+echo "Installed desktop entry: ${XDG_DATA_HOME}/applications/etools.desktop"
+EOF
+chmod +x "${PORTABLE_STAGE}/${APP_NAME}/install_desktop.sh"
+
 PORTABLE_TGZ="${RELEASE_DIR}/${APP_NAME}-portable-${VERSION}-linux-${ARCH}.tar.gz"
 rm -f "$PORTABLE_TGZ"
-tar -C "${ROOT}/dist" -czf "$PORTABLE_TGZ" "${APP_NAME}"
+tar -C "$PORTABLE_STAGE" -czf "$PORTABLE_TGZ" "${APP_NAME}"
 echo "      OK: ${PORTABLE_TGZ}"
 
 if [[ "$PORTABLE_ONLY" -eq 1 ]]; then
@@ -116,45 +221,21 @@ rm -rf "$DEB_ROOT"
 mkdir -p "${DEB_ROOT}/DEBIAN"
 mkdir -p "${DEB_ROOT}/opt/etools"
 mkdir -p "${DEB_ROOT}/usr/share/applications"
-mkdir -p "${DEB_ROOT}/usr/share/icons/hicolor/256x256/apps"
 mkdir -p "${DEB_ROOT}/usr/bin"
 
 # app payload
 cp -a "${APP_DIR}/." "${DEB_ROOT}/opt/etools/"
 
-# desktop entry
-cat > "${DEB_ROOT}/usr/share/applications/etools.desktop" <<EOF
-[Desktop Entry]
-Type=Application
-Name=ETools
-Comment=Embedded MCU programming tool (ST-Link / J-Link / DAP-Link)
-Exec=/opt/etools/${APP_NAME}
-Icon=etools
-Terminal=false
-Categories=Development;Electronics;
-StartupWMClass=${APP_NAME}
-EOF
+# desktop entry + multi-size hicolor icons
+write_desktop_file "${DEB_ROOT}/usr/share/applications/etools.desktop" \
+  "/opt/etools/${APP_NAME}"
+install_hicolor_icons "${DEB_ROOT}/usr"
+update_icon_cache "${DEB_ROOT}/usr/share/icons/hicolor"
 
-# placeholder icon if none present (simple 1x1 PNG via python)
-if [[ ! -f "${ROOT}/packaging/etools.png" ]]; then
-  "$PY" - <<'PY'
-import struct, zlib
-from pathlib import Path
-# 256x256 solid blue-ish PNG
-w = h = 256
-raw = b"".join(b"\x00" + bytes([0x1A, 0x1D, 0x23]) * w for _ in range(h))
-def chunk(tag, data):
-    return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff)
-png = b"\x89PNG\r\n\x1a\n"
-png += chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
-png += chunk(b"IDAT", zlib.compress(raw, 9))
-png += chunk(b"IEND", b"")
-Path("packaging/etools.png").write_bytes(png)
-print("generated packaging/etools.png")
-PY
+# also keep a 256px copy next to packaging for older scripts / docs
+if [[ -f "${ROOT}/docs/icons/png/logo-256.png" ]]; then
+  cp -f "${ROOT}/docs/icons/png/logo-256.png" "${ROOT}/packaging/etools.png"
 fi
-cp -f "${ROOT}/packaging/etools.png" \
-  "${DEB_ROOT}/usr/share/icons/hicolor/256x256/apps/etools.png"
 
 # launcher symlink
 ln -sf "/opt/etools/${APP_NAME}" "${DEB_ROOT}/usr/bin/etools"
@@ -176,6 +257,20 @@ Description: Embedded MCU programming tool
  J-Link and CMSIS-DAP/DAP-Link using pyOCD. Supports flash,
  erase, read, verify and target inspection.
 EOF
+
+# Refresh icon cache after install (GNOME/KDE pick up multi-size icons)
+cat > "${DEB_ROOT}/DEBIAN/postinst" <<'EOF'
+#!/bin/sh
+set -e
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+fi
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database -q /usr/share/applications || true
+fi
+exit 0
+EOF
+chmod 755 "${DEB_ROOT}/DEBIAN/postinst"
 
 DEB_FILE="${RELEASE_DIR}/etools_${VERSION}_${DEB_ARCH}.deb"
 rm -f "$DEB_FILE"
@@ -200,24 +295,19 @@ APPDIR="${ROOT}/build/AppDir"
 rm -rf "$APPDIR"
 mkdir -p "${APPDIR}/usr/bin"
 mkdir -p "${APPDIR}/usr/share/applications"
-mkdir -p "${APPDIR}/usr/share/icons/hicolor/256x256/apps"
 mkdir -p "${APPDIR}/usr/lib"
 
 cp -a "${APP_DIR}/." "${APPDIR}/usr/lib/etools"
-cp -f "${ROOT}/packaging/etools.png" \
-  "${APPDIR}/usr/share/icons/hicolor/256x256/apps/etools.png"
 
-cat > "${APPDIR}/etools.desktop" <<EOF
-[Desktop Entry]
-Type=Application
-Name=ETools
-Comment=Embedded MCU programming tool
-Exec=ETools
-Icon=etools
-Terminal=false
-Categories=Development;Electronics;
-EOF
-cp -f "${APPDIR}/etools.desktop" "${APPDIR}/usr/share/applications/etools.desktop"
+# Multi-size hicolor + scalable SVG inside AppDir
+install_hicolor_icons "${APPDIR}/usr"
+write_desktop_file "${APPDIR}/usr/share/applications/etools.desktop" "ETools"
+# AppImage root desktop + DirIcon (required by appimagetool for file manager thumb)
+write_desktop_file "${APPDIR}/etools.desktop" "ETools"
+if [[ -f "${ROOT}/docs/icons/png/logo-256.png" ]]; then
+  cp -f "${ROOT}/docs/icons/png/logo-256.png" "${APPDIR}/.DirIcon"
+  cp -f "${ROOT}/docs/icons/png/logo-256.png" "${APPDIR}/etools.png"
+fi
 
 cat > "${APPDIR}/AppRun" <<'EOF'
 #!/bin/bash

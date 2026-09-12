@@ -146,16 +146,18 @@ class RttPanel(QWidget):
         bar.addStretch(1)
 
         bar.addWidget(QLabel("地址"))
-        self.addr_edit = QLineEdit("")
-        self.addr_edit.setPlaceholderText("自动 0x20000000")
-        self.addr_edit.setFixedWidth(120)
-        bar.addWidget(self.addr_edit)
+        from etools.ui.widgets.spin_boxes import hex_spin
+
+        self.addr_spin = hex_spin(0, step=0x100, width=130)
+        self.addr_spin.setSpecialValueText("自动")
+        self.addr_edit = self.addr_spin
+        bar.addWidget(self.addr_spin)
 
         bar.addWidget(QLabel("长度"))
-        self.size_edit = QLineEdit("")
-        self.size_edit.setPlaceholderText("自动 0x20000")
-        self.size_edit.setFixedWidth(100)
-        bar.addWidget(self.size_edit)
+        self.size_spin = hex_spin(0, step=0x1000, width=110)
+        self.size_spin.setSpecialValueText("自动")
+        self.size_edit = self.size_spin
+        bar.addWidget(self.size_spin)
 
         self.start_btn = QPushButton("启动 RTT")
         self.start_btn.setObjectName("accent")
@@ -242,8 +244,8 @@ class RttPanel(QWidget):
         sess = self._session_getter() if callable(self._session_getter) else None
         ok = self._reader.start(
             sess,
-            address=self._parse_int(self.addr_edit.text()),
-            size=self._parse_int(self.size_edit.text()),
+            address=int(self.addr_spin.value()),
+            size=int(self.size_spin.value()),
         )
         if ok:
             self.start_btn.setText("停止 RTT")

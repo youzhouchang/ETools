@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QWidget
 
 from etools.core.models import TargetDetails
+from etools.ui.icons import set_button_icon
 from etools.ui.ui_loader import embed_form
 
 
@@ -25,6 +26,7 @@ class TargetInfoPanel(QFrame):
         f = self._form
         self.refresh_btn: QPushButton = f.findChild(QPushButton, "refreshBtn")
         self.refresh_btn.setObjectName("ghost")
+        set_button_icon(self.refresh_btn, "refresh", 16)
 
         def val(name: str) -> QLabel:
             w = f.findChild(QLabel, name)

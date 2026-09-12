@@ -108,6 +108,10 @@ class TargetInfo:
     device_id: str = ""
     description: str = ""
     connect_mode: str = "halt"  # halt | attach | pre-reset | under-reset
+    # pyOCD optional session knobs
+    wire_protocol: str = "swd"  # swd | jtag | auto
+    frequency_hz: int = 0  # 0 = probe default
+    reset_type: str = "default"  # default | hw | sw | hw_under_reset | sw_sysresetreq
 
     @property
     def display_name(self) -> str:
@@ -223,6 +227,22 @@ CONNECT_MODES: list[tuple[str, str]] = [
     ("attach", "Attach (no reset)"),
     ("pre-reset", "Pre-reset"),
     ("under-reset", "Under reset"),
+]
+
+# pyOCD DebugProbe wire protocols ("" = let probe decide)
+WIRE_PROTOCOLS: list[tuple[str, str]] = [
+    ("auto", "自动 (Auto)"),
+    ("swd", "SWD"),
+    ("jtag", "JTAG"),
+]
+
+# pyOCD ResetType names accepted in session options
+RESET_TYPES: list[tuple[str, str]] = [
+    ("default", "默认 (Default)"),
+    ("hw", "硬件复位 (Hardware)"),
+    ("sw", "软件复位 (Software)"),
+    ("hw_under_reset", "硬件复位下连接 (Under reset)"),
+    ("sw_sysresetreq", "SYSRESETREQ"),
 ]
 
 FIRMWARE_EXTENSIONS = "Firmware (*.bin *.hex *.elf *.axf *.srec);;All files (*)"

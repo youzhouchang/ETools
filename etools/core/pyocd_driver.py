@@ -149,6 +149,15 @@ class PyOCDDriver(ProbeDriver):
             "hide_programming_progress": True,
             "no_config": True,
         }
+        # Optional pyOCD knobs from the probe panel
+        if target.frequency_hz and target.frequency_hz > 0:
+            options["frequency"] = int(target.frequency_hz)
+        protocol = (target.wire_protocol or "auto").lower()
+        if protocol in ("swd", "jtag"):
+            options["protocol"] = protocol
+        reset_type = (target.reset_type or "default").lower()
+        if reset_type and reset_type != "default":
+            options["reset_type"] = reset_type
 
         t0 = time.perf_counter()
         try:

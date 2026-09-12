@@ -22,7 +22,7 @@
 #define InstallerBaseName AppName + "-setup-" + AppVersion + "-win64"
 
 [Setup]
-AppId={{8F3C2A10-9B7E-4D2A-9E5C-ETools000001}
+AppId={{8F3C2A10-9B7E-4D2A-9E5C-ETools000001}}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher=ETools Contributors
@@ -30,7 +30,6 @@ AppPublisherURL=https://github.com/
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
-LicenseFile=
 OutputDir={#OutputDir}
 OutputBaseFilename={#InstallerBaseName}
 Compression=lzma2/max
@@ -39,12 +38,10 @@ WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
 ArchitecturesAllowed=x64compatible
 UninstallDisplayIcon={app}\{#AppExeName}
-SetupIconFile=
 PrivilegesRequired=admin
 CloseApplications=yes
 
 [Languages]
-Name: "chinesesimplified"; MessagesFile: "compiler:Default.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]

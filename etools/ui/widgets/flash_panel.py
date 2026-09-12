@@ -12,11 +12,13 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSpinBox,
     QWidget,
 )
 
 from etools.config import get_config, save_config
 from etools.core.models import FIRMWARE_EXTENSIONS
+from etools.ui.icons import set_button_icon
 from etools.ui.ui_loader import embed_form
 
 
@@ -52,8 +54,8 @@ class FlashPanel(QFrame):
         self.erase_btn: QPushButton = f.findChild(QPushButton, "eraseBtn")
         self.verify_btn: QPushButton = f.findChild(QPushButton, "verifyBtn")
         self.reset_btn: QPushButton = f.findChild(QPushButton, "resetBtn")
-        self.addr_edit: QLineEdit = f.findChild(QLineEdit, "addrEdit")
-        self.size_edit: QLineEdit = f.findChild(QLineEdit, "sizeEdit")
+        self.addr_edit: QSpinBox = f.findChild(QSpinBox, "addrEdit")
+        self.size_edit: QSpinBox = f.findChild(QSpinBox, "sizeEdit")
         self.read_btn: QPushButton = f.findChild(QPushButton, "readBtn")
         for n, w in [
             ("fwEdit", self.fw_edit),
@@ -76,6 +78,13 @@ class FlashPanel(QFrame):
         self.program_btn.setObjectName("accent")
         self.erase_btn.setObjectName("danger")
         self.fw_info.setObjectName("hint")
+
+        set_button_icon(self.browse_btn, "open", 16)
+        set_button_icon(self.program_btn, "program", 16)
+        set_button_icon(self.erase_btn, "erase", 16)
+        set_button_icon(self.verify_btn, "verify", 16)
+        set_button_icon(self.reset_btn, "reset", 16)
+        set_button_icon(self.read_btn, "read", 16)
 
         cfg = get_config()
         if cfg.last_firmware:
@@ -150,10 +159,9 @@ class FlashPanel(QFrame):
             self.verify_requested.emit(path)
 
     def _on_read(self) -> None:
-        try:
-            addr = int(self.addr_edit.text().strip(), 0)
-            size = int(self.size_edit.text().strip(), 0)
-        except ValueError:
+        addr = int(self.addr_edit.value())
+        size = int(self.size_edit.value())
+        if size <= 0:
             return
         out, _ = QFileDialog.getSaveFileName(
             self, "保存读取结果", "flash_dump.bin", "Binary (*.bin)"

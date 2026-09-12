@@ -6,13 +6,13 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>980</width>
-    <height>680</height>
+    <width>1180</width>
+    <height>720</height>
    </rect>
   </property>
   <property name="minimumSize">
    <size>
-    <width>980</width>
+    <width>1080</width>
     <height>680</height>
    </size>
   </property>
@@ -52,7 +52,7 @@
       </property>
       <property name="maximumSize">
        <size>
-        <width>300</width>
+        <width>280</width>
         <height>16777215</height>
        </size>
       </property>
@@ -77,6 +77,12 @@
       </widget>
      </widget>
      <widget class="QWidget" name="rightContainer">
+      <property name="minimumSize">
+       <size>
+        <width>720</width>
+        <height>0</height>
+       </size>
+      </property>
       <layout class="QVBoxLayout" name="rightLayout">
        <property name="leftMargin">
         <number>0</number>

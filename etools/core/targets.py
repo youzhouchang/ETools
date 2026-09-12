@@ -280,13 +280,24 @@ def group_targets_by_vendor() -> dict[str, list[tuple[str, str]]]:
     return groups
 
 
+def _pyocd_cmd() -> list[str]:
+    """Prefer `python -m pyocd` so frozen/venv installs still work."""
+    import shutil
+    import sys
+
+    exe = shutil.which("pyocd")
+    if exe:
+        return [exe]
+    return [sys.executable, "-m", "pyocd"]
+
+
 def list_installed_packs() -> list[str]:
     """Return lines from `pyocd pack list` (empty if unavailable)."""
     import subprocess
 
     try:
         r = subprocess.run(
-            ["pyocd", "pack", "list"],
+            _pyocd_cmd() + ["pack", "list"],
             capture_output=True,
             text=True,
             timeout=20,
@@ -308,14 +319,16 @@ def install_pack(pack_id: str) -> tuple[bool, str]:
         return False, "请输入 Pack ID，例如 Vendor::Part"
     try:
         r = subprocess.run(
-            ["pyocd", "pack", "install", pack_id],
+            _pyocd_cmd() + ["pack", "install", pack_id],
             capture_output=True,
             text=True,
             timeout=120,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         msg = (r.stdout or "") + (r.stderr or "")
-        return r.returncode == 0, msg.strip()[-2000:]
+        return r.returncode == 0, msg.strip()[-2000:] or (
+            "完成" if r.returncode == 0 else f"退出码 {r.returncode}"
+        )
     except Exception as exc:
         return False, str(exc)
 

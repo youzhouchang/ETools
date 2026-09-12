@@ -7,6 +7,7 @@ from datetime import datetime
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import QPlainTextEdit, QPushButton, QWidget
 
+from etools.ui.icons import set_button_icon
 from etools.ui.ui_loader import embed_form
 
 
@@ -20,6 +21,7 @@ class LogPanel(QWidget):
             raise RuntimeError("log_panel.ui missing logView/clearBtn")
         self.view.setObjectName("logView")
         self.clear_btn.setObjectName("ghost")
+        set_button_icon(self.clear_btn, "clear", 16)
         self.clear_btn.clicked.connect(self.clear)
 
     def append(self, message: str, is_error: bool = False) -> None:

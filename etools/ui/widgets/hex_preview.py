@@ -7,14 +7,11 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
-    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QLineEdit,
     QPushButton,
-    QStyle,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -31,6 +28,7 @@ from etools.core.hexdump import (
 from etools.core.models import FIRMWARE_EXTENSIONS, format_size
 from etools.i18n import tr
 from etools.logger import get_logger
+from etools.ui.widgets.spin_boxes import hex_spin
 
 log = get_logger("ui.hex")
 
@@ -57,7 +55,7 @@ class HexDocumentView(QWidget):
 
         self.table = QTableWidget(0, 18)
         self.table.setHorizontalHeaderLabels(
-            ["地址"] + [f"{i:X}" for i in range(16)] + ["ASCII"]
+            ["地址"] + [f"{i:02X}" for i in range(16)] + ["ASCII"]
         )
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -74,9 +72,10 @@ class HexDocumentView(QWidget):
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         hdr.setStretchLastSection(True)
-        self.table.setColumnWidth(0, 78)
+        # Full 32-bit address "0x08000000" needs room
+        self.table.setColumnWidth(0, 96)
         for i in range(1, 17):
-            self.table.setColumnWidth(i, 28)
+            self.table.setColumnWidth(i, 30)
         self.table.setColumnWidth(17, 120)
         root.addWidget(self.table, 1)
 
@@ -153,12 +152,9 @@ class HexPreviewPanel(QWidget):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
 
+        # Toolbar: left-aligned controls, no redundant page title
         bar = QHBoxLayout()
-        bar.setSpacing(6)
-        self._title = QLabel(tr("hex.title"))
-        self._title.setObjectName("panelTitle")
-        bar.addWidget(self._title)
-        bar.addStretch(1)
+        bar.setSpacing(8)
 
         self.open_btn = QPushButton(tr("hex.open"))
         self.open_btn.setObjectName("ghost")
@@ -167,26 +163,27 @@ class HexPreviewPanel(QWidget):
 
         self._lbl_addr = QLabel(tr("hex.addr"))
         bar.addWidget(self._lbl_addr)
-        self.addr_edit = QLineEdit("0x08000000")
-        self.addr_edit.setFixedWidth(100)
-        bar.addWidget(self.addr_edit)
+        self.addr_spin = hex_spin(
+            0x0800_0000, step=0x100, width=130
+        )
+        self.addr_edit = self.addr_spin  # alias for older callers
+        bar.addWidget(self.addr_spin)
 
         self._lbl_size = QLabel(tr("hex.size"))
         bar.addWidget(self._lbl_size)
-        self.size_edit = QLineEdit("0x1000")
-        self.size_edit.setFixedWidth(90)
-        bar.addWidget(self.size_edit)
+        self.size_spin = hex_spin(0x1000, step=0x100, width=110)
+        self.size_edit = self.size_spin
+        bar.addWidget(self.size_spin)
 
-        # Read split-button with CubeProg-like menu
+        # Split control: menu only *selects* the action; click runs it
         self.read_btn = QToolButton()
-        self.read_btn.setText(tr("hex.read"))
+        self.read_btn.setText(tr("hex.read_by_size"))
         self.read_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.read_btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
         self.read_btn.setObjectName("accentTool")
         self.read_btn.setEnabled(False)
 
         menu = QMenu(self.read_btn)
-
         act_read = QAction(tr("hex.read_by_size"), menu)
         act_read_all = QAction(tr("hex.read_all"), menu)
         act_save = QAction(tr("hex.save_as"), menu)
@@ -194,7 +191,7 @@ class HexPreviewPanel(QWidget):
         act_blank = QAction(tr("hex.blank"), menu)
         act_cmp_file = QAction(tr("hex.cmp_file"), menu)
         act_cmp_two = QAction(tr("hex.cmp_two"), menu)
-        for a in (
+        actions = [
             act_read,
             act_read_all,
             act_save,
@@ -202,20 +199,30 @@ class HexPreviewPanel(QWidget):
             act_blank,
             act_cmp_file,
             act_cmp_two,
-        ):
+        ]
+        for a in actions:
+            a.setCheckable(True)
             menu.addAction(a)
+        act_read.setChecked(True)
         self.read_btn.setMenu(menu)
-        self.read_btn.setDefaultAction(act_read)
+        self.read_btn.clicked.connect(self._run_selected_action)
 
-        act_read.triggered.connect(self._on_read_chip)
-        act_read_all.triggered.connect(self._on_read_all)
-        act_save.triggered.connect(self._on_save_as)
-        act_fill.triggered.connect(self._on_fill_memory)
-        act_blank.triggered.connect(self._on_blank_check)
-        act_cmp_file.triggered.connect(self._on_compare_with_file)
-        act_cmp_two.triggered.connect(self._on_compare_two_files)
+        for a in actions:
+            # Selecting a menu item only updates the button label / mode
+            a.triggered.connect(lambda _c=False, act=a: self._select_read_action(act))
+
+        self._action_handlers = {
+            act_read: self._on_read_chip,
+            act_read_all: self._on_read_all,
+            act_save: self._on_save_as,
+            act_fill: self._on_fill_memory,
+            act_blank: self._on_blank_check,
+            act_cmp_file: self._on_compare_with_file,
+            act_cmp_two: self._on_compare_two_files,
+        }
 
         bar.addWidget(self.read_btn)
+        bar.addStretch(1)
         root.addLayout(bar)
 
         self.tabs = QTabWidget()
@@ -234,22 +241,31 @@ class HexPreviewPanel(QWidget):
         self.tabs.addTab(QWidget(), "+")
         self.tabs.setTabToolTip(0, tr("hex.mem"))
         self.tabs.setTabToolTip(1, tr("hex.plus_tip"))
-        self._menu_actions = [
-            act_read,
-            act_read_all,
-            act_save,
-            act_fill,
-            act_blank,
-            act_cmp_file,
-            act_cmp_two,
-        ]
+        self._menu_actions = actions
+        self._selected_action = act_read
+
+        # Default blank-chip look (erased flash is 0xFF)
+        self.mem_view.load_bytes(
+            0x0800_0000,
+            b"\xFF" * 0x400,
+            source="空白芯片示意（0xFF）",
+        )
+
+    def _select_read_action(self, action) -> None:
+        self._selected_action = action
+        self.read_btn.setText(action.text())
+        for a in self._menu_actions:
+            a.setChecked(a is action)
+
+    def _run_selected_action(self) -> None:
+        handler = self._action_handlers.get(self._selected_action)
+        if handler is not None:
+            handler()
 
     def retranslate(self) -> None:
-        self._title.setText(tr("hex.title"))
         self.open_btn.setText(tr("hex.open"))
         self._lbl_addr.setText(tr("hex.addr"))
         self._lbl_size.setText(tr("hex.size"))
-        self.read_btn.setText(tr("hex.read"))
         keys = [
             "hex.read_by_size",
             "hex.read_all",
@@ -261,22 +277,18 @@ class HexPreviewPanel(QWidget):
         ]
         for a, k in zip(self._menu_actions, keys):
             a.setText(tr(k))
+            if a.isChecked():
+                self.read_btn.setText(tr(k))
         for i in range(self.tabs.count()):
             if self.tabs.widget(i) is self.mem_view:
                 self.tabs.setTabText(i, tr("hex.mem"))
                 break
 
     def _read_size_bytes(self) -> int:
-        try:
-            return int(self.size_edit.text().strip(), 0)
-        except ValueError:
-            return 0x1000
+        return int(self.size_spin.value())
 
     def _current_addr(self) -> int:
-        try:
-            return int(self.addr_edit.text().strip(), 0)
-        except ValueError:
-            return 0x08000000
+        return int(self.addr_spin.value())
 
     def _on_tab_bar_clicked(self, index: int) -> None:
         if 0 <= index < self.tabs.count() and self.tabs.tabText(index) == "+":
@@ -314,6 +326,11 @@ class HexPreviewPanel(QWidget):
             self.tabs.setTabText(idx, name)
             self.tabs.setTabToolTip(idx, str(path))
             self.tabs.setCurrentIndex(idx)
+            # Keep toolbar address in sync with the image base
+            if view._segments:
+                base = int(view._segments[0][0])
+                if 0 <= base <= self.addr_spin.maximum():
+                    self.addr_spin.setValue(base)
             return True
         except Exception as exc:
             log.exception("load file failed")
@@ -349,7 +366,7 @@ class HexPreviewPanel(QWidget):
     def _on_read_all(self) -> None:
         # Read a full typical flash bank from address
         addr = self._current_addr()
-        self.size_edit.setText("0x100000")  # 1 MB
+        self.size_spin.setValue(0x100000)  # 1 MB
         self.read_chip_requested.emit(addr, 0x100000)
 
     def _on_save_as(self) -> None:

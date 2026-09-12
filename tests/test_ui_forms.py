@@ -41,7 +41,7 @@ def test_load_flash_panel(qapp):
 
     f = FlashPanel()
     assert f.program_btn is not None
-    assert f.addr_edit.text() == "0x08000000"
+    assert f.addr_edit.value() == 0x08000000
 
 
 def test_load_target_info_panel(qapp):

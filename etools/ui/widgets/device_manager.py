@@ -33,6 +33,7 @@ from etools.core.targets import (
     vendor_of,
 )
 from etools.logger import get_logger
+from etools.ui.icons import set_button_icon
 from etools.ui.ui_loader import embed_form
 
 log = get_logger("ui.devices")
@@ -87,6 +88,15 @@ class DeviceManagerPanel(QWidget):
             self.unhide_all_btn.setObjectName("ghost")
         self.install_pack_btn.setObjectName("accent")
         self.list_pack_btn.setObjectName("ghost")
+        set_button_icon(self.refresh_btn, "refresh", 16)
+        set_button_icon(self.add_custom_btn, "chip", 16)
+        set_button_icon(self.remove_custom_btn, "clear", 16)
+        if self.hide_btn is not None:
+            set_button_icon(self.hide_btn, "blank", 16)
+        if self.unhide_all_btn is not None:
+            set_button_icon(self.unhide_all_btn, "devices", 16)
+        set_button_icon(self.install_pack_btn, "save", 16)
+        set_button_icon(self.list_pack_btn, "info", 16)
 
         self.device_tree.setRootIsDecorated(False)
         self.device_tree.setAlternatingRowColors(False)
@@ -245,22 +255,46 @@ class DeviceManagerPanel(QWidget):
     def _on_install_pack(self) -> None:
         pack = self.pack_edit.text().strip()
         if not pack:
+            self.hint.setText("请填写 Pack ID，例如 GigaDevice::GD32F103C8，再点「安装 Pack」")
             return
-        self.hint.setText(f"正在安装 {pack} …")
-        ok, msg = install_pack(pack)
-        self.hint.setText(("安装成功：" if ok else "安装失败：") + (msg.splitlines()[-1] if msg else pack))
-        if ok:
-            self.reload()
-            self.catalog_changed.emit()
+        self.hint.setText(f"正在安装 {pack} …（可能需要联网，最长约 2 分钟）")
+        self.install_pack_btn.setEnabled(False)
+        self.list_pack_btn.setEnabled(False)
+        try:
+            ok, msg = install_pack(pack)
+            last = msg.splitlines()[-1] if msg else pack
+            self.hint.setText(("安装成功：" if ok else "安装失败：") + last)
+            if ok:
+                self.reload()
+                self.catalog_changed.emit()
+        except Exception as exc:
+            self.hint.setText(f"安装异常：{exc}")
+        finally:
+            self.install_pack_btn.setEnabled(True)
+            self.list_pack_btn.setEnabled(True)
 
     def _on_list_packs(self) -> None:
-        lines = list_installed_packs()
-        # show in tree as special
+        self.hint.setText("正在查询已装 Pack…")
+        self.list_pack_btn.setEnabled(False)
+        self.install_pack_btn.setEnabled(False)
+        try:
+            lines = list_installed_packs()
+        except Exception as exc:
+            lines = []
+            self.hint.setText(f"查询失败：{exc}")
+        finally:
+            self.list_pack_btn.setEnabled(True)
+            self.install_pack_btn.setEnabled(True)
+
+        self.vendor_list.blockSignals(True)
         self.vendor_list.setCurrentRow(0)
+        self.vendor_list.blockSignals(False)
         self.device_tree.clear()
         if not lines:
-            self.hint.setText("未列出已装 Pack（pyocd 不可用或为空）")
+            self.hint.setText(
+                "未列出已装 Pack（pyocd 不可用或列表为空）。可尝试：python -m pyocd pack list"
+            )
             return
         for ln in lines:
             self.device_tree.addTopLevelItem(QTreeWidgetItem([ln[:80], ln, "Pack"]))
-        self.hint.setText(f"已装 Pack 输出 {len(lines)} 行（pyocd pack list）")
+        self.hint.setText(f"已装 Pack 共 {len(lines)} 行（python -m pyocd pack list）")

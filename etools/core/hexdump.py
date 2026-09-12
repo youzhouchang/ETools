@@ -166,7 +166,7 @@ def format_hex_lines(
         if pad:
             hex_part = hex_part + ("   " * pad)
         ascii_part = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
-        rows.append((f"{base_addr + off:08X}", hex_part, ascii_part))
+        rows.append((f"0x{base_addr + off:08X}", hex_part, ascii_part))
     return rows
 
 

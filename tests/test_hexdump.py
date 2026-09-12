@@ -26,7 +26,7 @@ def test_parse_ihex_and_format():
     assert segs[0][0] == 0x0800_0000
     assert segs[0][1] == bytes(range(16))
     rows = format_hex_lines(segs[0][0], segs[0][1])
-    assert rows[0][0] == "08000000"
+    assert rows[0][0] == "0x08000000"
     assert "00 01 02" in rows[0][1]
     assert rows[0][2].startswith(".")
 

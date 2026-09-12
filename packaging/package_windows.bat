@@ -112,38 +112,36 @@ if "%INSTALLER%"=="0" goto summary
 echo.
 echo [5/6] Building installer EXE...
 
-set "HAVE_ISS=0"
-set "HAVE_NSIS=0"
-where iscc >nul 2>nul && set "HAVE_ISS=1"
-if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "HAVE_ISS=1"
-if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "HAVE_ISS=1"
-where makensis >nul 2>nul && set "HAVE_NSIS=1"
+set "ISCC="
+where iscc >nul 2>nul && set "ISCC=iscc"
+if not defined ISCC if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+if not defined ISCC if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
+if not defined ISCC if exist "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" set "ISCC=%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
+if not defined ISCC if exist "%LOCALAPPDATA%\Programs\Inno Setup 7\ISCC.exe" set "ISCC=%LOCALAPPDATA%\Programs\Inno Setup 7\ISCC.exe"
 
-if "%HAVE_ISS%"=="1" (
-  echo       Using Inno Setup...
-  set "ISCC=iscc"
-  if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
-  if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
-  "!ISCC!" /DAppVersion=%VERSION% /DSourceDir="%APP_DIR%" /DOutputDir="%RELEASE_DIR%" packaging\etools.iss
+if defined ISCC (
+  echo       Using Inno Setup: %ISCC%
+  "%ISCC%" /DAppVersion=%VERSION% /DSourceDir="%APP_DIR%" /DOutputDir="%RELEASE_DIR%" packaging\etools.iss
   if errorlevel 1 (
-    echo WARN: Inno Setup failed, skipping installer
-  ) else (
-    echo       OK: %RELEASE_DIR%\%APP_NAME%-setup-%VERSION%-win64.exe
-  )
-) else if "%HAVE_NSIS%"=="1" (
-  echo       Using NSIS...
-  makensis /DAPP_VERSION=%VERSION% /DSOURCE_DIR=%APP_DIR% /DOUTPUT_DIR=%RELEASE_DIR% packaging\etools.nsi
-  if errorlevel 1 (
-    echo WARN: NSIS failed, skipping installer
+    echo WARN: Inno Setup failed
   ) else (
     echo       OK: %RELEASE_DIR%\%APP_NAME%-setup-%VERSION%-win64.exe
   )
 ) else (
-  echo       WARN: Neither Inno Setup ^(iscc^) nor NSIS ^(makensis^) found.
-  echo       Install one of them to produce a setup.exe installer:
-  echo         Inno Setup: https://jrsoftware.org/isdl.php
-  echo         NSIS:       https://nsis.sourceforge.io/Download
-  echo       Portable ZIP is still available.
+  where makensis >nul 2>nul
+  if not errorlevel 1 (
+    echo       Using NSIS...
+    makensis /DAPP_VERSION=%VERSION% /DSOURCE_DIR=%APP_DIR% /DOUTPUT_DIR=%RELEASE_DIR% packaging\etools.nsi
+    if errorlevel 1 (
+      echo WARN: NSIS failed
+    ) else (
+      echo       OK: %RELEASE_DIR%\%APP_NAME%-setup-%VERSION%-win64.exe
+    )
+  ) else (
+    echo       WARN: Neither Inno Setup ^(iscc^) nor NSIS ^(makensis^) found.
+    echo       Install: winget install JRSoftware.InnoSetup
+    echo       Portable ZIP is still available.
+  )
 )
 
 goto summary

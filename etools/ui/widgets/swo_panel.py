@@ -218,20 +218,29 @@ class SwvPanel(QWidget):
         bar.addStretch(1)
 
         bar.addWidget(QLabel("系统时钟 Hz"))
-        self.sys_edit = QLineEdit("72000000")
-        self.sys_edit.setFixedWidth(110)
-        bar.addWidget(self.sys_edit)
+        from etools.ui.widgets.spin_boxes import int_spin
+
+        spin_w = 110
+        self.sys_spin = int_spin(
+            72_000_000, minimum=1_000, maximum=400_000_000, step=1_000_000, width=spin_w
+        )
+        self.sys_spin.setFixedWidth(spin_w)
+        self.sys_edit = self.sys_spin
+        bar.addWidget(self.sys_spin)
 
         bar.addWidget(QLabel("SWO 时钟 Hz"))
-        self.swo_edit = QLineEdit("2000000")
-        self.swo_edit.setFixedWidth(110)
-        bar.addWidget(self.swo_edit)
+        self.swo_spin = int_spin(
+            2_000_000, minimum=1_000, maximum=50_000_000, step=100_000, width=spin_w
+        )
+        self.swo_spin.setFixedWidth(spin_w)
+        self.swo_edit = self.swo_spin
+        bar.addWidget(self.swo_spin)
 
         bar.addWidget(QLabel("ITM 端口"))
-        self.port_edit = QLineEdit("0")
-        self.port_edit.setPlaceholderText("0,1,2")
-        self.port_edit.setFixedWidth(90)
-        bar.addWidget(self.port_edit)
+        self.port_spin = int_spin(0, minimum=0, maximum=31, step=1, width=spin_w)
+        self.port_spin.setFixedWidth(spin_w)
+        self.port_edit = self.port_spin
+        bar.addWidget(self.port_spin)
 
         self.start_btn = QPushButton("启动 SWV")
         self.start_btn.setObjectName("accent")
@@ -277,33 +286,15 @@ class SwvPanel(QWidget):
         self._session_getter = fn
 
     def _parse_ports(self) -> set[int]:
-        raw = self.port_edit.text().strip() or "0"
-        ports: set[int] = set()
-        for part in raw.replace("，", ",").split(","):
-            part = part.strip()
-            if not part:
-                continue
-            try:
-                p = int(part, 0)
-            except ValueError:
-                continue
-            if 0 <= p <= 31:
-                ports.add(p)
-        return ports or {0}
-
-    def _parse_int(self, text: str, default: int) -> int:
-        try:
-            return int(text.strip(), 0)
-        except Exception:
-            return default
+        return {int(self.port_spin.value())}
 
     def _toggle(self) -> None:
         if self._reader.running:
             self._stop()
             return
         sess = self._session_getter() if callable(self._session_getter) else None
-        sys_clk = self._parse_int(self.sys_edit.text(), 72_000_000)
-        swo_clk = self._parse_int(self.swo_edit.text(), 2_000_000)
+        sys_clk = int(self.sys_spin.value())
+        swo_clk = int(self.swo_spin.value())
         ports = self._parse_ports()
         self._build_channel_tabs(ports)
         if self._reader.start(sess, sys_clk, swo_clk, ports):

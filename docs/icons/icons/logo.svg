@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="256" y2="256" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0B1220"/>
+      <stop offset="100%" stop-color="#1A2740"/>
+    </linearGradient>
+    <linearGradient id="die" x1="84" y1="84" x2="172" y2="172" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#243452"/>
+      <stop offset="100%" stop-color="#152038"/>
+    </linearGradient>
+    <filter id="soft" x="-24%" y="-24%" width="148%" height="148%">
+      <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#000" flood-opacity="0.4"/>
+    </filter>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+  <rect x="2" y="2" width="252" height="252" rx="54" fill="none" stroke="#2A3A55" stroke-width="2"/>
+  <g stroke="#3B9EFF" stroke-width="7" stroke-linecap="round">
+    <path d="M76 100H58"/><path d="M76 128H58"/><path d="M76 156H58"/>
+    <path d="M180 100h18"/><path d="M180 128h18"/><path d="M180 156h18"/>
+    <path d="M108 76V58"/><path d="M148 76V58"/>
+    <path d="M108 180v18"/><path d="M148 180v18"/>
+  </g>
+  <g filter="url(#soft)">
+    <rect x="76" y="76" width="104" height="104" rx="22" fill="url(#die)" stroke="#3B9EFF" stroke-width="4"/>
+    <circle cx="100" cy="100" r="5" fill="#3B9EFF" opacity="0.55"/>
+  </g>
+  <path filter="url(#glow)"
+        d="M145 88 L104 142 H124 L111 176 L152 120 H130 L145 88 Z"
+        fill="#E6EAF0"/>
+</svg>

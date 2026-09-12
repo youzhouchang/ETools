@@ -3,6 +3,8 @@
 from etools.core.models import (
     CONNECT_MODES,
     FIRMWARE_EXTENSIONS,
+    RESET_TYPES,
+    WIRE_PROTOCOLS,
     ConnectionState,
     FirmwareImage,
     OperationKind,
@@ -25,6 +27,8 @@ __all__ = [
     "CURATED_TARGETS",
     "FIRMWARE_EXTENSIONS",
     "KNOWN_TARGETS",
+    "RESET_TYPES",
+    "WIRE_PROTOCOLS",
     "ConnectionState",
     "FirmwareImage",
     "OperationKind",

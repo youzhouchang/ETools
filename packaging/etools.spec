@@ -10,9 +10,13 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 block_cipher = None
 project_root = Path(SPECPATH).resolve().parent  # noqa: F821
 
-# Qt Designer forms
+# Qt Designer forms + UI icons
 datas = [
     (str(project_root / "etools" / "ui" / "forms"), "etools/ui/forms"),
+    (
+        str(project_root / "etools" / "ui" / "resources" / "icons"),
+        "etools/ui/resources/icons",
+    ),
 ]
 
 # pyOCD ships non-Python assets (.lark grammar, SVD, yaml, …) that must be present
@@ -27,6 +31,7 @@ hiddenimports = [
     "PySide6.QtGui",
     "PySide6.QtWidgets",
     "PySide6.QtUiTools",
+    "PySide6.QtSvg",
     "pyocd",
     "elftools",
     "elftools.elf.elffile",

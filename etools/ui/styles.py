@@ -100,9 +100,9 @@ def _cleanup_tmp() -> None:
     _tmpdir = None
 
 
-def arrow_file(color: str) -> str:
-    """Write a small down-triangle PNG and return its path for QSS url()."""
-    key = color.lower()
+def arrow_file(color: str, direction: str = "down") -> str:
+    """Write a small triangle PNG (up/down) and return its path for QSS url()."""
+    key = f"{direction}_{color.lower()}"
     if key in _arrow_files and Path(_arrow_files[key]).exists():
         return _arrow_files[key]
 
@@ -115,10 +115,13 @@ def arrow_file(color: str) -> str:
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     p.setPen(QPen(Qt.PenStyle.NoPen))
     p.setBrush(QBrush(QColor(color)))
-    p.drawPolygon(QPolygon([QPoint(1, 3), QPoint(9, 3), QPoint(5, 8)]))
+    if direction == "up":
+        p.drawPolygon(QPolygon([QPoint(1, 7), QPoint(9, 7), QPoint(5, 2)]))
+    else:
+        p.drawPolygon(QPolygon([QPoint(1, 3), QPoint(9, 3), QPoint(5, 8)]))
     p.end()
 
-    path = _ensure_tmpdir() / f"arrow_{key.lstrip('#')}.png"
+    path = _ensure_tmpdir() / f"arrow_{key.lstrip('#').replace('#', '')}.png"
     img.save(str(path), "PNG")
     _arrow_files[key] = str(path)
     return str(path)
@@ -128,6 +131,8 @@ def build_stylesheet(theme: str | Theme = "dark") -> str:
     t = theme if isinstance(theme, Theme) else get_theme(theme)
     fields = dict(t.__dict__)
     fields["arrow_url"] = arrow_file(t.text_dim).replace("\\", "/")
+    fields["spin_up_url"] = arrow_file(t.text_dim, "up").replace("\\", "/")
+    fields["spin_down_url"] = arrow_file(t.text_dim, "down").replace("\\", "/")
     return _QSS.format(**fields)
 
 
@@ -427,6 +432,57 @@ QComboBox::down-arrow {{
     image: url({arrow_url});
     width: 10px;
     height: 10px;
+}}
+QSpinBox, QDoubleSpinBox {{
+    padding-right: 30px;
+}}
+QSpinBox::up-button, QDoubleSpinBox::up-button {{
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 22px;
+    border: none;
+    border-left: 1px solid {border};
+    border-bottom: 1px solid {border};
+    border-top-right-radius: 5px;
+    background: {bg_hover};
+    margin: 1px 1px 0 0;
+}}
+QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 22px;
+    border: none;
+    border-left: 1px solid {border};
+    border-bottom-right-radius: 5px;
+    background: {bg_hover};
+    margin: 0 1px 1px 0;
+}}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+    background: {accent};
+    border-left-color: {accent};
+}}
+QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed,
+QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {{
+    background: {accent_hover};
+}}
+QSpinBox::up-button:disabled, QSpinBox::down-button:disabled,
+QDoubleSpinBox::up-button:disabled, QDoubleSpinBox::down-button:disabled {{
+    background: {bg_input};
+    border-left-color: {border};
+}}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+    image: url({spin_up_url});
+    width: 9px;
+    height: 9px;
+}}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+    image: url({spin_down_url});
+    width: 9px;
+    height: 9px;
+}}
+QSpinBox::up-arrow:disabled, QSpinBox::down-arrow:disabled {{
+    opacity: 0.35;
 }}
 QComboBox QAbstractItemView,
 QListView {{

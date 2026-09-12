@@ -70,6 +70,13 @@ def main() -> int:
         app.setOrganizationName("ETools")
         app.setStyle("Fusion")
 
+        from etools.ui.icons import app_icon
+
+        app.setWindowIcon(app_icon())
+        # Match .desktop Icon=etools so GNOME/KDE dock groups the window correctly
+        if sys.platform.startswith("linux"):
+            app.setDesktopFileName("etools")
+
         font = QFont("Segoe UI", 10)
         if sys.platform == "darwin":
             font = QFont("SF Pro Text", 13)
