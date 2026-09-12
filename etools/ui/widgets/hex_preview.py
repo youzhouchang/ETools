@@ -12,9 +12,9 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QPushButton,
-    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -276,7 +276,7 @@ class HexPreviewPanel(QWidget):
             "hex.cmp_file",
             "hex.cmp_two",
         ]
-        for a, k in zip(self._menu_actions, keys):
+        for a, k in zip(self._menu_actions, keys, strict=False):
             a.setText(tr(k))
             if a.isChecked():
                 self.read_btn.setText(tr(k))

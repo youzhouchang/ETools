@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from etools.core.pyocd_driver import PyOCDDriver, _looks_like_valid_uid, _probe_type_from_unique_id
 from etools.core.models import ProbeType, TargetInfo
+from etools.core.pyocd_driver import PyOCDDriver, _looks_like_valid_uid, _probe_type_from_unique_id
 
 
 @pytest.fixture
@@ -61,12 +61,6 @@ class TestHexParser:
 
     def test_extended_linear(self, driver: PyOCDDriver):
         # ELA 0x0800 → base 0x08000000; one data byte at offset 0
-        lines = [
-            ":020000040800F2",  # ELA 0x0800
-            ":04000000DEADBEEF00",  # will need correct checksum — use computed
-            ":00000001FF",
-        ]
-        # Build programmatically with valid checksums
         def rec(length, addr, rtype, payload: bytes) -> str:
             body = bytes([length, (addr >> 8) & 0xFF, addr & 0xFF, rtype]) + payload
             csum = ((~sum(body) + 1) & 0xFF)
@@ -96,9 +90,6 @@ class TestSrecParser:
         body = bytes([count]) + addr.to_bytes(2, "big") + payload
         csum = 0xFF - (sum(body) & 0xFF)
         line = "S1" + body.hex().upper() + f"{csum:02X}"
-        # S7 terminator
-        term_body = bytes([4, 0, 0, 0, 0])
-        # simpler: skip accurate term, parser stops on S7
         segs = driver._parse_srec(line + "\nS70500000000FA\n")
         assert len(segs) == 1
         a, p = segs[0]

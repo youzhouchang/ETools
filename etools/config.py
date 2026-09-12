@@ -37,7 +37,7 @@ class AppConfig:
     log_level: str = "INFO"
     theme: str = "dark"
     language: str = "zh"  # zh | en
-    # User-defined MCU targets: [{"name": "gd32f103c8", "label": "GD32F103C8", "vendor": "GigaDevice"}]
+    # User-defined MCU targets: [{"name": "...", "label": "...", "vendor": "..."}]
     custom_targets: list = field(default_factory=list)
     # Built-in target names hidden from the UI catalog
     hidden_targets: list = field(default_factory=list)
@@ -49,7 +49,7 @@ class AppConfig:
     def config_file(self) -> Path:
         return get_config_dir() / "config.json"
 
-    def load(self) -> "AppConfig":
+    def load(self) -> AppConfig:
         path = self.config_file
         if not path.exists():
             return self

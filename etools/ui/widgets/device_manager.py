@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -12,7 +11,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTreeWidget,
     QTreeWidgetItem,
-    QVBoxLayout,
     QWidget,
 )
 
@@ -20,17 +18,16 @@ from etools.core.targets import (
     add_custom_target,
     custom_targets,
     group_targets_by_vendor,
-    hide_target,
-    hide_vendor,
     hidden_targets,
     hidden_vendors,
+    hide_target,
+    hide_vendor,
     install_pack,
     invalidate_target_cache,
     list_installed_packs,
     list_target_choices,
     remove_custom_target,
     unhide_all_targets,
-    vendor_of,
 )
 from etools.logger import get_logger
 from etools.ui.icons import set_button_icon
@@ -128,7 +125,8 @@ class DeviceManagerPanel(QWidget):
         groups = group_targets_by_vendor()
         self.vendor_list.blockSignals(True)
         self.vendor_list.clear()
-        self.vendor_list.addItem(QListWidgetItem(f"{VENDOR_ALL} ({sum(len(v) for v in groups.values())})"))
+        total_n = sum(len(v) for v in groups.values())
+        self.vendor_list.addItem(QListWidgetItem(f"{VENDOR_ALL} ({total_n})"))
         for vendor in sorted(groups.keys(), key=lambda v: (v == "Other", v)):
             self.vendor_list.addItem(QListWidgetItem(f"{vendor} ({len(groups[vendor])})"))
         self.vendor_list.setCurrentRow(0)

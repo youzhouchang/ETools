@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import Optional
 
 from etools.core.models import (
     ConnectionState,
@@ -32,7 +31,7 @@ class ProbeDriver(ABC):
 
     def __init__(self) -> None:
         self._state = ConnectionState.DISCONNECTED
-        self._on_progress: Optional[ProgressCallback] = None
+        self._on_progress: ProgressCallback | None = None
 
     @property
     def state(self) -> ConnectionState:
@@ -42,7 +41,7 @@ class ProbeDriver(ABC):
     def connected(self) -> bool:
         return self._state == ConnectionState.CONNECTED
 
-    def set_progress_callback(self, cb: Optional[ProgressCallback]) -> None:
+    def set_progress_callback(self, cb: ProgressCallback | None) -> None:
         self._on_progress = cb
 
     def _emit(self, message: str, is_error: bool = False) -> None:

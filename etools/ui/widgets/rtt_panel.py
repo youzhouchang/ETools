@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -58,8 +58,8 @@ class _RttReader(QObject):
     def start(
         self,
         session: Any,
-        address: Optional[int] = None,
-        size: Optional[int] = None,
+        address: int | None = None,
+        size: int | None = None,
     ) -> bool:
         self.stop()
         if session is None or session.target is None:
@@ -222,7 +222,7 @@ class RttPanel(QWidget):
     def set_session_getter(self, fn) -> None:
         self._session_getter = fn
 
-    def _parse_int(self, text: str) -> Optional[int]:
+    def _parse_int(self, text: str) -> int | None:
         text = (text or "").strip()
         if not text:
             return None

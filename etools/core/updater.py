@@ -34,7 +34,12 @@ class UpdateInfo:
 
     @property
     def download_urls(self) -> list[str]:
-        return [str(a.get("browser_download_url") or "") for a in self.assets if a.get("browser_download_url")]
+        urls = []
+        for a in self.assets:
+            u = a.get("browser_download_url")
+            if u:
+                urls.append(str(u))
+        return urls
 
 
 def parse_version(text: str) -> tuple[int, ...]:

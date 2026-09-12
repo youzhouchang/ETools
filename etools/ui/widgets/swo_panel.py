@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-import io
 import threading
-from typing import Any, Optional
+from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
-    QCheckBox,
-    QComboBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QPlainTextEdit,
     QPushButton,
     QTabWidget,
@@ -71,7 +67,7 @@ class _SwvReader:
 
     def __init__(self, bridge: _Bridge) -> None:
         self._bridge = bridge
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._session: Any = None
         self._sys_clock = 0

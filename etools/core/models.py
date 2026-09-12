@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 
 class ProbeType(Enum):
@@ -135,7 +135,7 @@ class TargetDetails:
     flash_size: int = 0
     ram_base: int = 0
     ram_size: int = 0
-    voltage: Optional[float] = None
+    voltage: float | None = None
     voltage_ok: bool = False
     probe_name: str = ""
     probe_type: str = ""

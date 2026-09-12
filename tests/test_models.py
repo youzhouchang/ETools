@@ -4,15 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from etools.core.models import (
     FirmwareImage,
     OperationResult,
     ProbeInfo,
     ProbeType,
     ProgressInfo,
-    ProgressStage,
     TargetDetails,
     format_size,
 )

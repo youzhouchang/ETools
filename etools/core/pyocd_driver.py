@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from etools.core.models import (
     PROBE_CLASS_MAP,
@@ -60,9 +60,9 @@ class PyOCDDriver(ProbeDriver):
     def __init__(self) -> None:
         super().__init__()
         self._session: Any = None
-        self._probe: Optional[ProbeInfo] = None
-        self._target: Optional[TargetInfo] = None
-        self._details: Optional[TargetDetails] = None
+        self._probe: ProbeInfo | None = None
+        self._target: TargetInfo | None = None
+        self._details: TargetDetails | None = None
 
     @property
     def session(self) -> Any:
@@ -316,13 +316,13 @@ class PyOCDDriver(ProbeDriver):
 
         return details
 
-    def _read_word(self, target: Any, addr: int) -> Optional[int]:
+    def _read_word(self, target: Any, addr: int) -> int | None:
         try:
             return int(target.read_memory(addr)) & 0xFFFFFFFF
         except Exception:
             return None
 
-    def _read_bytes(self, target: Any, addr: int, n: int) -> Optional[bytes]:
+    def _read_bytes(self, target: Any, addr: int, n: int) -> bytes | None:
         try:
             return bytes(target.read_memory_block8(addr, n))
         except Exception:
@@ -343,7 +343,7 @@ class PyOCDDriver(ProbeDriver):
                 return raw.hex().upper()
         return ""
 
-    def _read_target_voltage(self, probe: Any) -> Optional[float]:
+    def _read_target_voltage(self, probe: Any) -> float | None:
         """Best-effort target voltage. ST-Link exposes get_target_voltage()."""
         if probe is None:
             return None
@@ -525,7 +525,7 @@ class PyOCDDriver(ProbeDriver):
         return bytes(data)
 
     def read(self, address: int, size: int, out_path: str) -> OperationResult:
-        session = self._require_session()
+        self._require_session()
         if size <= 0 or size > 16 * 1024 * 1024:
             return OperationResult(ok=False, message="Invalid read size (1 … 16 MiB)")
 
@@ -618,7 +618,7 @@ class PyOCDDriver(ProbeDriver):
         for addr, expected in segments:
             actual = bytes(target.read_memory_block8(addr, len(expected)))
             if actual != expected:
-                for i, (a, e) in enumerate(zip(actual, expected)):
+                for i, (a, e) in enumerate(zip(actual, expected, strict=False)):
                     if a != e:
                         return False, (
                             f"Mismatch at 0x{addr + i:08X}: "
@@ -655,7 +655,7 @@ class PyOCDDriver(ProbeDriver):
     def _parse_hex(self, text: str) -> list[tuple[int, bytes]]:
         segments: list[tuple[int, bytes]] = []
         base = 0
-        current_addr: Optional[int] = None
+        current_addr: int | None = None
         buf = bytearray()
 
         def flush() -> None:
@@ -695,7 +695,7 @@ class PyOCDDriver(ProbeDriver):
 
     def _parse_srec(self, text: str) -> list[tuple[int, bytes]]:
         segments: list[tuple[int, bytes]] = []
-        current_addr: Optional[int] = None
+        current_addr: int | None = None
         buf = bytearray()
 
         def flush() -> None:

@@ -7,7 +7,6 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
-    QFrame,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -505,8 +504,8 @@ class MainWindow(QMainWindow):
         self._update_worker = None
 
     def _on_update_result(self, info) -> None:
-        from PySide6.QtGui import QDesktopServices
         from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
 
         silent = getattr(self, "_update_silent", True)
         if info is None:
@@ -543,7 +542,8 @@ class MainWindow(QMainWindow):
         self._build_menu_and_toolbar()
         self._retranslate_tabs()
         self.hex_preview.retranslate()
-        self.conn_badge.setText(tr("status.disconnected") if not self.service.connected else tr("status.connected"))
+        connected = self.service.connected
+        self.conn_badge.setText(tr("status.connected") if connected else tr("status.disconnected"))
         self._log(tr("log.lang_switched"))
 
     def _retranslate_tabs(self) -> None:
@@ -631,7 +631,6 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _compact_form_layout(form: QWidget) -> None:
         """Tighten a panel form so it hugs content (less empty space)."""
-        from PySide6.QtWidgets import QSpacerItem
 
         lay = form.layout()
         if lay is None:

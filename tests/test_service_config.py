@@ -6,10 +6,9 @@ from pathlib import Path
 
 import etools.config as config_mod
 from etools.config import AppConfig
-from etools.core.models import OperationResult, ProbeInfo, ProbeType, TargetInfo
+from etools.core.models import OperationResult, ProbeInfo, ProbeType, TargetDetails, TargetInfo
 from etools.core.operations import FlashService
 from etools.core.probe import ProbeDriver
-from etools.core.models import TargetDetails
 
 
 class DummyDriver(ProbeDriver):

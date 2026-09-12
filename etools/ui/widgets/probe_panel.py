@@ -156,7 +156,6 @@ class ProbePanel(QFrame):
 
     def set_probes(self, probes: list[ProbeInfo]) -> None:
         """Refresh combo, keep selection by unique_id when possible."""
-        prev = self._probes
         prev_uid = ""
         if self.probe_combo.currentData() is not None:
             prev_uid = getattr(self.probe_combo.currentData(), "unique_id", "") or ""

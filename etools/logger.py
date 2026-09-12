@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import sys
-from pathlib import Path
 
 from etools.config import get_log_dir
 
@@ -28,7 +27,9 @@ def setup_logging(level: int = logging.INFO) -> logging.Logger:
     log_dir = get_log_dir()
     log_dir.mkdir(parents=True, exist_ok=True)
     file_handler = logging.FileHandler(log_dir / "etools.log", encoding="utf-8")
-    file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    )
     root.addHandler(file_handler)
 
     return logging.getLogger("etools")
