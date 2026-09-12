@@ -18,7 +18,7 @@ jobs:
     outputs:
       version: ${{ steps.ver.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: ver
         run: |
           TAG="${GITHUB_REF_NAME}"
@@ -36,8 +36,8 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: Install system deps
@@ -61,8 +61,8 @@ jobs:
     needs: [prepare, test]
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: Install Inno Setup
@@ -78,7 +78,7 @@ jobs:
           Copy-Item "dist/release/ETools-portable-$ver-win64.zip" dist/upload/ -ErrorAction SilentlyContinue
           Copy-Item "dist/release/ETools-setup-$ver-win64.exe" dist/upload/ -ErrorAction SilentlyContinue
           Get-ChildItem dist/upload | Format-Table Name, Length
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: windows-packages
           path: dist/upload/*
@@ -89,8 +89,8 @@ jobs:
     needs: [prepare, test]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - name: Install system deps
@@ -113,7 +113,7 @@ jobs:
           cp -f "dist/release/ETools-portable-${VER}-linux-x86_64.tar.gz" dist/upload/ 2>/dev/null || true
           cp -f "dist/release/etools_${VER}_amd64.deb" dist/upload/ 2>/dev/null || true
           ls -lh dist/upload
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: linux-packages
           path: dist/upload/*
@@ -124,8 +124,8 @@ jobs:
     needs: [prepare, build-windows, build-linux]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
         with:
           path: dist/assets
           merge-multiple: true
