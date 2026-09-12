@@ -117,7 +117,8 @@ class HexDocumentView(QWidget):
             for c in range(16):
                 it = QTableWidgetItem(parts[c] if c < len(parts) else "")
                 it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.table.setItem(r, c, it)
+                # col 0 = address, cols 1–16 = bytes, col 17 = ASCII
+                self.table.setItem(r, c + 1, it)
             it_a = QTableWidgetItem(ascii_s)
             it_a.setTextAlignment(
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter

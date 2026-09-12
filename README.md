@@ -99,6 +99,28 @@ sudo apt-get install -y dpkg-dev
 # 下载 appimagetool 到 tools/appimagetool 并 chmod +x
 ```
 
+## 发布
+
+打 Tag 即触发 GitHub Actions（`.github/workflows/release.yml`）：
+
+1. 校验 Tag（`vX.Y.Z`）与 `etools/__init__.py` 中 `__version__` 一致  
+2. 跑测试  
+3. 在 Windows / Linux 上打包  
+4. 创建 GitHub Release 并上传安装包  
+
+```bash
+# 1. 改版本号
+# etools/__init__.py: __version__ = "0.2.0"
+
+# 2. 提交并打 Tag
+git add etools/__init__.py
+git commit -m "Release v0.2.0"
+git tag v0.2.0
+git push origin main --tags
+```
+
+应用内：启动后自动检查一次；菜单 **帮助 → 检查更新…** 可手动检查（读取 GitHub Releases API）。
+
 ## 架构
 
 ```

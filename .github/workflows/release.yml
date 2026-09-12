@@ -1,0 +1,150 @@
+name: Release
+
+# Push a tag like v0.2.0 to build packages and publish a GitHub Release.
+# App version in etools/__init__.py must match the tag (without the leading v).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    name: Validate tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: ver
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VER="${TAG#v}"
+          APP_VER="$(python3 -c "import re,pathlib; t=pathlib.Path('etools/__init__.py').read_text(); print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', t).group(1))")"
+          echo "tag=$TAG app=$APP_VER"
+          if [ "$VER" != "$APP_VER" ]; then
+            echo "::error::Tag $TAG does not match etools/__init__.py version $APP_VER"
+            exit 1
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Test
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libusb-1.0-0 libgl1 libxkbcommon0 libdbus-1-3 \
+            libxcb-cursor0 libegl1 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+            libxcb-shape0 libxcb-xinerama0 libxkbcommon-x11-0
+      - name: Install and test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -m pip install -U pip
+          python -m pip install -e ".[dev]"
+          python -m pytest -q
+
+  build-windows:
+    name: Build Windows
+    needs: [prepare, test]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+      - name: Package
+        shell: cmd
+        run: packaging\package_windows.bat --clean
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          $ver = "${{ needs.prepare.outputs.version }}"
+          New-Item -ItemType Directory -Force -Path dist/upload | Out-Null
+          Copy-Item "dist/release/ETools-portable-$ver-win64.zip" dist/upload/ -ErrorAction SilentlyContinue
+          Copy-Item "dist/release/ETools-setup-$ver-win64.exe" dist/upload/ -ErrorAction SilentlyContinue
+          Get-ChildItem dist/upload | Format-Table Name, Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-packages
+          path: dist/upload/*
+          if-no-files-found: error
+
+  build-linux:
+    name: Build Linux
+    needs: [prepare, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libusb-1.0-0 libgl1 libxkbcommon0 libdbus-1-3 \
+            libxcb-cursor0 libegl1 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+            libxcb-shape0 libxcb-xinerama0 libxkbcommon-x11-0 \
+            dpkg-dev
+      - name: Package
+        run: |
+          chmod +x packaging/package_linux.sh
+          bash packaging/package_linux.sh --clean --skip-appimage
+      - name: Collect artifacts
+        run: |
+          VER="${{ needs.prepare.outputs.version }}"
+          mkdir -p dist/upload
+          cp -f "dist/release/ETools-portable-${VER}-linux-x86_64.tar.gz" dist/upload/ 2>/dev/null || true
+          cp -f "dist/release/etools_${VER}_amd64.deb" dist/upload/ 2>/dev/null || true
+          ls -lh dist/upload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: dist/upload/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [prepare, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/assets
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER="${{ needs.prepare.outputs.version }}"
+          NOTES="ETools v${VER}
+
+          ## Downloads
+          - Windows portable ZIP / installer EXE
+          - Linux portable tar.gz / Debian .deb
+
+          ## Checksums
+          $(cd dist/assets && sha256sum * 2>/dev/null || true)
+          "
+          gh release create "v${VER}" \
+            --title "ETools v${VER}" \
+            --notes "$NOTES" \
+            dist/assets/* \
+            --verify-tag

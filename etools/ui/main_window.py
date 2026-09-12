@@ -157,6 +157,21 @@ class _ProgressRelay(QObject):
         self.progressed.emit(info)
 
 
+class _UpdateChecker(QObject):
+    """Background GitHub Releases lookup."""
+
+    finished = Signal(object)  # UpdateInfo | None
+
+    def run(self) -> None:
+        from etools.core.updater import check_for_update
+
+        try:
+            self.finished.emit(check_for_update())
+        except Exception:
+            log.exception("update check crashed")
+            self.finished.emit(None)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -176,6 +191,9 @@ class MainWindow(QMainWindow):
         self._probe_timer = QTimer(self)
         self._probe_timer.setInterval(2500)
         self._probe_timer.timeout.connect(self._hotplug_tick)
+        self._update_thread: QThread | None = None
+        self._update_worker: _UpdateChecker | None = None
+        self._update_silent = True
 
         self._build_ui()
         self._wire()
@@ -184,6 +202,8 @@ class MainWindow(QMainWindow):
         self._probe_timer.start()
         # First scan immediately
         self._start_scan(silent=True)
+        # One silent GitHub release check shortly after launch
+        QTimer.singleShot(2500, lambda: self._check_updates(silent=True))
 
     # ------------------------------------------------------------------
     # UI
@@ -420,7 +440,10 @@ class MainWindow(QMainWindow):
         m_lang.addAction(a_lang_en)
 
         m_help = mb.addMenu(tr("menu.help"))
+        a_check_update = act(tr("act.check_update"), "refresh", "")
         a_about = act(tr("act.about"), "info", "")
+        m_help.addAction(a_check_update)
+        m_help.addSeparator()
         m_help.addAction(a_about)
 
         # rebuild toolbar
@@ -454,6 +477,66 @@ class MainWindow(QMainWindow):
         a_lang_zh.triggered.connect(lambda: self._switch_language(LANG_ZH))
         a_lang_en.triggered.connect(lambda: self._switch_language(LANG_EN))
         a_about.triggered.connect(self._show_about)
+        a_check_update.triggered.connect(lambda: self._check_updates(silent=False))
+
+    def _check_updates(self, silent: bool = False) -> None:
+        """Query GitHub latest release. silent=True only notifies when newer."""
+        if self._update_thread is not None and self._update_thread.isRunning():
+            return
+        if not silent:
+            self._log(tr("update.checking"))
+
+        thread = QThread(self)
+        worker = _UpdateChecker()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_update_result)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_update_thread)
+        self._update_thread = thread
+        self._update_worker = worker
+        self._update_silent = silent
+        thread.start()
+
+    def _clear_update_thread(self) -> None:
+        self._update_thread = None
+        self._update_worker = None
+
+    def _on_update_result(self, info) -> None:
+        from PySide6.QtGui import QDesktopServices
+        from PySide6.QtCore import QUrl
+
+        silent = getattr(self, "_update_silent", True)
+        if info is None:
+            if not silent:
+                self._log(tr("update.failed"))
+                QMessageBox.information(self, tr("update.title"), tr("update.failed"))
+            return
+
+        if not info.is_newer:
+            if not silent:
+                self._log(tr("update.latest", current=info.current))
+                QMessageBox.information(
+                    self,
+                    tr("update.title"),
+                    tr("update.latest", current=info.current),
+                )
+            return
+
+        self._log(tr("log.update_available", latest=info.latest))
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle(tr("update.title"))
+        box.setText(tr("update.available", latest=info.latest, current=info.current))
+        if info.body:
+            box.setInformativeText(info.body[:800])
+        open_btn = box.addButton(tr("update.open"), QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Ok)
+        box.exec()
+        if box.clickedButton() is open_btn:
+            QDesktopServices.openUrl(QUrl(info.html_url))
 
     def _switch_language(self, lang: str) -> None:
         set_language(lang)
