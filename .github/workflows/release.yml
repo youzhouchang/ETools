@@ -78,7 +78,7 @@ jobs:
           Copy-Item "dist/release/ETools-portable-$ver-win64.zip" dist/upload/ -ErrorAction SilentlyContinue
           Copy-Item "dist/release/ETools-setup-$ver-win64.exe" dist/upload/ -ErrorAction SilentlyContinue
           Get-ChildItem dist/upload | Format-Table Name, Length
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-packages
           path: dist/upload/*
@@ -101,19 +101,34 @@ jobs:
             libxcb-cursor0 libegl1 libxcb-icccm4 libxcb-image0 \
             libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
             libxcb-shape0 libxcb-xinerama0 libxkbcommon-x11-0 \
-            dpkg-dev
+            dpkg-dev file
+      - name: Install appimagetool
+        run: |
+          mkdir -p tools
+          curl -fsSL -o tools/appimagetool \
+            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+          chmod +x tools/appimagetool
+          # appimagetool is itself an AppImage; extract to avoid FUSE in CI
+          ./tools/appimagetool --appimage-extract >/dev/null 2>&1 || true
+          if [[ -x squashfs-root/AppRun ]]; then
+            mv squashfs-root/AppRun tools/appimagetool
+            chmod +x tools/appimagetool
+          fi
+          tools/appimagetool --version || true
       - name: Package
         run: |
           chmod +x packaging/package_linux.sh
-          bash packaging/package_linux.sh --clean --skip-appimage
+          bash packaging/package_linux.sh --clean
       - name: Collect artifacts
         run: |
           VER="${{ needs.prepare.outputs.version }}"
           mkdir -p dist/upload
           cp -f "dist/release/ETools-portable-${VER}-linux-x86_64.tar.gz" dist/upload/ 2>/dev/null || true
           cp -f "dist/release/etools_${VER}_amd64.deb" dist/upload/ 2>/dev/null || true
+          cp -f "dist/release/ETools-${VER}-x86_64.AppImage" dist/upload/ 2>/dev/null || true
           ls -lh dist/upload
-      - uses: actions/upload-artifact@v5
+          test -f "dist/upload/ETools-${VER}-x86_64.AppImage"
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-packages
           path: dist/upload/*
@@ -125,7 +140,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           path: dist/assets
           merge-multiple: true
@@ -138,7 +153,7 @@ jobs:
 
           ## Downloads
           - Windows portable ZIP / installer EXE
-          - Linux portable tar.gz / Debian .deb
+          - Linux portable tar.gz / Debian .deb / AppImage
 
           ## Checksums
           $(cd dist/assets && sha256sum * 2>/dev/null || true)
