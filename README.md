@@ -2,6 +2,14 @@
 
 嵌入式 MCU 烧录工具，基于 **pyOCD**，支持 ST-Link / J-Link / DAP-Link，可对 Cortex-M 系列 MCU 进行固件烧录、读取、擦除与校验。
 
+**源码与发布：** [github.com/youzhouchang/ETools](https://github.com/youzhouchang/ETools)
+
+- 仓库：https://github.com/youzhouchang/ETools  
+- Releases：https://github.com/youzhouchang/ETools/releases  
+- Issues / PR：https://github.com/youzhouchang/ETools/issues  
+
+欢迎提 Issue 与 Pull Request。
+
 ## 功能
 
 - 探针自动发现与连接（ST-Link / J-Link / CMSIS-DAP）
@@ -119,7 +127,9 @@ git tag v0.2.0
 git push origin main --tags
 ```
 
-应用内：启动后自动检查一次；菜单 **帮助 → 检查更新…** 可手动检查（读取 GitHub Releases API）。
+应用内：启动后自动检查一次；菜单 **帮助 → 检查更新…** 可手动检查（读取 GitHub Releases API）。发现新版本时，弹窗会以 Markdown 渲染更新说明，并支持**下载更新**；打包版（安装目录 / 便携包 / AppImage）下载完成后可**自动安装并重启**。源码运行时仅下载安装包，需手动升级。
+
+仓库地址见文首；应用 **帮助 → 关于** 中也有 GitHub 链接入口。
 
 ## 架构
 

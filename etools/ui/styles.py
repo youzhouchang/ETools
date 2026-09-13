@@ -73,7 +73,15 @@ _arrow_files: dict[str, str] = {}
 _tmpdir: Path | None = None
 
 
-def get_theme(name: str | None) -> Theme:
+def get_theme(name: str | None = None) -> Theme:
+    """Resolve a theme by name; *None* uses the saved app config."""
+    if not name:
+        try:
+            from etools.config import get_config
+
+            name = get_config().theme
+        except Exception:  # noqa: BLE001 — config optional in pure-style use
+            name = "dark"
     return THEMES.get((name or "dark").lower(), DARK)
 
 
@@ -554,6 +562,35 @@ QPlainTextEdit#logView {{
     font-family: "Cascadia Code", "Consolas", "JetBrains Mono", monospace;
     font-size: 11px;
     padding: 6px;
+}}
+
+QTextBrowser, QTextEdit {{
+    background: {bg_input};
+    color: {text};
+    border: 1px solid {border};
+    border-radius: 6px;
+    padding: 6px 8px;
+    selection-background-color: {accent};
+    selection-color: {on_accent};
+    font-size: 12px;
+}}
+QTextBrowser a, QTextEdit a {{ color: {accent}; }}
+
+QMessageBox {{
+    background: {bg};
+    color: {text};
+}}
+QMessageBox QLabel {{
+    color: {text};
+    background: transparent;
+}}
+QProgressDialog {{
+    background: {bg};
+    color: {text};
+}}
+QProgressDialog QLabel {{
+    color: {text};
+    background: transparent;
 }}
 
 /* ========== Scroll ========== */

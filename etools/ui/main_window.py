@@ -201,8 +201,8 @@ class MainWindow(QMainWindow):
         self._probe_timer.start()
         # First scan immediately
         self._start_scan(silent=True)
-        # One silent GitHub release check shortly after launch
-        QTimer.singleShot(2500, lambda: self._check_updates(silent=True))
+        # Background release check after launch: silent unless a newer version exists
+        self._schedule_startup_update_check()
 
     # ------------------------------------------------------------------
     # UI
@@ -478,8 +478,19 @@ class MainWindow(QMainWindow):
         a_about.triggered.connect(self._show_about)
         a_check_update.triggered.connect(lambda: self._check_updates(silent=False))
 
+    def _schedule_startup_update_check(self) -> None:
+        """One automatic check shortly after launch (no dialog if already latest)."""
+        QTimer.singleShot(1500, self._startup_update_check)
+
+    def _startup_update_check(self) -> None:
+        self._check_updates(silent=True)
+
     def _check_updates(self, silent: bool = False) -> None:
-        """Query GitHub latest release. silent=True only notifies when newer."""
+        """Query GitHub latest release.
+
+        silent=True: no message when already latest or on failure;
+        if a newer version exists, still pop the update dialog.
+        """
         if self._update_thread is not None and self._update_thread.isRunning():
             return
         if not silent:
@@ -504,9 +515,6 @@ class MainWindow(QMainWindow):
         self._update_worker = None
 
     def _on_update_result(self, info) -> None:
-        from PySide6.QtCore import QUrl
-        from PySide6.QtGui import QDesktopServices
-
         silent = getattr(self, "_update_silent", True)
         if info is None:
             if not silent:
@@ -524,18 +532,16 @@ class MainWindow(QMainWindow):
                 )
             return
 
+        # Newer release available — always show the dialog (startup silent path too).
         self._log(tr("log.update_available", latest=info.latest))
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Information)
-        box.setWindowTitle(tr("update.title"))
-        box.setText(tr("update.available", latest=info.latest, current=info.current))
-        if info.body:
-            box.setInformativeText(info.body[:800])
-        open_btn = box.addButton(tr("update.open"), QMessageBox.ButtonRole.AcceptRole)
-        box.addButton(QMessageBox.StandardButton.Ok)
-        box.exec()
-        if box.clickedButton() is open_btn:
-            QDesktopServices.openUrl(QUrl(info.html_url))
+        from etools.ui.widgets.update_dialog import UpdateAvailableDialog
+
+        dlg = UpdateAvailableDialog(info, parent=self)
+        dlg.exec()
+        if dlg.install_started:
+            self._log(tr("log.update_installing"))
+        elif dlg.downloaded_path:
+            self._log(tr("log.update_downloaded", path=dlg.downloaded_path))
 
     def _switch_language(self, lang: str) -> None:
         set_language(lang)
@@ -582,11 +588,21 @@ class MainWindow(QMainWindow):
                 return
 
     def _show_about(self) -> None:
-        QMessageBox.about(
-            self,
-            tr("act.about"),
-            tr("about.text", ver=__version__),
-        )
+        from etools.core.updater import REPO_URL
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle(tr("act.about"))
+        box.setText(tr("about.text", ver=__version__, github=REPO_URL))
+        box.setTextFormat(Qt.TextFormat.PlainText)
+        open_btn = box.addButton(tr("about.github"), QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Ok)
+        box.exec()
+        if box.clickedButton() is open_btn:
+            from PySide6.QtCore import QUrl
+            from PySide6.QtGui import QDesktopServices
+
+            QDesktopServices.openUrl(QUrl(REPO_URL))
 
     def _toolbar_open_firmware(self) -> None:
         from PySide6.QtWidgets import QFileDialog

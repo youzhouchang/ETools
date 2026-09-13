@@ -21,7 +21,15 @@ from etools.core.operations import FlashService
 from etools.core.probe import ProbeDriver
 from etools.core.pyocd_driver import PyOCDDriver
 from etools.core.targets import CURATED_TARGETS, KNOWN_TARGETS, list_target_choices
-from etools.core.updater import UpdateInfo, check_for_update
+from etools.core.updater import (
+    REPO_URL,
+    UpdateInfo,
+    apply_update,
+    can_auto_install,
+    check_for_update,
+    download_file,
+    pick_best_asset,
+)
 
 __all__ = [
     "CONNECT_MODES",
@@ -45,6 +53,11 @@ __all__ = [
     "PyOCDDriver",
     "FlashService",
     "ProbeDriver",
+    "REPO_URL",
     "UpdateInfo",
+    "apply_update",
+    "can_auto_install",
     "check_for_update",
+    "download_file",
+    "pick_best_asset",
 ]
