@@ -68,14 +68,17 @@ def main() -> int:
         app = QApplication(sys.argv)
         app.setApplicationName(__app_name__)
         app.setOrganizationName("ETools")
+        # Helps X11 WM_CLASS / some docks group windows correctly
+        if hasattr(app, "setDesktopFileName"):
+            # Must match .desktop basename (etools.desktop) and Icon=etools
+            app.setDesktopFileName("etools")
         app.setStyle("Fusion")
 
         from etools.ui.icons import app_icon
 
-        app.setWindowIcon(app_icon())
-        # Match .desktop Icon=etools so GNOME/KDE dock groups the window correctly
-        if sys.platform.startswith("linux"):
-            app.setDesktopFileName("etools")
+        icon = app_icon()
+        if not icon.isNull():
+            app.setWindowIcon(icon)
 
         font = QFont("Segoe UI", 10)
         if sys.platform == "darwin":

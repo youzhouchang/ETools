@@ -72,16 +72,20 @@ write_desktop_file() {
   cat > "$dest" <<EOF
 [Desktop Entry]
 Type=Application
+Version=1.0
 Name=ETools
 GenericName=MCU Programming Tool
 Comment=Embedded MCU programming tool (ST-Link / J-Link / DAP-Link)
 Exec=${exec_line}
+TryExec=${exec_line}
 Icon=${ICON_NAME}
 Terminal=false
 Categories=Development;Electronics;
 Keywords=MCU;Flash;JTAG;SWD;pyOCD;STM32;ARM;
-StartupWMClass=${APP_NAME}
+# Must match QGuiApplication::desktopFileName("etools") / WM_CLASS for dock icons
+StartupWMClass=${ICON_NAME}
 StartupNotify=true
+DBusActivatable=false
 EOF
 }
 
@@ -181,6 +185,7 @@ fi
 cat > "${XDG_DATA_HOME}/applications/etools.desktop" <<DESK
 [Desktop Entry]
 Type=Application
+Version=1.0
 Name=ETools
 GenericName=MCU Programming Tool
 Comment=Embedded MCU programming tool (ST-Link / J-Link / DAP-Link)
@@ -189,8 +194,9 @@ Icon=${ICON_NAME}
 Terminal=false
 Categories=Development;Electronics;
 Keywords=MCU;Flash;JTAG;SWD;pyOCD;STM32;ARM;
-StartupWMClass=ETools
+StartupWMClass=${ICON_NAME}
 StartupNotify=true
+DBusActivatable=false
 DESK
 if command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database -q "${XDG_DATA_HOME}/applications" || true
@@ -258,15 +264,24 @@ Description: Embedded MCU programming tool
  erase, read, verify and target inspection.
 EOF
 
-# Refresh icon cache after install (GNOME/KDE pick up multi-size icons)
+# Refresh icon + desktop caches after install (GNOME/KDE pick up multi-size icons)
 cat > "${DEB_ROOT}/DEBIAN/postinst" <<'EOF'
 #!/bin/sh
 set -e
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-  gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+  gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
 fi
 if command -v update-desktop-database >/dev/null 2>&1; then
-  update-desktop-database -q /usr/share/applications || true
+  update-desktop-database -q /usr/share/applications 2>/dev/null || true
+fi
+# Fallback: some environments only expose xdg tools
+if command -v xdg-icon-resource >/dev/null 2>&1; then
+  for s in 16 24 32 48 64 128 256; do
+    if [ -f "/usr/share/icons/hicolor/${s}x${s}/apps/etools.png" ]; then
+      xdg-icon-resource install --novendor --size "$s" \
+        "/usr/share/icons/hicolor/${s}x${s}/apps/etools.png" etools 2>/dev/null || true
+    fi
+  done
 fi
 exit 0
 EOF

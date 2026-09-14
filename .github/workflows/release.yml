@@ -153,22 +153,58 @@ jobs:
         with:
           path: dist/assets
           merge-multiple: true
+      - name: Build release notes
+        env:
+          VER: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          NOTES_FILE=dist/release-notes.md
+          mkdir -p dist
+
+          # Body from CHANGELOG.md section "## [VER]" (date optional); fallback if missing.
+          {
+            echo "## ETools v${VER}"
+            echo
+            CHANGELOG_SECTION="$(python3 -m etools.release_notes "$VER" --changelog CHANGELOG.md || true)"
+            if [[ -n "${CHANGELOG_SECTION}" ]]; then
+              printf '%s\n\n' "$CHANGELOG_SECTION"
+            else
+              echo "See repository commits for changes in this version."
+              echo
+            fi
+
+            echo "## Downloads"
+            echo
+            echo "| Asset | Platform |"
+            echo "|-------|----------|"
+            (
+              cd dist/assets
+              for f in *; do
+                case "$f" in
+                  *win64*|*setup*.exe|*portable*-win*) plat="Windows" ;;
+                  *.AppImage|*linux*.tar.gz|*amd64.deb) plat="Linux" ;;
+                  *) plat="—" ;;
+                esac
+                echo "| \`$f\` | $plat |"
+              done
+            )
+            echo
+            echo "## Checksums (SHA-256)"
+            echo
+            echo '```'
+            (cd dist/assets && sha256sum *)
+            echo '```'
+          } > "$NOTES_FILE"
+
+          echo "----- release notes -----"
+          cat "$NOTES_FILE"
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VER: ${{ needs.prepare.outputs.version }}
         run: |
-          VER="${{ needs.prepare.outputs.version }}"
-          NOTES="ETools v${VER}
-
-          ## Downloads
-          - Windows portable ZIP / installer EXE
-          - Linux portable tar.gz / Debian .deb / AppImage
-
-          ## Checksums
-          $(cd dist/assets && sha256sum * 2>/dev/null || true)
-          "
           gh release create "v${VER}" \
             --title "ETools v${VER}" \
-            --notes "$NOTES" \
+            --notes-file dist/release-notes.md \
             dist/assets/* \
             --verify-tag

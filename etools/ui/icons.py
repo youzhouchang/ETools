@@ -149,6 +149,8 @@ def _render_logo(size: int) -> QPixmap | None:
         return None
     svg = path.read_text(encoding="utf-8")
     renderer = QSvgRenderer(QByteArray(svg.encode("utf-8")))
+    if not renderer.isValid():
+        return None
     img = QImage(size, size, QImage.Format.Format_ARGB32)
     img.fill(Qt.GlobalColor.transparent)
     painter = QPainter(img)
@@ -159,17 +161,53 @@ def _render_logo(size: int) -> QPixmap | None:
     return QPixmap.fromImage(img)
 
 
+def _logo_png_candidates() -> list[Path]:
+    """Pre-rendered PNGs (packaged fallback if SVG plugin / resource path fails)."""
+    dirs = [
+        ICON_DIR / "png",
+        ICON_DIR,  # resources/icons/logo-256.png style
+    ]
+    out: list[Path] = []
+    for d in dirs:
+        out.extend(sorted(d.glob("logo-*.png")))
+        out.extend(sorted(d.glob("etools-*.png")))
+    return out
+
+
+def _icon_from_png_files() -> QIcon:
+    result = QIcon()
+    for path in _logo_png_candidates():
+        pm = QPixmap(str(path))
+        if not pm.isNull():
+            result.addPixmap(pm)
+    return result
+
+
 def app_icon() -> QIcon:
-    """Multi-size application / window icon from logo.svg."""
+    """Multi-size application / window icon.
+
+    Linux prefers the installed theme icon name "etools" (matches .desktop Icon=)
+    so the dock / taskbar / start menu pick the same icon as the launcher.
+    """
     global _logo_cache
     if _logo_cache is not None:
         return _logo_cache
 
+    import sys
+
     result = QIcon()
+    if sys.platform.startswith("linux"):
+        themed = QIcon.fromTheme("etools")
+        if not themed.isNull():
+            _logo_cache = themed
+            return themed
+
     for s in (16, 24, 32, 48, 64, 128, 256):
         pm = _render_logo(s)
         if pm is not None and not pm.isNull():
             result.addPixmap(pm)
+    if result.isNull():
+        result = _icon_from_png_files()
     _logo_cache = result
     return result
 

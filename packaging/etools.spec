@@ -18,6 +18,10 @@ datas = [
         "etools/ui/resources/icons",
     ),
 ]
+# Pre-rendered PNG logo fallback (desktop/taskbar icon if SVG plugin fails)
+_png_icons = project_root / "docs" / "icons" / "png"
+if _png_icons.is_dir():
+    datas.append((str(_png_icons), "etools/ui/resources/icons/png"))
 
 # pyOCD ships non-Python assets (.lark grammar, SVD, yaml, …) that must be present
 # at runtime; missing sequences.lark makes import crash in frozen apps.
