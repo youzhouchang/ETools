@@ -105,16 +105,24 @@ jobs:
       - name: Install appimagetool
         run: |
           mkdir -p tools
-          curl -fsSL -o tools/appimagetool \
+          curl -fsSL -o tools/appimagetool-x86_64.AppImage \
             "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+          chmod +x tools/appimagetool-x86_64.AppImage
+          # Extract the full AppDir (no FUSE in CI). AppRun must stay next to
+          # usr/bin — moving AppRun alone breaks its relative exec path.
+          rm -rf tools/squashfs-root squashfs-root
+          ./tools/appimagetool-x86_64.AppImage --appimage-extract >/dev/null
+          test -x squashfs-root/AppRun
+          test -x squashfs-root/usr/bin/appimagetool
+          mv squashfs-root tools/squashfs-root
+          cat > tools/appimagetool <<'WRAP'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+          exec "$HERE/squashfs-root/AppRun" "$@"
+          WRAP
           chmod +x tools/appimagetool
-          # appimagetool is itself an AppImage; extract to avoid FUSE in CI
-          ./tools/appimagetool --appimage-extract >/dev/null 2>&1 || true
-          if [[ -x squashfs-root/AppRun ]]; then
-            mv squashfs-root/AppRun tools/appimagetool
-            chmod +x tools/appimagetool
-          fi
-          tools/appimagetool --version || true
+          tools/appimagetool --version
       - name: Package
         run: |
           chmod +x packaging/package_linux.sh
@@ -123,11 +131,12 @@ jobs:
         run: |
           VER="${{ needs.prepare.outputs.version }}"
           mkdir -p dist/upload
-          cp -f "dist/release/ETools-portable-${VER}-linux-x86_64.tar.gz" dist/upload/ 2>/dev/null || true
-          cp -f "dist/release/etools_${VER}_amd64.deb" dist/upload/ 2>/dev/null || true
-          cp -f "dist/release/ETools-${VER}-x86_64.AppImage" dist/upload/ 2>/dev/null || true
+          cp -f "dist/release/ETools-portable-${VER}-linux-x86_64.tar.gz" dist/upload/
+          cp -f "dist/release/ETools-${VER}-amd64.deb" dist/upload/
+          cp -f "dist/release/ETools-${VER}-x86_64.AppImage" dist/upload/
           ls -lh dist/upload
           test -f "dist/upload/ETools-${VER}-x86_64.AppImage"
+          test -f "dist/upload/ETools-${VER}-amd64.deb"
       - uses: actions/upload-artifact@v7
         with:
           name: linux-packages

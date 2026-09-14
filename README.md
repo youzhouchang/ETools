@@ -86,7 +86,7 @@ bash packaging/package_linux.sh --skip-appimage
 | 文件 | 说明 |
 |------|------|
 | `ETools-portable-<ver>-linux-x86_64.tar.gz` | 便携包（内含 `install_desktop.sh` 可装桌面图标） |
-| `etools_<ver>_amd64.deb` | Debian/Ubuntu 安装包（多尺寸 hicolor 图标） |
+| `ETools-<ver>-amd64.deb` | Debian/Ubuntu 安装包（多尺寸 hicolor 图标；包名 `etools`） |
 | `ETools-<ver>-x86_64.AppImage` | AppImage（需 appimagetool；含 `.DirIcon`） |
 
 便携包装桌面集成：

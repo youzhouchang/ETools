@@ -18,3 +18,5 @@ venv/
 *.elf
 !tests/**/*.bin
 !tests/**/*.hex
+tools/
+squashfs-root/

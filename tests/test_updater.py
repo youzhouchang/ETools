@@ -58,7 +58,7 @@ def test_can_auto_install_source_run():
 def test_pick_best_asset_linux():
     assets = _assets(
         "ETools-portable-0.2.0-linux-x86_64.tar.gz",
-        "etools_0.2.0_amd64.deb",
+        "ETools-0.2.0-amd64.deb",
         "ETools-0.2.0-x86_64.AppImage",
     )
     best = pick_best_asset(assets, plat="linux")

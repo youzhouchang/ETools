@@ -2,8 +2,8 @@
 # ETools Linux packaging
 # Produces (under dist/release/):
 #   - ETools-portable-<ver>-linux-x86_64.tar.gz
-#   - etools_<ver>_amd64.deb          (requires dpkg-deb)
-#   - ETools-<ver>-x86_64.AppImage    (requires appimagetool or appimage-builder fallback)
+#   - ETools-<ver>-amd64.deb             (requires dpkg-deb; Package name stays etools)
+#   - ETools-<ver>-x86_64.AppImage       (requires appimagetool)
 #
 # Usage:
 #   bash packaging/package_linux.sh
@@ -272,10 +272,14 @@ exit 0
 EOF
 chmod 755 "${DEB_ROOT}/DEBIAN/postinst"
 
-DEB_FILE="${RELEASE_DIR}/etools_${VERSION}_${DEB_ARCH}.deb"
+DEB_FILE="${RELEASE_DIR}/${APP_NAME}-${VERSION}-${DEB_ARCH}.deb"
 rm -f "$DEB_FILE"
 if command -v dpkg-deb >/dev/null; then
-  dpkg-deb --build --root-owner-group "$DEB_ROOT" "$DEB_FILE"
+  # Build as lowercase package path (Debian convention), then publish as ETools-*.deb
+  DEB_TMP="${RELEASE_DIR}/etools_${VERSION}_${DEB_ARCH}.deb"
+  rm -f "$DEB_TMP"
+  dpkg-deb --build --root-owner-group "$DEB_ROOT" "$DEB_TMP"
+  mv -f "$DEB_TMP" "$DEB_FILE"
   echo "      OK: ${DEB_FILE}"
 else
   echo "      WARN: dpkg-deb not found, skip .deb"
@@ -328,11 +332,13 @@ elif [[ -x "${ROOT}/tools/appimagetool" ]]; then
 fi
 
 if [[ -n "$APPIMAGETOOL" ]]; then
-  ARCH="${ARCH}" "$APPIMAGETOOL" -n "$APPDIR" "$APPIMAGE_FILE"
+  # Prefer env-extract mode so a raw .AppImage works without FUSE in CI
+  ARCH="${ARCH}" APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL" -n "$APPDIR" "$APPIMAGE_FILE" \
+    || ARCH="${ARCH}" "$APPIMAGETOOL" -n "$APPDIR" "$APPIMAGE_FILE"
   echo "      OK: ${APPIMAGE_FILE}"
 else
   echo "      WARN: appimagetool not found."
-  echo "      Install: https://github.com/AppImage/AppImageKit/releases"
+  echo "      Install: https://github.com/AppImage/appimagetool/releases"
   echo "      Or place appimagetool at tools/appimagetool"
   echo "      AppDir kept at: ${APPDIR}"
 fi
