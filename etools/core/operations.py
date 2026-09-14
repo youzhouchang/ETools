@@ -58,6 +58,21 @@ class FlashService:
             raise RuntimeError("Driver does not support in-memory read")
         return reader(address, size)
 
+    def fill_memory(self, address: int, size: int, value: int = 0xFF) -> OperationResult:
+        """Fill RAM with a repeated byte (Flash is rejected by the driver)."""
+        filler = getattr(self.driver, "fill_memory", None)
+        if filler is None:
+            raise RuntimeError("Driver does not support fill_memory")
+        return filler(address, size, value)
+
+    def flash_size_hint(self) -> int | None:
+        """Best-effort flash size from the live session (or None)."""
+        try:
+            details = self.driver.get_target_details()
+            return int(details.flash_size) if details.flash_size else None
+        except Exception:
+            return None
+
     def verify_file(self, path: str | Path) -> OperationResult:
         return self.driver.verify(str(path))
 

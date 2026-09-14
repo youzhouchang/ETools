@@ -138,8 +138,7 @@ class HexPreviewPanel(QWidget):
     """Multi-tab hex viewer: + opens a new page, × closes one."""
 
     read_chip_requested = Signal(int, int)  # addr, size
-    # extra actions (label, addr, size) for parent to handle if needed
-    memory_action = Signal(str, int, int)
+    fill_requested = Signal(int, int, int)  # addr, size, value
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -365,10 +364,12 @@ class HexPreviewPanel(QWidget):
         self.read_chip_requested.emit(addr, size)
 
     def _on_read_all(self) -> None:
-        # Read a full typical flash bank from address
+        # Prefer the live flash size; fall back to 1 MiB when unknown.
+        hint = getattr(self, "_flash_size_hint", 0) or 0
+        size = min(int(hint), 2 * 1024 * 1024) if hint > 0 else 0x100000
         addr = self._current_addr()
-        self.size_spin.setValue(0x100000)  # 1 MB
-        self.read_chip_requested.emit(addr, 0x100000)
+        self.size_spin.setValue(size)
+        self.read_chip_requested.emit(addr, size)
 
     def _on_save_as(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -389,7 +390,46 @@ class HexPreviewPanel(QWidget):
             self.mem_view.info_label.setText(f"保存失败：{exc}")
 
     def _on_fill_memory(self) -> None:
-        self.memory_action.emit("fill", self._current_addr(), self._read_size_bytes())
+        """Ask for fill byte, then request a RAM fill of addr/size."""
+        from PySide6.QtWidgets import QInputDialog, QMessageBox
+
+        addr = self._current_addr()
+        size = self._read_size_bytes()
+        if size <= 0 or size > 256 * 1024:
+            self.mem_view.info_label.setText("填充长度需在 1 … 256 KiB")
+            return
+
+        text, ok = QInputDialog.getText(
+            self,
+            "填充内存",
+            "填充字节（十六进制，如 FF 或 0x00）：",
+            text="FF",
+        )
+        if not ok:
+            return
+        raw = (text or "").strip().lower().removeprefix("0x")
+        try:
+            value = int(raw, 16)
+        except ValueError:
+            self.mem_view.info_label.setText("填充字节无效，请输入 00–FF")
+            return
+        if not 0 <= value <= 0xFF:
+            self.mem_view.info_label.setText("填充字节需在 00–FF")
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "确认填充",
+            (
+                f"将向 RAM 0x{addr:08X} 写入 {size:,} 字节（0x{value:02X}）。\n"
+                "这会破坏该区域原有数据。继续？"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        self.fill_requested.emit(addr, size, value)
 
     def _on_blank_check(self) -> None:
         # Check if current mem dump is all 0xFF

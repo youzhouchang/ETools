@@ -524,6 +524,103 @@ class PyOCDDriver(ProbeDriver):
                 )
         return bytes(data)
 
+    def fill_memory(self, address: int, size: int, value: int = 0xFF) -> OperationResult:
+        """Fill a RAM region with a repeated byte (debugger write).
+
+        Flash is intentionally rejected — programming flash needs erase+program.
+        """
+        session = self._require_session()
+        if size <= 0 or size > 256 * 1024:
+            return OperationResult(ok=False, message="Invalid fill size (1 … 256 KiB)")
+        value = int(value) & 0xFF
+        target = session.target
+        if not self._region_is_ram(target, address, size):
+            return OperationResult(
+                ok=False,
+                message=(
+                    f"0x{address:08X}+{size:,} 不在 RAM 区域；"
+                    "填充仅支持 RAM，Flash 请用烧录流程"
+                ),
+            )
+
+        self.emit_progress(
+            ProgressInfo(
+                stage=ProgressStage.PROGRAM,
+                percent=0,
+                message=f"Filling RAM 0x{address:08X} with 0x{value:02X} …",
+                bytes_total=size,
+            )
+        )
+        t0 = time.perf_counter()
+        try:
+            chunk = 4096
+            block = bytes([value]) * chunk
+            addr = address
+            remaining = size
+            last = -1
+            while remaining > 0:
+                n = min(chunk, remaining)
+                target.write_memory_block8(addr, block[:n])
+                addr += n
+                remaining -= n
+                pct = int((size - remaining) * 100 / size)
+                if pct != last:
+                    last = pct
+                    self.emit_progress(
+                        ProgressInfo(
+                            stage=ProgressStage.PROGRAM,
+                            percent=pct,
+                            message=f"Fill {pct}%",
+                            bytes_done=size - remaining,
+                            bytes_total=size,
+                        )
+                    )
+        except Exception as exc:
+            log.exception("fill memory failed")
+            msg = f"Fill failed: {exc}"
+            self.emit_progress(
+                ProgressInfo(stage=ProgressStage.ERROR, percent=0, message=msg, is_error=True)
+            )
+            return OperationResult(ok=False, message=str(exc))
+
+        dur = time.perf_counter() - t0
+        self.emit_progress(
+            ProgressInfo(
+                stage=ProgressStage.DONE,
+                percent=100,
+                message=f"Filled {size:,} bytes with 0x{value:02X}",
+                bytes_done=size,
+                bytes_total=size,
+            )
+        )
+        return OperationResult(
+            ok=True,
+            message=f"RAM 0x{address:08X} 已填充 {size:,} 字节（0x{value:02X}）",
+            duration_s=dur,
+            bytes_processed=size,
+        )
+
+    @staticmethod
+    def _region_is_ram(target: Any, address: int, size: int) -> bool:
+        mem_map = getattr(target, "memory_map", None)
+        if mem_map is None:
+            return False
+        end = address + size
+        try:
+            regions = list(mem_map)
+        except TypeError:
+            return False
+        for region in regions:
+            try:
+                is_ram = bool(getattr(region, "is_ram", False))
+                start = int(region.start)
+                stop = int(region.start + region.length)
+            except Exception:
+                continue
+            if is_ram and address >= start and end <= stop:
+                return True
+        return False
+
     def read(self, address: int, size: int, out_path: str) -> OperationResult:
         self._require_session()
         if size <= 0 or size > 16 * 1024 * 1024:

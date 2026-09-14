@@ -7,13 +7,13 @@
     <x>0</x>
     <y>0</y>
     <width>1180</width>
-    <height>720</height>
+    <height>820</height>
    </rect>
   </property>
   <property name="minimumSize">
    <size>
     <width>1080</width>
-    <height>680</height>
+    <height>720</height>
    </size>
   </property>
   <layout class="QVBoxLayout" name="rootLayout">
@@ -33,57 +33,21 @@
     <number>10</number>
    </property>
    <item>
-    <widget class="QSplitter" name="mainSplitter">
+    <widget class="QSplitter" name="bodySplitter">
      <property name="orientation">
-      <enum>Qt::Horizontal</enum>
+      <enum>Qt::Vertical</enum>
      </property>
      <property name="childrenCollapsible">
       <bool>false</bool>
      </property>
-     <widget class="QScrollArea" name="leftScroll">
-      <property name="widgetResizable">
-       <bool>true</bool>
-      </property>
+     <widget class="QWidget" name="topPane">
       <property name="minimumSize">
        <size>
-        <width>260</width>
-        <height>0</height>
+        <width>0</width>
+        <height>220</height>
        </size>
       </property>
-      <property name="maximumSize">
-       <size>
-        <width>280</width>
-        <height>16777215</height>
-       </size>
-      </property>
-      <widget class="QWidget" name="leftContainer">
-       <layout class="QVBoxLayout" name="leftLayout">
-        <property name="leftMargin">
-         <number>0</number>
-        </property>
-        <property name="topMargin">
-         <number>0</number>
-        </property>
-        <property name="rightMargin">
-         <number>0</number>
-        </property>
-        <property name="bottomMargin">
-         <number>0</number>
-        </property>
-        <property name="spacing">
-         <number>12</number>
-        </property>
-       </layout>
-      </widget>
-     </widget>
-     <widget class="QWidget" name="rightContainer">
-      <property name="minimumSize">
-       <size>
-        <width>720</width>
-        <height>0</height>
-       </size>
-      </property>
-      <layout class="QVBoxLayout" name="rightLayout">
+      <layout class="QVBoxLayout" name="topPaneLayout">
        <property name="leftMargin">
         <number>0</number>
        </property>
@@ -97,104 +61,200 @@
         <number>0</number>
        </property>
        <property name="spacing">
-        <number>12</number>
+        <number>0</number>
        </property>
        <item>
-        <widget class="QTabWidget" name="mainTabs">
-         <property name="currentIndex">
-          <number>0</number>
+        <widget class="QSplitter" name="mainSplitter">
+         <property name="orientation">
+          <enum>Qt::Horizontal</enum>
          </property>
-         <widget class="QWidget" name="tabInfo">
-          <attribute name="title">
-           <string>目标信息</string>
-          </attribute>
-          <layout class="QVBoxLayout" name="tabInfoLayout"/>
+         <property name="childrenCollapsible">
+          <bool>false</bool>
+         </property>
+         <widget class="QScrollArea" name="leftScroll">
+          <property name="widgetResizable">
+           <bool>true</bool>
+          </property>
+          <property name="minimumSize">
+           <size>
+            <width>260</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>280</width>
+            <height>16777215</height>
+           </size>
+          </property>
+          <widget class="QWidget" name="leftContainer">
+           <layout class="QVBoxLayout" name="leftLayout">
+            <property name="leftMargin">
+             <number>0</number>
+            </property>
+            <property name="topMargin">
+             <number>0</number>
+            </property>
+            <property name="rightMargin">
+             <number>0</number>
+            </property>
+            <property name="bottomMargin">
+             <number>0</number>
+            </property>
+            <property name="spacing">
+             <number>12</number>
+            </property>
+           </layout>
+          </widget>
          </widget>
-         <widget class="QWidget" name="tabHex">
-          <attribute name="title">
-           <string>Hex 预览</string>
-          </attribute>
-          <layout class="QVBoxLayout" name="tabHexLayout"/>
-         </widget>
-         <widget class="QWidget" name="tabFlash">
-          <attribute name="title">
-           <string>固件操作</string>
-          </attribute>
-          <layout class="QVBoxLayout" name="tabFlashLayout"/>
-         </widget>
-         <widget class="QWidget" name="tabDevices">
-          <attribute name="title">
-           <string>设备管理</string>
-          </attribute>
-          <layout class="QVBoxLayout" name="tabDevicesLayout"/>
-         </widget>
-         <widget class="QWidget" name="tabRtt">
-          <attribute name="title">
-           <string>RTT View</string>
-          </attribute>
-          <layout class="QVBoxLayout" name="tabRttLayout"/>
-         </widget>
-         <widget class="QWidget" name="tabSwo">
-          <attribute name="title">
-           <string>SWV</string>
-          </attribute>
-          <layout class="QVBoxLayout" name="tabSwoLayout"/>
+         <widget class="QWidget" name="rightContainer">
+          <property name="minimumSize">
+           <size>
+            <width>720</width>
+            <height>0</height>
+           </size>
+          </property>
+          <layout class="QVBoxLayout" name="rightLayout">
+           <property name="leftMargin">
+            <number>0</number>
+           </property>
+           <property name="topMargin">
+            <number>0</number>
+           </property>
+           <property name="rightMargin">
+            <number>0</number>
+           </property>
+           <property name="bottomMargin">
+            <number>0</number>
+           </property>
+           <property name="spacing">
+            <number>12</number>
+           </property>
+           <item>
+            <widget class="QTabWidget" name="mainTabs">
+             <property name="currentIndex">
+              <number>0</number>
+             </property>
+             <widget class="QWidget" name="tabInfo">
+              <attribute name="title">
+               <string>目标信息</string>
+              </attribute>
+              <layout class="QVBoxLayout" name="tabInfoLayout"/>
+             </widget>
+             <widget class="QWidget" name="tabHex">
+              <attribute name="title">
+               <string>Hex 预览</string>
+              </attribute>
+              <layout class="QVBoxLayout" name="tabHexLayout"/>
+             </widget>
+             <widget class="QWidget" name="tabFlash">
+              <attribute name="title">
+               <string>固件操作</string>
+              </attribute>
+              <layout class="QVBoxLayout" name="tabFlashLayout"/>
+             </widget>
+             <widget class="QWidget" name="tabDevices">
+              <attribute name="title">
+               <string>设备管理</string>
+              </attribute>
+              <layout class="QVBoxLayout" name="tabDevicesLayout"/>
+             </widget>
+             <widget class="QWidget" name="tabRtt">
+              <attribute name="title">
+               <string>RTT View</string>
+              </attribute>
+              <layout class="QVBoxLayout" name="tabRttLayout"/>
+             </widget>
+             <widget class="QWidget" name="tabSwo">
+              <attribute name="title">
+               <string>SWV</string>
+              </attribute>
+              <layout class="QVBoxLayout" name="tabSwoLayout"/>
+             </widget>
+            </widget>
+           </item>
+          </layout>
          </widget>
         </widget>
        </item>
       </layout>
      </widget>
-    </widget>
-   </item>
-   <item>
-    <layout class="QVBoxLayout" name="progressLayout">
-     <property name="spacing">
-      <number>6</number>
-     </property>
-     <item>
-      <widget class="QLabel" name="progressLabel">
-       <property name="text">
-        <string/>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QProgressBar" name="progressBar">
-       <property name="value">
+     <widget class="QWidget" name="bottomPane">
+      <property name="minimumSize">
+       <size>
+        <width>0</width>
+        <height>180</height>
+       </size>
+      </property>
+      <layout class="QVBoxLayout" name="bottomPaneLayout">
+       <property name="leftMargin">
         <number>0</number>
        </property>
-       <property name="textVisible">
-        <bool>true</bool>
+       <property name="topMargin">
+        <number>0</number>
        </property>
-      </widget>
-     </item>
-    </layout>
-   </item>
-   <item>
-    <widget class="QFrame" name="logPanelHost">
-     <property name="minimumSize">
-      <size>
-       <width>0</width>
-       <height>200</height>
-      </size>
-     </property>
-     <property name="frameShape">
-      <enum>QFrame::StyledPanel</enum>
-     </property>
-     <layout class="QVBoxLayout" name="logHostLayout">
-      <property name="leftMargin">
-       <number>0</number>
-      </property>
-      <property name="topMargin">
-       <number>0</number>
-      </property>
-      <property name="rightMargin">
-       <number>0</number>
-      </property>
-      <property name="bottomMargin">
-       <number>0</number>
-      </property>
-     </layout>
+       <property name="rightMargin">
+        <number>0</number>
+       </property>
+       <property name="bottomMargin">
+        <number>0</number>
+       </property>
+       <property name="spacing">
+        <number>6</number>
+       </property>
+       <item>
+        <layout class="QVBoxLayout" name="progressLayout">
+         <property name="spacing">
+          <number>4</number>
+         </property>
+         <item>
+          <widget class="QLabel" name="progressLabel">
+           <property name="text">
+            <string/>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QProgressBar" name="progressBar">
+           <property name="value">
+            <number>0</number>
+           </property>
+           <property name="textVisible">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QFrame" name="logPanelHost">
+         <property name="minimumSize">
+          <size>
+           <width>0</width>
+           <height>150</height>
+          </size>
+         </property>
+         <property name="frameShape">
+          <enum>QFrame::StyledPanel</enum>
+         </property>
+         <layout class="QVBoxLayout" name="logHostLayout">
+          <property name="leftMargin">
+           <number>0</number>
+          </property>
+          <property name="topMargin">
+           <number>0</number>
+          </property>
+          <property name="rightMargin">
+           <number>0</number>
+          </property>
+          <property name="bottomMargin">
+           <number>0</number>
+          </property>
+         </layout>
+        </widget>
+       </item>
+      </layout>
+     </widget>
     </widget>
    </item>
   </layout>

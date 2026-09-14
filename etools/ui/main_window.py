@@ -213,8 +213,8 @@ class MainWindow(QMainWindow):
         form = load_form("main_window", self)
         self.setCentralWidget(form)
         self.setWindowIcon(app_icon())
-        self.resize(1180, 720)
-        self.setMinimumSize(1080, 680)
+        self.resize(1180, 820)
+        self.setMinimumSize(1080, 720)
         self._build_menu_and_toolbar()
 
         # No brand top-bar — status goes to QMainWindow status bar
@@ -319,23 +319,46 @@ class MainWindow(QMainWindow):
         log_lay.setContentsMargins(0, 0, 0, 0)
         log_lay.addWidget(self.log_panel)
 
-        # Splitter: left ~260, right takes all extra width when maximized
+        # Horizontal splitter: left ~260, right takes all extra width
         splitter = form.findChild(QSplitter, "mainSplitter")
         if splitter is not None:
             splitter.setStretchFactor(0, 0)
             splitter.setStretchFactor(1, 1)
-            # Left fixed-ish, right takes remaining width (avoid content crush)
             splitter.setSizes([260, 920])
             splitter.setChildrenCollapsible(False)
             splitter.setSizePolicy(
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
             )
 
+        # Vertical body splitter: content on top, progress+log below.
+        body = form.findChild(QSplitter, "bodySplitter")
+        if body is not None:
+            body.setStretchFactor(0, 2)
+            body.setStretchFactor(1, 2)
+            body.setSizes([400, 280])
+            body.setChildrenCollapsible(False)
+            log_host_min = form.findChild(QWidget, "logPanelHost")
+            if log_host_min is not None:
+                log_host_min.setMinimumHeight(150)
+                log_host_min.setSizePolicy(
+                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+                )
+            top_pane = form.findChild(QWidget, "topPane")
+            if top_pane is not None:
+                top_pane.setMinimumHeight(220)
+                top_pane.setSizePolicy(
+                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+                )
+            bottom_pane = form.findChild(QWidget, "bottomPane")
+            if bottom_pane is not None:
+                bottom_pane.setMinimumHeight(180)
+                bottom_pane.setSizePolicy(
+                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+                )
+
         root_lay = form.layout()
         if root_lay is not None:
-            root_lay.setStretch(0, 1)  # splitter grows with window
-            root_lay.setStretch(1, 0)  # progress
-            root_lay.setStretch(2, 0)  # log
+            root_lay.setStretch(0, 1)  # body splitter fills the window
 
         for w in (
             self.probe_panel,
@@ -651,8 +674,8 @@ class MainWindow(QMainWindow):
         lay = form.layout()
         if lay is None:
             return
-        lay.setContentsMargins(12, 12, 12, 12)
-        lay.setSpacing(8)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(6)
         for i in range(lay.count() - 1, -1, -1):
             item = lay.itemAt(i)
             if item is None:
@@ -689,6 +712,7 @@ class MainWindow(QMainWindow):
         self.target_info_panel.refresh_btn.clicked.connect(self._start_refresh_info)
 
         self.hex_preview.read_chip_requested.connect(self._start_read_chip)
+        self.hex_preview.fill_requested.connect(self._start_fill_ram)
         self.flash_panel.fw_edit.textChanged.connect(self._on_firmware_path_changed)
         self.device_manager.catalog_changed.connect(self._on_catalog_changed)
 
@@ -838,6 +862,13 @@ class MainWindow(QMainWindow):
                 self.hex_preview.set_chip_read_enabled(True)
                 self.rtt_panel.set_connected(True)
                 self.swo_panel.set_connected(True)
+                details_for_flash = getattr(result, "data", None)
+                if details_for_flash is not None and getattr(
+                    details_for_flash, "flash_size", 0
+                ):
+                    self.hex_preview._flash_size_hint = int(details_for_flash.flash_size)
+                else:
+                    self.hex_preview._flash_size_hint = 0
                 self._set_status(f"已连接 · {target.target_override}", "ok")
                 self._log(result.message)
                 details = getattr(result, "data", None)
@@ -845,6 +876,8 @@ class MainWindow(QMainWindow):
                     self.target_info_panel.apply(details)
                 else:
                     self._start_refresh_info()
+                # CubeProgrammer-like: pull the first flash page into Hex preview
+                self._auto_preview_chip(details)
             else:
                 self.probe_panel.set_error(result.message)
                 self.flash_panel.set_ops_enabled(False)
@@ -862,6 +895,25 @@ class MainWindow(QMainWindow):
             self._set_status("连接失败", "err")
 
         self._run_async(lambda: self.service.connect(probe, target), on_ok, on_err)
+
+    def _auto_preview_chip(self, details: object | None) -> None:
+        """After connect, load the first flash page into Hex (CubeProgrammer-like)."""
+        addr = 0x0800_0000
+        size = 0x1000
+        if details is not None:
+            base = int(getattr(details, "flash_base", 0) or 0)
+            flash_size = int(getattr(details, "flash_size", 0) or 0)
+            if base:
+                addr = base
+            if flash_size:
+                size = min(0x1000, flash_size)
+        try:
+            self.hex_preview.addr_spin.setValue(addr)
+            self.hex_preview.size_spin.setValue(size)
+        except Exception:
+            log.debug("sync hex spins failed", exc_info=True)
+        self._log(f"正在加载 Hex 预览：0x{addr:08X} + {size:,} 字节 …")
+        self._start_read_chip(addr, size)
 
     def _do_disconnect(self) -> None:
         try:
@@ -912,6 +964,33 @@ class MainWindow(QMainWindow):
                     if "Hex" in tabs.tabText(i):
                         tabs.setCurrentIndex(i)
                         break
+
+        self._run_async(work, on_ok)
+
+    def _start_fill_ram(self, addr: int, size: int, value: int) -> None:
+        self._show_progress(0, f"填充 RAM 0x{addr:08X} …")
+        self._log(f"开始填充 RAM 0x{addr:08X} + {size:,} 字节（0x{value:02X}）")
+
+        def work():
+            result = self.service.fill_memory(addr, size, value)
+            data = b""
+            if result.ok:
+                data = self.service.read_memory_bytes(addr, size)
+            return result, data
+
+        def on_ok(payload) -> None:
+            result, data = payload
+            self._log(result.message, not result.ok)
+            if result.ok:
+                self._show_progress(100, result.message)
+                if data:
+                    self.hex_preview.load_bytes(
+                        addr, data, source=f"RAM 填充 0x{value:02X}"
+                    )
+                QMessageBox.information(self, "填充完成", result.message)
+            else:
+                self._hide_progress()
+                QMessageBox.warning(self, "填充失败", result.message)
 
         self._run_async(work, on_ok)
 

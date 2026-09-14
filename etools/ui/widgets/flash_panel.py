@@ -74,10 +74,22 @@ class FlashPanel(QFrame):
                 raise RuntimeError(f"flash_panel.ui missing widget: {n}")
 
     def _init_state(self) -> None:
+        from PySide6.QtWidgets import QSizePolicy
+
         self.browse_btn.setObjectName("ghost")
         self.program_btn.setObjectName("accent")
         self.erase_btn.setObjectName("danger")
         self.fw_info.setObjectName("hint")
+
+        # Keep label glued to its spin: no horizontal expansion in the read row.
+        for spin, w in ((self.addr_edit, 140), (self.size_edit, 120)):
+            spin.setFixedWidth(w)
+            spin.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            spin.setFixedHeight(28)
+
+        # Don't reserve a blank line when no firmware is loaded.
+        self.fw_info.setMinimumHeight(0)
+        self.fw_info.setMaximumHeight(0)
 
         set_button_icon(self.browse_btn, "open", 16)
         set_button_icon(self.program_btn, "program", 16)
@@ -117,8 +129,10 @@ class FlashPanel(QFrame):
             self.fw_info.setText(
                 f"{p.name} · {size:,} bytes · {p.suffix.lstrip('.').upper()}"
             )
+            self.fw_info.setMaximumHeight(16777215)
         else:
             self.fw_info.setText("")
+            self.fw_info.setMaximumHeight(0)
 
     def firmware_path(self) -> str:
         return self.fw_edit.text().strip()
