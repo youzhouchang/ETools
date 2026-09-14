@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from etools.release_notes import extract_section
 
-
 SAMPLE = """# Changelog
 
 ## [Unreleased]

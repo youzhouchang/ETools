@@ -38,6 +38,9 @@ include = ["etools*"]
 line-length = 100
 target-version = "py310"
 
+[tool.ruff.lint.isort]
+known-first-party = ["etools"]
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
