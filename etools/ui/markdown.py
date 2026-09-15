@@ -14,6 +14,8 @@ _UL = re.compile(r"^\s*[-*+]\s+(.*)$")
 _OL = re.compile(r"^\s*(\d+)[.)]\s+(.*)$")
 _HR = re.compile(r"^\s*([-*_])(\s*\1){2,}\s*$")
 _FENCE = re.compile(r"^\s*(```|~~~)")
+_TABLE_ROW = re.compile(r"^\s*\|(.+)\|\s*$")
+_TABLE_SEP = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
 
 
 def _escape(text: str) -> str:
@@ -144,6 +146,38 @@ def markdown_to_html(md: str) -> str:
             i += 1
             continue
 
+        # GFM table: header | sep | body rows
+        if _TABLE_ROW.match(stripped) and i + 1 < n and _TABLE_SEP.match(lines[i + 1].strip()):
+            flush_para()
+            close_list()
+
+            def _cells(row: str) -> list[str]:
+                inner = row.strip().strip("|")
+                return [c.strip() for c in inner.split("|")]
+
+            headers = _cells(stripped)
+            i += 2  # skip header + separator
+            rows: list[list[str]] = []
+            while i < n and _TABLE_ROW.match(lines[i].strip()):
+                rows.append(_cells(lines[i].strip()))
+                i += 1
+            head_html = "".join(f"<th>{_inline(c)}</th>" for c in headers)
+            body_rows = []
+            for row in rows:
+                tds = "".join(
+                    f"<td>{_inline(row[j]) if j < len(row) else ''}</td>"
+                    for j in range(len(headers))
+                )
+                body_rows.append(f"<tr>{tds}</tr>")
+            out.append(
+                "<table><thead><tr>"
+                + head_html
+                + "</tr></thead><tbody>"
+                + "".join(body_rows)
+                + "</tbody></table>"
+            )
+            continue
+
         close_list()
         para.append(stripped)
         i += 1
@@ -177,6 +211,12 @@ a {{ color: {link_color}; }}
 blockquote {{ border-left: 3px solid {code_bg}; margin: 0.4em 0;
              padding: 0.1em 0 0.1em 0.7em; color: inherit; opacity: 0.9; }}
 hr {{ border: none; border-top: 1px solid {code_bg}; margin: 0.6em 0; }}
+table {{ border-collapse: collapse; margin: 0.5em 0; width: 100%;
+        font-size: 0.95em; table-layout: fixed; }}
+th, td {{ border: 1px solid {code_bg}; padding: 4px 8px; text-align: left;
+         word-wrap: break-word; overflow-wrap: anywhere; }}
+th {{ background: {code_bg}; font-weight: 600; }}
+tr:nth-child(even) td {{ opacity: 0.95; }}
 </style></head><body>
 {title_html}
 {body}

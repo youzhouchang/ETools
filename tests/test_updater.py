@@ -95,3 +95,22 @@ sha256 abc
     assert 'href="https://github.com/youzhouchang/ETools/releases"' in html
     assert "<pre><code>" in html
     assert "sha256 abc" in html
+
+
+def test_markdown_to_html_table():
+    md = """## Downloads
+
+| Asset | Platform |
+|-------|----------|
+| `ETools-0.2.0-amd64.deb` | Linux |
+| `ETools-setup-0.2.0-win64.exe` | Windows |
+"""
+    html = markdown_to_html(md)
+    assert "<table>" in html
+    assert "<th>Asset</th>" in html
+    assert "<th>Platform</th>" in html
+    assert "<code>ETools-0.2.0-amd64.deb</code>" in html
+    assert "<td>Linux</td>" in html
+    assert "<td>Windows</td>" in html
+    # Table rows should not be dumped as paragraphs
+    assert "<p>|" not in html

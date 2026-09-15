@@ -206,6 +206,7 @@ class UpdateAvailableDialog(QDialog):
         self._dl_thread: QThread | None = None
         self._dl_worker: _AssetDownloader | None = None
         self._progress: QProgressDialog | None = None
+        self._silent_install = False
 
     def _open_release_page(self) -> None:
         if self.info.html_url:
@@ -218,16 +219,24 @@ class UpdateAvailableDialog(QDialog):
         if not url:
             return
         name = default_save_name(self.asset)
-        from PySide6.QtWidgets import QFileDialog
+        silent_install = bool(is_frozen() and can_auto_install(name))
 
-        default_dir = QStandardPaths.writableLocation(
-            QStandardPaths.StandardLocation.DownloadLocation
-        ) or str(Path.home())
-        dest, _ = QFileDialog.getSaveFileName(
-            self, tr("update.save_title"), str(Path(default_dir) / name)
-        )
-        if not dest:
-            return
+        if silent_install:
+            # No save dialog / no install confirm — download to temp then apply.
+            import tempfile
+
+            dest = str(Path(tempfile.mkdtemp(prefix="ETools_upd_")) / name)
+        else:
+            from PySide6.QtWidgets import QFileDialog
+
+            default_dir = QStandardPaths.writableLocation(
+                QStandardPaths.StandardLocation.DownloadLocation
+            ) or str(Path.home())
+            dest, _ = QFileDialog.getSaveFileName(
+                self, tr("update.save_title"), str(Path(default_dir) / name)
+            )
+            if not dest:
+                return
 
         self._progress = QProgressDialog(
             tr("update.downloading"), tr("update.cancel"), 0, 0, self
@@ -254,6 +263,7 @@ class UpdateAvailableDialog(QDialog):
         thread.finished.connect(thread.deleteLater)
         self._dl_thread = thread
         self._dl_worker = worker
+        self._silent_install = silent_install
         thread.start()
 
     def _cancel_download(self) -> None:
@@ -282,6 +292,9 @@ class UpdateAvailableDialog(QDialog):
             self._progress = None
         self.downloaded_path = path
 
+        if getattr(self, "_silent_install", False):
+            self._apply_install(path)
+            return
         if can_auto_install(path) and is_frozen():
             self._offer_auto_install(path)
             return
@@ -298,6 +311,30 @@ class UpdateAvailableDialog(QDialog):
         box.setStyleSheet(_dialog_stylesheet(self._theme))
         box.exec()
         self.accept()
+
+    def _apply_install(self, path: str) -> None:
+        try:
+            apply_update(Path(path))
+        except Exception as exc:  # noqa: BLE001
+            log.exception("auto install failed")
+            fail = QMessageBox(
+                QMessageBox.Icon.Warning,
+                tr("update.title"),
+                tr("update.install_failed", err=str(exc)),
+                QMessageBox.StandardButton.Ok,
+                self,
+            )
+            fail.setStyleSheet(_dialog_stylesheet(self._theme))
+            fail.exec()
+            return
+
+        self.install_started = True
+        self.accept()
+        from PySide6.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
 
     def _offer_auto_install(self, path: str) -> None:
         box = QMessageBox(self)
@@ -324,37 +361,7 @@ class UpdateAvailableDialog(QDialog):
             self.accept()
             return
 
-        try:
-            apply_update(Path(path))
-        except Exception as exc:  # noqa: BLE001
-            log.exception("auto install failed")
-            fail = QMessageBox(
-                QMessageBox.Icon.Warning,
-                tr("update.title"),
-                tr("update.install_failed", err=str(exc)),
-                QMessageBox.StandardButton.Ok,
-                self,
-            )
-            fail.setStyleSheet(_dialog_stylesheet(self._theme))
-            fail.exec()
-            return
-
-        self.install_started = True
-        info = QMessageBox(
-            QMessageBox.Icon.Information,
-            tr("update.title"),
-            tr("update.restarting"),
-            QMessageBox.StandardButton.Ok,
-            self,
-        )
-        info.setStyleSheet(_dialog_stylesheet(self._theme))
-        info.exec()
-        self.accept()
-        from PySide6.QtWidgets import QApplication
-
-        app = QApplication.instance()
-        if app is not None:
-            app.quit()
+        self._apply_install(path)
 
     def _on_dl_failed(self, message: str) -> None:
         if self._progress is not None:
