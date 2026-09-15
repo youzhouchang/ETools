@@ -295,13 +295,14 @@ def _apply_windows_installer(installer: Path) -> str:
 
     args = [
         str(installer),
-        "/VERYSILENT",
+        # /SILENT: auto-run without wizard, but keep the progress window visible
+        "/SILENT",
         "/SUPPRESSMSGBOXES",
         "/NORESTART",
         "/SP-",
         "/RESTARTAPPLICATIONS",
     ]
-    # Inno Setup: silent install, close running app, do not reboot the machine.
+    # Inno Setup: unattended install, close running app, do not reboot the machine.
     subprocess.Popen(args, cwd=str(installer.parent), shell=False)
     return "installer"
 

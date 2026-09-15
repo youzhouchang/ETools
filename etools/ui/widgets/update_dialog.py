@@ -221,22 +221,20 @@ class UpdateAvailableDialog(QDialog):
         name = default_save_name(self.asset)
         silent_install = bool(is_frozen() and can_auto_install(name))
 
-        if silent_install:
-            # No save dialog / no install confirm — download to temp then apply.
+        # Always cache the package — never ask for a save location.
+        cache_root = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.CacheLocation
+        )
+        if not cache_root:
+            cache_root = str(Path.home() / ".cache" / "ETools")
+        dest_dir = Path(cache_root) / "updates"
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
             import tempfile
 
-            dest = str(Path(tempfile.mkdtemp(prefix="ETools_upd_")) / name)
-        else:
-            from PySide6.QtWidgets import QFileDialog
-
-            default_dir = QStandardPaths.writableLocation(
-                QStandardPaths.StandardLocation.DownloadLocation
-            ) or str(Path.home())
-            dest, _ = QFileDialog.getSaveFileName(
-                self, tr("update.save_title"), str(Path(default_dir) / name)
-            )
-            if not dest:
-                return
+            dest_dir = Path(tempfile.mkdtemp(prefix="ETools_upd_"))
+        dest = str(dest_dir / name)
 
         self._progress = QProgressDialog(
             tr("update.downloading"), tr("update.cancel"), 0, 0, self
@@ -245,6 +243,8 @@ class UpdateAvailableDialog(QDialog):
         self._progress.setWindowModality(Qt.WindowModality.WindowModal)
         self._progress.setAutoClose(False)
         self._progress.setAutoReset(False)
+        # Fixed size so percent label updates do not resize/jump the dialog
+        self._progress.setFixedSize(520, 130)
         self._progress.setStyleSheet(_dialog_stylesheet(self._theme))
         self._progress.canceled.connect(self._cancel_download)
         self._progress.show()
@@ -313,9 +313,34 @@ class UpdateAvailableDialog(QDialog):
         self.accept()
 
     def _apply_install(self, path: str) -> None:
+        # Show a brief "installing" status while the external installer runs
+        # (Windows Inno uses /SILENT so its own progress window is visible).
+        busy = QProgressDialog(
+            tr("update.installing"),
+            "",
+            0,
+            0,
+            self,
+        )
+        busy.setWindowTitle(tr("update.title"))
+        busy.setWindowModality(Qt.WindowModality.WindowModal)
+        busy.setAutoClose(False)
+        busy.setAutoReset(False)
+        busy.setCancelButton(None)
+        busy.setFixedSize(520, 110)
+        busy.setStyleSheet(_dialog_stylesheet(self._theme))
+        busy.setLabelText(tr("update.installing"))
+        busy.show()
+        from PySide6.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents()
+
         try:
             apply_update(Path(path))
         except Exception as exc:  # noqa: BLE001
+            busy.close()
             log.exception("auto install failed")
             fail = QMessageBox(
                 QMessageBox.Icon.Warning,
@@ -329,10 +354,11 @@ class UpdateAvailableDialog(QDialog):
             return
 
         self.install_started = True
+        # Give the installer window a moment to appear before we exit
+        if app is not None:
+            app.processEvents()
+        busy.close()
         self.accept()
-        from PySide6.QtWidgets import QApplication
-
-        app = QApplication.instance()
         if app is not None:
             app.quit()
 

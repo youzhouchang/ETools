@@ -6,7 +6,14 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QComboBox, QFrame, QLabel, QPushButton, QSizePolicy, QSpinBox, QWidget
 
 from etools.config import get_config, save_config
-from etools.core.models import CONNECT_MODES, RESET_TYPES, WIRE_PROTOCOLS, ProbeInfo, TargetInfo
+from etools.core.models import (
+    CONNECT_MODES,
+    DEFAULT_FREQUENCY_KHZ,
+    RESET_TYPES,
+    WIRE_PROTOCOLS,
+    ProbeInfo,
+    TargetInfo,
+)
 from etools.core.targets import list_target_choices
 from etools.logger import get_logger
 from etools.ui.icons import set_button_icon
@@ -91,8 +98,12 @@ class ProbePanel(QFrame):
         idx = self.reset_combo.findData(reset)
         if idx >= 0:
             self.reset_combo.setCurrentIndex(idx)
-        freq_khz = int(extra.get("frequency_khz", 0) or 0)
-        self.freq_spin.setValue(max(0, min(freq_khz, self.freq_spin.maximum())))
+        freq_khz = int(extra.get("frequency_khz", DEFAULT_FREQUENCY_KHZ) or 0)
+        if freq_khz <= 0:
+            freq_khz = DEFAULT_FREQUENCY_KHZ
+        self.freq_spin.setValue(
+            max(self.freq_spin.minimum(), min(freq_khz, self.freq_spin.maximum()))
+        )
 
         self.connect_btn.setObjectName("accent")
         self.status_label.setObjectName("statusWarn")
@@ -127,7 +138,6 @@ class ProbePanel(QFrame):
         self.protocol_combo.setFixedHeight(28)
         self.reset_combo.setFixedHeight(28)
         self.freq_spin.setFixedHeight(28)
-        # Match combo width: fill the row next to the label
         self.freq_spin.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
@@ -268,6 +278,8 @@ class ProbePanel(QFrame):
         protocol = self.protocol_combo.currentData() or "auto"
         reset_type = self.reset_combo.currentData() or "default"
         frequency_khz = int(self.freq_spin.value())
+        if frequency_khz <= 0:
+            frequency_khz = DEFAULT_FREQUENCY_KHZ
         target = TargetInfo(
             target_override=target_name,
             connect_mode=self.mode_combo.currentData() or "halt",

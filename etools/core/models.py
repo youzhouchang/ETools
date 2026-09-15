@@ -245,6 +245,9 @@ RESET_TYPES: list[tuple[str, str]] = [
     ("sw_sysresetreq", "SYSRESETREQ"),
 ]
 
+# Default SWD/JTAG clock in kHz (10 MHz)
+DEFAULT_FREQUENCY_KHZ = 10000
+
 FIRMWARE_EXTENSIONS = "Firmware (*.bin *.hex *.elf *.axf *.srec);;All files (*)"
 
 # STM32 96-bit unique ID base addresses by family (first readable wins)

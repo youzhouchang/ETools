@@ -16,7 +16,13 @@ Release workflow 会读取与 tag 匹配的小节（如 `## [0.1.2]` 或 `## [0.
 
 ### Added
 
+- 左侧时钟频率默认改为 **10000 kHz**（SpinBox）
+
 ### Fixed
+
+- Windows 桌面/开始菜单/任务栏图标：PyInstaller 嵌入 `etools.ico`，Inno 安装器与快捷方式使用品牌图标
+- 更新下载固定到缓存目录，不再弹出「保存安装包」选择框
+- Windows 自动安装改用 `/SILENT`，保留安装进度窗口（无需手动双击安装包）
 
 ### Changed
 

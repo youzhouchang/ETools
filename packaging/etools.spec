@@ -4,11 +4,20 @@
 #   pyinstaller packaging/etools.spec --noconfirm
 
 from pathlib import Path
+import sys
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 block_cipher = None
 project_root = Path(SPECPATH).resolve().parent  # noqa: F821
+
+# Windows PE resource: embed brand icon so Explorer / taskbar / Start use it
+_icon_path = project_root / "docs" / "icons" / "png" / "etools.ico"
+exe_icon = str(_icon_path) if (sys.platform == "win32" and _icon_path.is_file()) else None
+if exe_icon:
+    print(f"EXE icon: {exe_icon}")
+else:
+    print("WARN: etools.ico missing — Windows exe will use the default icon")
 
 # Qt Designer forms + UI icons
 datas = [
@@ -87,6 +96,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=exe_icon,
 )
 
 coll = COLLECT(

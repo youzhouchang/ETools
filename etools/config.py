@@ -60,7 +60,24 @@ class AppConfig:
                     setattr(self, key, value)
         except (json.JSONDecodeError, OSError):
             pass
+        if self._migrate():
+            try:
+                self.save()
+            except OSError:
+                pass
         return self
+
+    def _migrate(self) -> bool:
+        """Upgrade stale prefs from older builds. Returns True if something changed."""
+        extra = dict(self.extra or {})
+        changed = False
+        # Pre-0.1.4 defaulted clock to 1000 kHz; ship 10000 kHz going forward.
+        if int(extra.get("frequency_khz", 0) or 0) == 1000:
+            extra["frequency_khz"] = 10000
+            changed = True
+        if changed:
+            self.extra = extra
+        return changed
 
     def save(self) -> None:
         path = self.config_file
