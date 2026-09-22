@@ -18,5 +18,6 @@ venv/
 *.elf
 !tests/**/*.bin
 !tests/**/*.hex
-tools/
+# packaging helper dir at repo root only (do not ignore etools/ui/tools/)
+/tools/
 squashfs-root/

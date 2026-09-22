@@ -44,6 +44,7 @@ Release workflow 会读取与 tag 匹配的小节（如 `## [0.1.2]` 或 `## [0.
 - 串口/网络清屏工具栏文案误用「收发监视」
 - 语言切换时 Program 子面板（Hex/RTT/SWV/目标信息）不刷新
 - ruff：E501 / B007 / F401 / E402 / I001
+- `.gitignore` 根级 `tools/` 误忽略 `etools/ui/tools/`，导致打包后缺失四页源码（CI `ModuleNotFoundError`）
 
 ### Changed
 
