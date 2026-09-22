@@ -341,7 +341,8 @@ class HexPreviewPanel(QWidget):
 
     def load_bytes(self, addr: int, data: bytes, source: str | None = None) -> None:
         """Load into 内存信息 page (device memory)."""
-        self.mem_view.load_bytes(addr, data, source=source or tr("hex.chip_src", addr=f"{addr:08X}"))
+        src = source or tr("hex.chip_src", addr=f"{addr:08X}")
+        self.mem_view.load_bytes(addr, data, source=src)
         idx = self.tabs.indexOf(self.mem_view)
         if idx >= 0:
             self.tabs.setCurrentIndex(idx)
@@ -440,7 +441,9 @@ class HexPreviewPanel(QWidget):
         self.mem_view.info_label.setText(f"{msg} · {total:,} 字节")
 
     def _on_compare_with_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, tr("hex.cmp_file_title"), "", FIRMWARE_EXTENSIONS)
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("hex.cmp_file_title"), "", FIRMWARE_EXTENSIONS
+        )
         if not path:
             return
         if not self.mem_view._segments:

@@ -16,12 +16,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from etools.i18n import tr as _tr
 from etools.logger import get_logger
 
 log = get_logger("ui.swv")
 
 MAX_VIEW_LINES = 5000
-from etools.i18n import tr as _tr
 
 
 # Common ITM ports people use; user can type any 0–31

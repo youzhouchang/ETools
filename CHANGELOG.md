@@ -43,6 +43,7 @@ Release workflow 会读取与 tag 匹配的小节（如 `## [0.1.2]` 或 `## [0.
 - **SFTP 面板创建后未挂入布局**（此前不可见）— 已嵌入 Terminal 页
 - 串口/网络清屏工具栏文案误用「收发监视」
 - 语言切换时 Program 子面板（Hex/RTT/SWV/目标信息）不刷新
+- ruff：E501 / B007 / F401 / E402 / I001
 
 ### Changed
 

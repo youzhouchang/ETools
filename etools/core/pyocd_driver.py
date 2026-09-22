@@ -497,7 +497,11 @@ class PyOCDDriver(ProbeDriver):
                 message=f"Range erase done ({dur:.2f}s)",
             )
         )
-        return OperationResult(ok=True, message=f"Range erase complete (0x{start:08X}+{size})", duration_s=dur)
+        return OperationResult(
+            ok=True,
+            message=f"Range erase complete (0x{start:08X}+{size})",
+            duration_s=dur,
+        )
 
     def program(self, firmware_path: str, verify: bool = True) -> OperationResult:
         session = self._require_session()

@@ -58,7 +58,7 @@ def inspect_host_key(host: str, port: int = 22) -> tuple[str, str]:
     candidates = known.lookup(host) or known.lookup(f"[{host}]:{port}")
     if not candidates:
         return "missing", fp
-    for key_type, known_key in candidates.items():
+    for _key_type, known_key in candidates.items():
         if known_key.get_name() == key.get_name() and known_key == key:
             return "ok", fp
     return "mismatch", fp
@@ -143,12 +143,8 @@ class SshLink:
         self._client = client
         if accept_new_host_key:
             try:
-                key = client.get_transport().get_remote_server_key()  # type: ignore[union-attr]
-                client.save_host_keys(str(known_hosts) if known_hosts.exists() else str(known_hosts))
-                # Ensure directory + persist
                 known_hosts.parent.mkdir(parents=True, exist_ok=True)
                 client.save_host_keys(str(known_hosts))
-                del key
             except Exception:
                 pass
 
