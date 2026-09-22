@@ -15,6 +15,7 @@ from etools.core.models import (
     TargetInfo,
 )
 from etools.core.targets import list_target_choices
+from etools.i18n import tr
 from etools.logger import get_logger
 from etools.ui.icons import set_button_icon
 from etools.ui.ui_loader import embed_form
@@ -72,7 +73,7 @@ class ProbePanel(QFrame):
             raise RuntimeError(f"probe_panel.ui missing widgets: {missing}")
 
     def _populate(self) -> None:
-        self.probe_combo.addItem("检测探针中…")
+        self.probe_combo.addItem(tr("probe.detecting"))
         self.probe_combo.setEnabled(False)
         self.connect_btn.setEnabled(False)
         for name, label in list_target_choices():
@@ -110,6 +111,7 @@ class ProbePanel(QFrame):
         self.detail_label.setObjectName("hint")
         self.connect_btn.setFixedHeight(30)
         set_button_icon(self.connect_btn, "connect", 16)
+        self.retranslate()
 
         from etools.ui.styles import apply_combo_style, get_theme
 
@@ -143,6 +145,27 @@ class ProbePanel(QFrame):
         )
         self.freq_spin.setMinimumWidth(0)
 
+    def retranslate(self) -> None:
+        f = self._form
+        for obj_name, key in (
+            ("lblProbe", "probe.probe"),
+            ("lblTarget", "probe.target"),
+            ("lblMode", "probe.mode"),
+            ("lblProtocol", "probe.protocol"),
+            ("lblFreq", "probe.freq"),
+            ("lblReset", "probe.reset"),
+        ):
+            w = f.findChild(QLabel, obj_name)
+            if w is not None:
+                w.setText(tr(key))
+        if self._connected:
+            self.connect_btn.setText(tr("probe.disconnect"))
+            self.status_label.setText(tr("probe.status_on"))
+        else:
+            self.connect_btn.setText(tr("probe.connect"))
+            if not self._probes:
+                self.status_label.setText(tr("probe.status_off"))
+
     def _wire(self) -> None:
         self.connect_btn.clicked.connect(self._on_toggle)
 
@@ -175,7 +198,7 @@ class ProbePanel(QFrame):
             self.probe_combo.blockSignals(True)
             self.probe_combo.clear()
             self.probe_combo.blockSignals(False)
-            self.probe_combo.addItem("未发现探针")
+            self.probe_combo.addItem(tr("probe.none"))
             self.probe_combo.setEnabled(False)
             if not self._connected:
                 self.connect_btn.setEnabled(False)
@@ -204,17 +227,17 @@ class ProbePanel(QFrame):
         self.reset_combo.setEnabled(not connected)
         self.connect_btn.setEnabled(True)
         if connected:
-            self.connect_btn.setText("断开连接")
+            self.connect_btn.setText(tr("probe.disconnect"))
             self.connect_btn.setObjectName("danger")
             set_button_icon(self.connect_btn, "disconnect", 16)
-            self.status_label.setText("● 已连接")
+            self.status_label.setText(tr("probe.status_on"))
             self.status_label.setObjectName("statusOk")
             self.detail_label.setText(detail)
         else:
-            self.connect_btn.setText("连接目标")
+            self.connect_btn.setText(tr("probe.connect"))
             self.connect_btn.setObjectName("accent")
             set_button_icon(self.connect_btn, "connect", 16)
-            self.status_label.setText("● 未连接")
+            self.status_label.setText(tr("probe.status_off"))
             self.status_label.setObjectName("statusWarn")
             self.detail_label.setText("")
             self.connect_btn.setEnabled(bool(self._probes))
@@ -223,7 +246,7 @@ class ProbePanel(QFrame):
 
     def set_error(self, message: str) -> None:
         self._connected = False
-        self.connect_btn.setText("连接目标")
+        self.connect_btn.setText(tr("probe.connect"))
         self.connect_btn.setObjectName("accent")
         set_button_icon(self.connect_btn, "connect", 16)
         self.connect_btn.setEnabled(bool(self._probes))
@@ -233,14 +256,14 @@ class ProbePanel(QFrame):
         self.protocol_combo.setEnabled(True)
         self.freq_spin.setEnabled(True)
         self.reset_combo.setEnabled(True)
-        self.status_label.setText("● 连接失败")
+        self.status_label.setText(tr("probe.status_fail"))
         self.status_label.setObjectName("statusErr")
         self.detail_label.setText(message)
         self._repolish(self.connect_btn)
         self._repolish(self.status_label)
 
     def set_connecting(self) -> None:
-        self.status_label.setText("● 连接中…")
+        self.status_label.setText(tr("probe.status_busy"))
         self.status_label.setObjectName("statusWarn")
         self.connect_btn.setEnabled(False)
         self._repolish(self.status_label)
@@ -252,7 +275,7 @@ class ProbePanel(QFrame):
             ):
                 self.probe_combo.blockSignals(True)
                 self.probe_combo.clear()
-                self.probe_combo.addItem("检测探针中…")
+                self.probe_combo.addItem(tr("probe.detecting"))
                 self.probe_combo.blockSignals(False)
 
     @staticmethod

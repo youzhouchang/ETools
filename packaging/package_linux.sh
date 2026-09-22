@@ -116,7 +116,7 @@ echo "Python: $PY"
 echo
 echo "[1/6] Installing packaging deps..."
 "$PY" -m pip install -U pip
-"$PY" -m pip install pyinstaller PySide6 pyocd
+"$PY" -m pip install pyinstaller PySide6 pyocd pyserial paramiko
 
 if ! ldconfig -p 2>/dev/null | grep -q libusb-1.0; then
   echo "NOTE: libusb-1.0 may be missing. Install with:"

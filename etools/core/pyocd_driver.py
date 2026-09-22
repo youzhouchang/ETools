@@ -13,6 +13,7 @@ from typing import Any
 
 from etools.core.models import (
     PROBE_CLASS_MAP,
+    STM32_FLASHSIZE_CANDIDATES,
     STM32_IDCODE_ADDR,
     STM32_UID_CANDIDATES,
     ConnectionState,
@@ -273,20 +274,31 @@ class PyOCDDriver(ProbeDriver):
             mm = target.get_memory_map()
             if mm is not None:
                 for region in mm.regions:
-                    rtype = str(getattr(region, "type", "") or "")
-                    # Flash
-                    if "FLASH" in rtype.upper() or type(region).__name__ == "FlashRegion":
-                        if details.flash_size == 0 or getattr(region, "is_boot_memory", False):
+                    length = int(getattr(region, "length", 0) or 0)
+                    # Skip empty and giant default Cortex-M placeholders (512 MiB)
+                    if length <= 0 or length > 0x1000_0000:
+                        continue
+                    is_flash = bool(getattr(region, "is_flash", False)) or (
+                        type(region).__name__ == "FlashRegion"
+                    )
+                    is_ram = bool(getattr(region, "is_ram", False)) or (
+                        type(region).__name__ == "RamRegion"
+                    )
+                    if is_flash:
+                        boot = bool(getattr(region, "is_boot_memory", False))
+                        if details.flash_size == 0 or boot:
                             details.flash_base = int(region.start)
-                            details.flash_size = int(region.length)
-                    # RAM (prefer first non-empty RAM in SRAM range)
-                    if "RAM" in rtype.upper() and details.ram_size == 0:
-                        # skip giant default map placeholders of 512MiB
-                        if region.length <= 0x200_0000:
+                            details.flash_size = length
+                    elif is_ram:
+                        if details.ram_size == 0 or length > details.ram_size:
                             details.ram_base = int(region.start)
-                            details.ram_size = int(region.length)
+                            details.ram_size = length
         except Exception:
             log.debug("memory map unavailable", exc_info=True)
+
+        # Fallback sizes from the pyOCD built-in target class MEMORY_MAP
+        if details.flash_size == 0 or details.ram_size == 0:
+            self._fill_sizes_from_builtin_map(details)
 
         # Fallback RAM/flash from our TargetInfo selection
         if self._target:
@@ -307,6 +319,14 @@ class PyOCDDriver(ProbeDriver):
         if uid:
             details.uid = uid
             details.uid_ok = True
+
+        # Chip-side flash size (works even with generic/default memory maps)
+        if details.flash_size == 0:
+            chip_flash = self._read_stm32_flash_size(target)
+            if chip_flash:
+                details.flash_size = chip_flash
+                if details.flash_base == 0:
+                    details.flash_base = 0x0800_0000
 
         # --- voltage (ST-Link) ---
         voltage = self._read_target_voltage(probe)
@@ -343,26 +363,70 @@ class PyOCDDriver(ProbeDriver):
                 return raw.hex().upper()
         return ""
 
+    def _fill_sizes_from_builtin_map(self, details: TargetDetails) -> None:
+        """Fill missing flash/RAM sizes from the pyOCD built-in target definition."""
+        name = (self._target.target_override if self._target else "") or ""
+        if not name:
+            return
+        try:
+            from pyocd.target.builtin import BUILTIN_TARGETS
+
+            cls = BUILTIN_TARGETS.get(name)
+            mm = getattr(cls, "MEMORY_MAP", None) if cls is not None else None
+            if mm is None:
+                return
+            for region in mm.regions:
+                length = int(getattr(region, "length", 0) or 0)
+                if length <= 0 or length > 0x1000_0000:
+                    continue
+                is_flash = bool(getattr(region, "is_flash", False))
+                is_ram = bool(getattr(region, "is_ram", False))
+                if is_flash and details.flash_size == 0:
+                    details.flash_base = int(region.start)
+                    details.flash_size = length
+                elif is_ram and (details.ram_size == 0 or length > details.ram_size):
+                    details.ram_base = int(region.start)
+                    details.ram_size = length
+        except Exception:
+            log.debug("builtin memory map fallback failed", exc_info=True)
+
+    def _read_stm32_flash_size(self, target: Any) -> int:
+        """Read STM32 flash-size system register (16-bit, size in KB). Returns bytes."""
+        for addr in STM32_FLASHSIZE_CANDIDATES:
+            raw = self._read_bytes(target, addr, 2)
+            if not raw or len(raw) < 2:
+                continue
+            kb = int.from_bytes(raw[:2], "little")
+            if 4 <= kb <= 4096:  # 4 KiB .. 4 MiB
+                return kb * 1024
+        return 0
+
     def _read_target_voltage(self, probe: Any) -> float | None:
         """Best-effort target voltage. ST-Link exposes get_target_voltage()."""
         if probe is None:
             return None
-        # StlinkProbe wraps an Stlink object as ._link
-        link = getattr(probe, "_link", None)
-        if link is None:
-            return None
-        getter = getattr(link, "get_target_voltage", None)
-        if not callable(getter):
-            return None
-        try:
-            getter()
-            v = getattr(link, "target_voltage", None)
-            if v is None:
-                return None
-            return float(v)
-        except Exception:
-            log.debug("voltage read failed", exc_info=True)
-            return None
+        # StlinkProbe wraps an Stlink object as ._link; also try the probe itself
+        for obj in (getattr(probe, "_link", None), probe):
+            if obj is None:
+                continue
+            getter = getattr(obj, "get_target_voltage", None)
+            if not callable(getter):
+                continue
+            try:
+                v = getter()
+                if v is None:
+                    v = getattr(obj, "target_voltage", None)
+                if v is None:
+                    continue
+                v = float(v)
+                # pyOCD ST-Link reports volts; guard against mV-scale values
+                if v > 20:
+                    v = v / 1000.0
+                if 0.5 <= v <= 6.0:
+                    return v
+            except Exception:
+                log.debug("voltage read failed", exc_info=True)
+        return None
 
     # ------------------------------------------------------------------
     # Operations
@@ -392,6 +456,48 @@ class PyOCDDriver(ProbeDriver):
             ProgressInfo(stage=ProgressStage.DONE, percent=100, message=f"Erase done ({dur:.2f}s)")
         )
         return OperationResult(ok=True, message="Erase complete", duration_s=dur)
+
+    def erase_range(self, address: int, size: int) -> OperationResult:
+        """Erase flash blocks covering [address, address+size)."""
+        session = self._require_session()
+        if size <= 0:
+            return OperationResult(ok=False, message="Invalid erase range")
+        start = int(address)
+        end = start + int(size)
+        self.emit_progress(
+            ProgressInfo(
+                stage=ProgressStage.ERASE,
+                percent=-1,
+                message=f"Erasing 0x{start:08X}+{size} …",
+            )
+        )
+        t0 = time.perf_counter()
+        try:
+            target = session.target
+            flash = target.flash
+            flash.init()
+            try:
+                # Align to erase blocks (page/sector) via the flash builder API.
+                flash.erase_block(start, end)
+            finally:
+                flash.cleanup()
+        except Exception as exc:
+            log.exception("range erase failed")
+            self.emit_progress(
+                ProgressInfo(
+                    stage=ProgressStage.ERROR, percent=0, message=str(exc), is_error=True
+                )
+            )
+            return OperationResult(ok=False, message=str(exc))
+        dur = time.perf_counter() - t0
+        self.emit_progress(
+            ProgressInfo(
+                stage=ProgressStage.DONE,
+                percent=100,
+                message=f"Range erase done ({dur:.2f}s)",
+            )
+        )
+        return OperationResult(ok=True, message=f"Range erase complete (0x{start:08X}+{size})", duration_s=dur)
 
     def program(self, firmware_path: str, verify: bool = True) -> OperationResult:
         session = self._require_session()

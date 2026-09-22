@@ -1,6 +1,6 @@
 # ETools (EmbeddedTools)
 
-嵌入式 MCU 烧录工具，基于 **pyOCD**，支持 ST-Link / J-Link / DAP-Link，可对 Cortex-M 系列 MCU 进行固件烧录、读取、擦除与校验。
+嵌入式工程师工作台：**MCU 烧录**（pyOCD / ST-Link / J-Link / DAP-Link）+ **串口 / 网络 / SSH 终端**工具，统一左侧工具栏切换。
 
 **源码与发布：** [github.com/youzhouchang/ETools](https://github.com/youzhouchang/ETools)
 
@@ -12,17 +12,45 @@
 
 ## 功能
 
+### 烧录工具（Program）
+
 - 探针自动发现与连接（ST-Link / J-Link / CMSIS-DAP）
 - 固件烧录（ELF / HEX / BIN / SREC），带实时进度条
-- 芯片擦除 / 扇区擦除
+- 芯片擦除（全片 / 按地址范围，均带二次确认）
 - Flash 读取与回读校验
 - 目标信息：UID / Flash / RAM / 电压 / Device ID
 - 复位 / 挂起目标
+- RTT / SWV 调试视图、Hex 预览（空白检查 / 文件比较 / 填充 RAM）
+
+### 串口助手（Serial）
+
+- pyserial 端口枚举与热插拔检测
+- 收发监视（流式追加、HEX/文本、时间戳、暂停、自动滚动、保存日志）
+- 常用波特率/校验配置 + DTR/RTS、行尾、发送格式（参数本地持久化）
+- 发送历史（↑↓ 或历史按钮）
+
+### 网络助手（Ethernet）
+
+- TCP Client / TCP Server / UDP 收发（对端接入/断开提示）
+- 本地端口与对端地址分离；监视器同串口（Hex/时间戳/保存）
+
+### 终端工具（Terminal）
+
+- SSH 命令执行（paramiko）；命令历史；可选私钥登录
+- 主机密钥：未知主机弹窗确认信任，不匹配直接拒绝
+- SFTP 上传 / 下载 / 上级目录 / 新建目录（host/user/port/路径持久化，密码不落盘）
+
+## 日志策略
+
+- **Program**：底部全局操作日志 + 进度条（烧录/连接/探针）
+- **Serial / Ethernet**：页内收发监视，不占用全局日志
+- **Terminal**：页内 SSH 输出 + 下方 SFTP 面板
+- 窗口状态栏显示探针连接状态（跨工具共享）
 
 ## 环境要求
 
 - Python 3.10+
-- pyOCD、PySide6（见依赖）
+- pyOCD、PySide6、pyserial、paramiko（见依赖）
 - 对应探针驱动（ST-Link / J-Link / CMSIS-DAP）
 
 ## 安装
@@ -136,31 +164,40 @@ git push origin main --tags
 ```
 etools/
 ├── app.py              # 应用入口
-├── config.py           # 配置管理
+├── config.py           # 配置管理（含 tools.* 偏好）
 ├── logger.py           # 日志
+├── i18n.py             # 中英文案
 ├── core/               # 业务核心（无 UI 依赖）
-│   ├── models.py       # 数据模型 / ProgressInfo / TargetDetails
+│   ├── models.py       # 数据模型
 │   ├── probe.py        # 探针抽象
 │   ├── pyocd_driver.py # pyOCD 后端
-│   └── operations.py   # 烧录/擦除/读取/校验 门面
+│   ├── operations.py   # 烧录/擦除/读取/校验 门面
+│   ├── serial_link.py  # 串口链路
+│   ├── net_link.py     # TCP/UDP 链路
+│   ├── ssh_link.py     # SSH/SFTP 链路
+│   └── updater.py      # 应用更新
 └── ui/                 # PySide6 界面
-    ├── main_window.py  # 线程安全进度 + 主窗口
+    ├── main_window.py  # 窗口编排（业务 + 状态栏）
+    ├── shell.py        # 左侧工具 rail + 页栈 + 工具栏
+    ├── runtime.py      # OpRunner / Worker（统一后台任务）
+    ├── tool_prefs.py   # 工具参数持久化
     ├── styles.py       # QSS 主题
-    ├── ui_loader.py    # 加载 Qt Designer .ui
-    ├── forms/          # Qt Designer 可编辑界面
-    │   ├── main_window.ui
-    │   ├── probe_panel.ui
-    │   ├── flash_panel.ui
-    │   ├── target_info_panel.ui
-    │   └── log_panel.ui
-    └── widgets/
-        ├── probe_panel.py
-        ├── flash_panel.py
-        ├── target_info_panel.py
-        └── log_panel.py
+    ├── icons.py        # 主题感知图标
+    ├── forms/          # Qt Designer 可编辑面板 .ui
+    └── tools/
+        ├── base.py         # ToolPage（左上下文 + 右工作区）
+        ├── program_page.py # 烧录工作区
+        ├── serial_page.py
+        ├── ethernet_page.py
+        ├── terminal_page.py
+        └── sftp_panel.py
 packaging/              # PyInstaller 打包
 tests/                  # pytest 单元测试
+docs/icons/             # 图标设计规范 + 生成脚本
 ```
+
+所有工具页共用 `ToolPage` 布局语言；后台任务统一走 `etools.ui.runtime.OpRunner`。
+工具页通过 `toolbar_actions()` 向 `ToolShell` 暴露公开动作，不再依赖私有 `_on_*`。
 
 ## Qt Designer
 

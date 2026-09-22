@@ -665,6 +665,76 @@ QToolButton:hover {{
     background: {bg_hover};
     border-color: {border};
 }}
+QWidget#toolRail,
+QWidget#toolRailBox {{
+    background: {bg_panel};
+    border: 1px solid {border};
+    border-radius: 8px;
+}}
+QWidget#toolRailBox {{
+    border-right: none;
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}}
+QToolButton#toolRailBtn {{
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+}}
+QToolButton#railCollapseBtn {{
+    background: transparent;
+    color: {text_dim};
+    border: 1px solid transparent;
+    border-radius: 5px;
+    font-size: 18px;
+    padding: 0;
+}}
+QToolButton#railCollapseBtn:hover {{
+    color: {text};
+    background: {bg_hover};
+    border-color: {border};
+}}
+QGroupBox#ctxGroup,
+QGroupBox#mainGroup {{
+    background: {bg_panel};
+    border: 1px solid {border};
+    border-radius: 8px;
+    margin-top: 14px;
+    padding-top: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: {text};
+}}
+QGroupBox#ctxGroup::title,
+QGroupBox#mainGroup::title {{
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 10px;
+    top: 2px;
+    padding: 0 4px;
+    color: {text_dim};
+}}
+QLineEdit {{
+    background: {bg_input};
+    color: {text};
+    border: 1px solid {border};
+    border-radius: 5px;
+    padding: 4px 8px;
+    selection-background-color: {accent};
+    selection-color: {on_accent};
+    font-size: 12px;
+}}
+QLineEdit:hover,
+QLineEdit:focus {{
+    border-color: {accent};
+}}
+QLineEdit[ipInvalid="true"] {{
+    border-color: {danger};
+}}
+QLineEdit:disabled {{
+    color: {text_muted};
+    background: {bg_panel};
+}}
 QStatusBar {{
     background: {bg};
     color: {text_dim};

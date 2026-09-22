@@ -1,7 +1,7 @@
 [project]
 name = "etools"
-version = "0.1.0"
-description = "EmbeddedTools — MCU firmware programming tool (ST-Link / J-Link / DAP-Link)"
+version = "0.2.0"
+description = "ETools — Embedded engineer workbench (MCU flash + serial / network / SSH tools)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -9,6 +9,8 @@ authors = [{ name = "ETools Contributors" }]
 dependencies = [
     "PySide6>=6.5",
     "pyocd>=0.40",
+    "pyserial>=3.5",
+    "paramiko>=3.0",
 ]
 
 [project.optional-dependencies]

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from etools.i18n import tr
 from etools.logger import get_logger
 
 log = get_logger("ui.rtt")
@@ -63,7 +64,7 @@ class _RttReader(QObject):
     ) -> bool:
         self.stop()
         if session is None or session.target is None:
-            self.status.emit("未连接目标")
+            self.status.emit(tr("rtt.not_connected"))
             return False
         try:
             from pyocd.debug.rtt import RTTControlBlock
@@ -77,17 +78,17 @@ class _RttReader(QObject):
             cb.start()
             ups = getattr(cb, "up_channels", None) or []
             if not ups:
-                self.status.emit("未找到 RTT 上行通道（请确认固件已初始化 SEGGER RTT）")
+                self.status.emit(tr("rtt.no_channel"))
                 return False
             self._cb = cb
             self._running = True
             self._timer.start()
             self.channels_ready.emit(len(ups), self.n_down)
-            self.status.emit(f"RTT 已启动：{len(ups)} 上行 / {self.n_down} 下行")
+            self.status.emit(tr("rtt.started", up=len(ups), down=self.n_down))
             return True
         except Exception as exc:
             log.exception("RTT start failed")
-            self.status.emit(f"RTT 启动失败：{exc}")
+            self.status.emit(tr("rtt.failed", err=str(exc)))
             return False
 
     def stop(self) -> None:
@@ -145,7 +146,7 @@ class RttPanel(QWidget):
         bar.addWidget(title)
         bar.addStretch(1)
 
-        bar.addWidget(QLabel("地址"))
+        bar.addWidget(QLabel(tr("rtt.addr")))
         from etools.ui.widgets.spin_boxes import hex_spin
 
         self.addr_spin = hex_spin(0, step=0x100, width=130)
@@ -153,23 +154,23 @@ class RttPanel(QWidget):
         self.addr_edit = self.addr_spin
         bar.addWidget(self.addr_spin)
 
-        bar.addWidget(QLabel("长度"))
+        bar.addWidget(QLabel(tr("rtt.size")))
         self.size_spin = hex_spin(0, step=0x1000, width=110)
         self.size_spin.setSpecialValueText("自动")
         self.size_edit = self.size_spin
         bar.addWidget(self.size_spin)
 
-        self.start_btn = QPushButton("启动 RTT")
+        self.start_btn = QPushButton(tr("rtt.start"))
         self.start_btn.setObjectName("accent")
         self.start_btn.setEnabled(False)
         bar.addWidget(self.start_btn)
 
-        self.clear_btn = QPushButton("清空")
+        self.clear_btn = QPushButton(tr("rtt.clear"))
         self.clear_btn.setObjectName("ghost")
         bar.addWidget(self.clear_btn)
         root.addLayout(bar)
 
-        self.status_label = QLabel("未启动")
+        self.status_label = QLabel(tr("rtt.status_idle"))
         self.status_label.setObjectName("hint")
         root.addWidget(self.status_label)
 
@@ -202,7 +203,7 @@ class RttPanel(QWidget):
         ph = QPlainTextEdit()
         ph.setObjectName("logView")
         ph.setReadOnly(True)
-        ph.setPlaceholderText("启动 RTT 后，按检测到的上行通道自动生成页签")
+        ph.setPlaceholderText(tr("rtt.ph"))
         self.tabs.addTab(ph, "通道 —")
 
     def _wire(self) -> None:
@@ -213,6 +214,11 @@ class RttPanel(QWidget):
         self._reader.text_received.connect(self._on_text)
         self._reader.status.connect(lambda m: self.status_label.setText(m))
         self._reader.channels_ready.connect(self._on_channels)
+
+    def retranslate(self) -> None:
+        self.clear_btn.setText(tr("rtt.clear"))
+        if not getattr(self, "_running", False):
+            self.start_btn.setText(tr("rtt.start"))
 
     def set_connected(self, connected: bool) -> None:
         self.start_btn.setEnabled(connected)
@@ -234,7 +240,7 @@ class RttPanel(QWidget):
     def _toggle(self) -> None:
         if self._reader.running:
             self._reader.stop()
-            self.start_btn.setText("启动 RTT")
+            self.start_btn.setText(tr("rtt.start"))
             self.send_edit.setEnabled(False)
             self.send_btn.setEnabled(False)
             self.ch_spin.setRange(0, 0)

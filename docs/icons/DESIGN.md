@@ -125,6 +125,17 @@ fill = none（默认）
 | `stop` | 停止 | 圆 + 实心方 |
 | `about` | 关于 | 圆 + i |
 
+### 多工具壳层 Rail（专用，禁止借用业务图标）
+
+| ID | 语义 | 形态 | 默认语义色 |
+|----|------|------|------------|
+| `tool-program` | 烧录工具 | QFP 芯片 + 实心闪电 | accent |
+| `tool-serial` | 串口助手 | 串口连接器 + 针脚孔 | success |
+| `tool-ethernet` | 网络助手 | RJ45 网口 | accent |
+| `tool-terminal` | 终端工具 | 窗口 + 提示符（无 RTT 圆点） | warning |
+
+Rail 选中态由 `ToolShell.refresh_rail_icons` 统一改为 `on_accent`，未选中用上表语义色。
+
 ## UI 触点映射
 
 | 位置 | 图标 |
@@ -137,6 +148,7 @@ fill = none（默认）
 | 日志清空 | clear |
 | 主页签 | info / hex / program / devices / rtt / swv |
 | 视图菜单 | theme-dark / theme-light / language |
+| 左侧工具 rail | tool-program / tool-serial / tool-ethernet / tool-terminal |
 
 ## 语义着色
 
@@ -144,10 +156,10 @@ fill = none（默认）
 
 | 角色 | Dark / Light | 代表图标 |
 |------|--------------|----------|
-| accent | `#3B9EFF` / `#1A73E8` | open, program, read, refresh, info… |
-| success | `#3DDC97` / `#0F9D6E` | verify, connect, blank, swv |
+| accent | `#3B9EFF` / `#1A73E8` | open, program, read, refresh, info, tool-program, tool-ethernet… |
+| success | `#3DDC97` / `#0F9D6E` | verify, connect, blank, swv, tool-serial |
 | danger | `#FF5C5C` / `#D93025` | erase, disconnect, clear, stop, quit |
-| warning | `#F5A623` / `#C27803` | reset, fill, pause, power, theme-light |
+| warning | `#F5A623` / `#C27803` | reset, fill, pause, power, theme-light, tool-terminal |
 
 覆盖规则：
 

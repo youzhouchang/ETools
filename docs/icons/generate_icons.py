@@ -435,6 +435,45 @@ def main() -> None:
 """,
     )
 
+    # ---- multi-tool shell rail (dedicated, not borrowed) ----
+    write_ui(
+        "tool-program",
+        f"""
+{CHIP_BODY}
+{CHIP_PINS}
+  <path d="M13.4 8.4L9.9 13.1h2.5L10.8 16.4l3.7-4.6h-2.4l1.3-3.4z" fill="currentColor" stroke="none"/>
+""",
+    )
+
+    write_ui(
+        "tool-serial",
+        """
+  <rect x="4.25" y="8.25" width="15.5" height="10" rx="2"/>
+  <path d="M7.5 8.25V6.4M12 8.25V5.6M16.5 8.25V6.4"/>
+  <path d="M8.2 13.25h.01M12 13.25h.01M15.8 13.25h.01" stroke-width="2.4"/>
+  <path d="M8.5 16.25h7"/>
+""",
+    )
+
+    write_ui(
+        "tool-ethernet",
+        """
+  <path d="M8 4.75h8v4.1l-2.1 2.1v6.4h-3.8v-6.4L8 8.85V4.75z"/>
+  <path d="M10.2 4.75V3.4M13.8 4.75V3.4"/>
+  <path d="M10.35 12.1v3.6M12 12.1v3.6M13.65 12.1v3.6" opacity="0.7"/>
+""",
+    )
+
+    write_ui(
+        "tool-terminal",
+        """
+  <rect x="3.75" y="5" width="16.5" height="14" rx="2"/>
+  <path d="M3.75 8.4h16.5"/>
+  <path d="M7.4 12.4l2.4 2.15-2.4 2.15"/>
+  <path d="M12.2 16.7H16.4"/>
+""",
+    )
+
     print(f"Wrote icons to {DOCS_OUT}")
     print(f"Wrote icons to {APP_OUT}")
 

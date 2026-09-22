@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QWidget
 
 from etools.core.models import TargetDetails
+from etools.i18n import tr
 from etools.ui.icons import set_button_icon
 from etools.ui.ui_loader import embed_form
 
@@ -45,28 +46,30 @@ class TargetInfoPanel(QFrame):
         self.val_flash = val("valFlash")
         self.val_ram = val("valRam")
         self.val_volt = val("valVolt")
-        self.val_probe = val("valProbe")
-        self.val_wire = val("valWire")
-
-        hint = f.findChild(QLabel, "hintLabel")
-        if hint is not None:
-            hint.setObjectName("hint")
-
-        for name in (
-            "keyTarget",
-            "keyCpu",
-            "keyVendor",
-            "keyUid",
-            "keyDevId",
-            "keyFlash",
-            "keyRam",
-            "keyVolt",
-            "keyProbe",
-            "keyWire",
+        self._keys: dict[str, QLabel] = {}
+        for name, attr in (
+            ("keyTarget", "info.chip"),
+            ("keyCpu", "info.cpu"),
+            ("keyVendor", "info.vendor"),
+            ("keyUid", "info.uid"),
+            ("keyDevId", "info.devid"),
+            ("keyFlash", "info.flash"),
+            ("keyRam", "info.ram"),
+            ("keyVolt", "info.volt"),
         ):
             k = f.findChild(QLabel, name)
             if k is not None:
                 k.setObjectName("hint")
+                self._keys[attr] = k
+        self.retranslate()
+
+    def retranslate(self) -> None:
+        for key, lab in self._keys.items():
+            lab.setText(tr(key))
+        self.refresh_btn.setText(tr("info.refresh"))
+        title = self._form.findChild(QLabel, "panelTitle")
+        if title is not None:
+            title.setText(tr("info.title"))
 
     def set_refresh_enabled(self, enabled: bool) -> None:
         self.refresh_btn.setEnabled(enabled)
@@ -81,8 +84,6 @@ class TargetInfoPanel(QFrame):
             self.val_flash,
             self.val_ram,
             self.val_volt,
-            self.val_probe,
-            self.val_wire,
         ):
             w.setText("—")
         self.set_refresh_enabled(False)
@@ -101,8 +102,8 @@ class TargetInfoPanel(QFrame):
         self.val_devid.setText(d.device_id or "—")
         flash = "—"
         if d.flash_size:
-            base = f"0x{d.flash_base:08X}" if d.flash_base else "?"
-            flash = f"{base} · {d.flash_size_display} ({d.flash_size:,} B)"
+            base = f"0x{d.flash_base:08X}" if d.flash_base else ""
+            flash = f"{base} · {d.flash_size_display}".strip(" ·")
         self.val_flash.setText(flash)
         ram = "—"
         if d.ram_size:
@@ -110,6 +111,4 @@ class TargetInfoPanel(QFrame):
             ram = f"{rbase} · {d.ram_size_display}"
         self.val_ram.setText(ram)
         self.val_volt.setText(d.voltage_display)
-        self.val_probe.setText(d.probe_name or d.probe_type or "—")
-        self.val_wire.setText(str(d.wire_protocol or "—"))
         self.set_refresh_enabled(True)

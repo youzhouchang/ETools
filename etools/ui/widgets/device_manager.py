@@ -29,6 +29,7 @@ from etools.core.targets import (
     remove_custom_target,
     unhide_all_targets,
 )
+from etools.i18n import tr
 from etools.logger import get_logger
 from etools.ui.icons import set_button_icon
 from etools.ui.ui_loader import embed_form
@@ -221,7 +222,7 @@ class DeviceManagerPanel(QWidget):
         """Hide currently selected device row (one target)."""
         name = self._selected_target_name()
         if not name:
-            self.hint.setText("请先在列表中选中一个型号")
+            self.hint.setText(tr("devices.select_model"))
             return
         if hide_target(name):
             self.reload()
@@ -234,7 +235,7 @@ class DeviceManagerPanel(QWidget):
         """Hide the currently selected vendor (all its targets)."""
         vendor = self._selected_vendor()
         if not vendor or vendor == VENDOR_ALL:
-            self.hint.setText("请先在左侧选中一个厂商")
+            self.hint.setText(tr("devices.select_vendor"))
             return
         if hide_vendor(vendor):
             n = self.vendor_list.currentItem().text() if self.vendor_list.currentItem() else ""

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -82,7 +83,20 @@ class AppConfig:
     def save(self) -> None:
         path = self.config_file
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(asdict(self), indent=2, ensure_ascii=False), encoding="utf-8")
+        payload = json.dumps(asdict(self), indent=2, ensure_ascii=False)
+        fd, temp_name = tempfile.mkstemp(prefix="config.", suffix=".tmp", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_name, path)
+        except Exception:
+            try:
+                os.unlink(temp_name)
+            except OSError:
+                pass
+            raise
 
 
 _config: AppConfig | None = None
@@ -97,4 +111,8 @@ def get_config() -> AppConfig:
 
 def save_config() -> None:
     if _config is not None:
-        _config.save()
+        try:
+            _config.save()
+        except OSError:
+            # Preferences are best-effort; a read-only profile must not break UI actions.
+            return

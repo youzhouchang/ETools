@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (
     QFrame,
     QLabel,
     QLineEdit,
+    QMenu,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QWidget,
@@ -18,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from etools.config import get_config, save_config
 from etools.core.models import FIRMWARE_EXTENSIONS
+from etools.i18n import tr
 from etools.ui.icons import set_button_icon
 from etools.ui.ui_loader import embed_form
 
@@ -27,6 +30,7 @@ class FlashPanel(QFrame):
 
     program_requested = Signal(str, bool)
     erase_requested = Signal()
+    erase_range_requested = Signal(int, int)
     read_requested = Signal(int, int, str)
     verify_requested = Signal(str)
     reset_requested = Signal()
@@ -81,13 +85,11 @@ class FlashPanel(QFrame):
         self.erase_btn.setObjectName("danger")
         self.fw_info.setObjectName("hint")
 
-        # Keep label glued to its spin: no horizontal expansion in the read row.
         for spin, w in ((self.addr_edit, 140), (self.size_edit, 120)):
             spin.setFixedWidth(w)
             spin.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             spin.setFixedHeight(28)
 
-        # Don't reserve a blank line when no firmware is loaded.
         self.fw_info.setMinimumHeight(0)
         self.fw_info.setMaximumHeight(0)
 
@@ -103,11 +105,22 @@ class FlashPanel(QFrame):
             self.fw_edit.setText(cfg.last_firmware)
         self.verify_check.setChecked(cfg.verify_after_program)
         self._update_fw_info()
+        self.retranslate()
+
+    def retranslate(self) -> None:
+        self.verify_check.setText(tr("flash.verify_after"))
+        self.program_btn.setText(tr("act.program"))
+        self.erase_btn.setText(tr("act.erase"))
+        self.verify_btn.setText(tr("act.verify"))
+        self.reset_btn.setText(tr("act.reset"))
+        self.read_btn.setText(tr("act.read_chip"))
+        self.browse_btn.setToolTip(tr("act.open"))
+        self._update_fw_info()
 
     def _wire(self) -> None:
         self.browse_btn.clicked.connect(self._browse)
         self.program_btn.clicked.connect(self._on_program)
-        self.erase_btn.clicked.connect(self.erase_requested.emit)
+        self.erase_btn.clicked.connect(self._on_erase_clicked)
         self.verify_btn.clicked.connect(self._on_verify)
         self.reset_btn.clicked.connect(self.reset_requested.emit)
         self.read_btn.clicked.connect(self._on_read)
@@ -115,7 +128,9 @@ class FlashPanel(QFrame):
 
     def _browse(self) -> None:
         start = str(Path(self.fw_edit.text()).parent) if self.fw_edit.text() else ""
-        path, _ = QFileDialog.getOpenFileName(self, "选择固件", start, FIRMWARE_EXTENSIONS)
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("flash.choose_fw"), start, FIRMWARE_EXTENSIONS
+        )
         if path:
             self.fw_edit.setText(path)
             cfg = get_config()
@@ -167,6 +182,43 @@ class FlashPanel(QFrame):
         save_config()
         self.program_requested.emit(path, verify)
 
+    def _on_erase_clicked(self) -> None:
+        menu = QMenu(self)
+        act_all = menu.addAction(tr("act.erase"))
+        act_range = menu.addAction(tr("act.erase_range"))
+        chosen = menu.exec(self.erase_btn.mapToGlobal(self.erase_btn.rect().bottomLeft()))
+        if chosen is act_all:
+            self._confirm_erase_all()
+        elif chosen is act_range:
+            self._confirm_erase_range()
+
+    def _confirm_erase_all(self) -> None:
+        ret = QMessageBox.warning(
+            self,
+            tr("confirm.erase_all_title"),
+            tr("confirm.erase_all_text"),
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if ret == QMessageBox.StandardButton.Ok:
+            self.erase_requested.emit()
+
+    def _confirm_erase_range(self) -> None:
+        addr = int(self.addr_edit.value())
+        size = int(self.size_edit.value())
+        if size <= 0:
+            QMessageBox.warning(self, tr("confirm.erase_range_title"), tr("erase.range_invalid"))
+            return
+        ret = QMessageBox.warning(
+            self,
+            tr("confirm.erase_range_title"),
+            tr("confirm.erase_range_text", addr=addr, size=size),
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if ret == QMessageBox.StandardButton.Ok:
+            self.erase_range_requested.emit(addr, size)
+
     def _on_verify(self) -> None:
         path = self.firmware_path()
         if path:
@@ -178,7 +230,7 @@ class FlashPanel(QFrame):
         if size <= 0:
             return
         out, _ = QFileDialog.getSaveFileName(
-            self, "保存读取结果", "flash_dump.bin", "Binary (*.bin)"
+            self, tr("flash.save_dump"), tr("flash.dump_name"), tr("flash.bin_filter")
         )
         if out:
             self.read_requested.emit(addr, size, out)

@@ -54,10 +54,13 @@ def test_load_target_info_panel(qapp):
 
 def test_main_window_builds(qapp):
     from etools.ui.main_window import MainWindow
+    from etools.ui.shell import ToolShell
 
     w = MainWindow()
     assert w.probe_panel is not None
     assert w.flash_panel is not None
     assert w.target_info_panel is not None
     assert w.log_panel is not None
+    assert isinstance(w.shell, ToolShell)
+    assert w.program_page is not None
     w.close()

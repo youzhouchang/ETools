@@ -53,6 +53,11 @@ _SEMANTIC_ROLE: dict[str, str] = {
     "pause": "warning",
     "stop": "danger",
     "quit": "danger",
+    # Multi-tool shell rail (dedicated glyphs)
+    "tool-program": "accent",
+    "tool-serial": "success",
+    "tool-ethernet": "accent",
+    "tool-terminal": "warning",
 }
 
 _cache: dict[tuple[str, str, int], QPixmap] = {}

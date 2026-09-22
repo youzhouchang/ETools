@@ -1,4 +1,4 @@
-"""Main application window — loads main_window.ui, owns workers & panels."""
+"""Main application window — shell + flash service orchestration."""
 
 from __future__ import annotations
 
@@ -10,12 +10,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
-    QProgressBar,
-    QSizePolicy,
-    QSplitter,
-    QTabWidget,
-    QVBoxLayout,
-    QWidget,
 )
 
 from etools import __app_name__, __version__
@@ -25,135 +19,18 @@ from etools.core.operations import FlashService
 from etools.core.pyocd_driver import PyOCDDriver
 from etools.i18n import LANG_EN, LANG_ZH, set_language, tr
 from etools.logger import get_logger
-from etools.ui.icons import app_icon, refresh_icons, set_action_icon, set_tab_icon
+from etools.ui.icons import app_icon, refresh_icons, set_action_icon
+from etools.ui.runtime import OpRunner, SignalRelay, TaskManager
+from etools.ui.shell import ToolShell
 from etools.ui.styles import apply_combo_style, build_stylesheet, get_theme
-from etools.ui.ui_loader import load_form
-from etools.ui.widgets.device_manager import DeviceManagerPanel
-from etools.ui.widgets.flash_panel import FlashPanel
-from etools.ui.widgets.hex_preview import HexPreviewPanel
-from etools.ui.widgets.log_panel import LogPanel
-from etools.ui.widgets.probe_panel import ProbePanel
-from etools.ui.widgets.rtt_panel import RttPanel
-from etools.ui.widgets.swo_panel import SwvPanel
-from etools.ui.widgets.target_info_panel import TargetInfoPanel
+from etools.ui.tools import (
+    EthernetPage,
+    ProgramPage,
+    SerialPage,
+    TerminalPage,
+)
 
 log = get_logger("ui.main")
-
-
-class _Worker(QObject):
-    """Runs a callable in a QThread. Emits finished/failed from that thread."""
-
-    finished = Signal(object)
-    failed = Signal(str)
-
-    def __init__(self, fn) -> None:
-        super().__init__()
-        self._fn = fn
-
-    def run(self) -> None:
-        try:
-            result = self._fn()
-            self.finished.emit(result)
-        except Exception as exc:
-            log.exception("worker error")
-            self.failed.emit(str(exc))
-
-
-class _OpRunner(QObject):
-    """Owns one background QThread at a time.
-
-    IMPORTANT: completion handlers must be QObject *slots* living on the
-    GUI thread. Connecting QueuedConnection to a bare Python closure is
-    unreliable (no receiver thread affinity) and can run cleanup on the
-    worker thread → QThread.wait() on itself → crash (0xC0000409).
-    """
-
-    def __init__(self, parent: QObject | None = None) -> None:
-        super().__init__(parent)
-        self._thread: QThread | None = None
-        self._worker: _Worker | None = None
-        self._on_ok = None
-        self._on_err = None
-
-    @property
-    def busy(self) -> bool:
-        return self._thread is not None and self._thread.isRunning()
-
-    def start(self, fn, on_ok, on_err=None) -> bool:
-        if self.busy:
-            return False
-        self._on_ok = on_ok
-        self._on_err = on_err
-
-        thread = QThread(self)
-        worker = _Worker(fn)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-
-        # These are bound methods of _OpRunner (GUI thread affinity).
-        worker.finished.connect(self._slot_finished, Qt.ConnectionType.QueuedConnection)
-        worker.failed.connect(self._slot_failed, Qt.ConnectionType.QueuedConnection)
-
-        self._thread = thread
-        self._worker = worker
-        thread.start()
-        return True
-
-    def _slot_finished(self, result) -> None:
-        self._teardown()
-        cb, self._on_ok, self._on_err = self._on_ok, None, None
-        if cb is not None:
-            cb(result)
-
-    def _slot_failed(self, message: str) -> None:
-        self._teardown()
-        cb, self._on_err, self._on_ok = self._on_err, None, None
-        if cb is not None:
-            cb(message)
-
-    def _teardown(self) -> None:
-        thread, self._thread = self._thread, None
-        worker, self._worker = self._worker, None
-        if thread is not None:
-            if thread.isRunning():
-                thread.quit()
-                thread.wait(5000)
-            thread.deleteLater()
-        if worker is not None:
-            worker.deleteLater()
-
-    def shutdown(self) -> None:
-        thread = self._thread
-        worker = self._worker
-        self._thread = self._worker = None
-        self._on_ok = self._on_err = None
-        if worker is not None:
-            try:
-                worker.finished.disconnect(self._slot_finished)
-            except (RuntimeError, TypeError):
-                pass
-            try:
-                worker.failed.disconnect(self._slot_failed)
-            except (RuntimeError, TypeError):
-                pass
-        if thread is not None:
-            if thread.isRunning():
-                thread.quit()
-                thread.wait(3000)
-            thread.deleteLater()
-        if worker is not None:
-            worker.deleteLater()
-
-
-class _ProgressRelay(QObject):
-    """Marshal driver progress callbacks from worker threads to the UI thread."""
-
-    progressed = Signal(object)
-
-    def push(self, info: ProgressInfo) -> None:
-        # Called from worker thread; Signal emission is thread-safe.
-        # Receiver is MainWindow slot with QueuedConnection → GUI thread.
-        self.progressed.emit(info)
 
 
 class _UpdateChecker(QObject):
@@ -179,13 +56,18 @@ class MainWindow(QMainWindow):
         self.driver = PyOCDDriver()
         self.service = FlashService(self.driver)
 
-        self._relay = _ProgressRelay(self)
+        self._relay = SignalRelay(self)
         self._relay.progressed.connect(
             self._on_progress_info, Qt.ConnectionType.QueuedConnection
         )
         self.driver.set_progress_callback(self._relay.push)
 
-        self._runner = _OpRunner(self)
+        self._runner = OpRunner(self)
+        self.task_manager = TaskManager(self)
+        self.task_manager.task_started.connect(self._refresh_task_summary)
+        self.task_manager.task_finished.connect(lambda *_: self._refresh_task_summary())
+        self.task_manager.task_failed.connect(lambda *_: self._refresh_task_summary())
+        self.task_manager.task_cancelled.connect(self._refresh_task_summary)
         self._last_probe_ids: tuple[str, ...] = ()
         self._probe_timer = QTimer(self)
         self._probe_timer.setInterval(2500)
@@ -196,12 +78,10 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._wire()
-        self._log("ETools 已就绪")
+        self._log(tr("app.ready"))
 
         self._probe_timer.start()
-        # First scan immediately
         self._start_scan(silent=True)
-        # Background release check after launch: silent unless a newer version exists
         self._schedule_startup_update_check()
 
     # ------------------------------------------------------------------
@@ -209,193 +89,88 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        # Root shell from .ui
-        form = load_form("main_window", self)
-        self.setCentralWidget(form)
-        self.setWindowIcon(app_icon())
         self.resize(1180, 820)
         self.setMinimumSize(1080, 720)
-        self._build_menu_and_toolbar()
+        self.setWindowIcon(app_icon())
+        self._build_menu()
 
-        # No brand top-bar — status goes to QMainWindow status bar
-        self.conn_badge = QLabel("未连接")
-        self.conn_badge.setObjectName("statusWarn")
-        self.statusBar().addWidget(self.conn_badge)
-        self.statusBar().setSizeGripEnabled(True)
+        self.program_page = ProgramPage()
+        self.serial_page = SerialPage()
+        self.ethernet_page = EthernetPage()
+        self.terminal_page = TerminalPage()
+        # SFTP lives inside the Terminal page (bottom group).
+        self.sftp_panel = self.terminal_page.sftp_panel
 
-        # Theme from config (switch via 视图 menu)
-        self.apply_theme(get_config().theme or "dark")
+        # Aliases used by flash wiring / tests
+        self.probe_panel = self.program_page.probe_panel
+        self.flash_panel = self.program_page.flash_panel
+        self.target_info_panel = self.program_page.target_info_panel
+        self.hex_preview = self.program_page.hex_preview
+        self.device_manager = self.program_page.device_manager
+        self.rtt_panel = self.program_page.rtt_panel
+        self.swo_panel = self.program_page.swo_panel
+        self.log_panel = self.program_page.log_panel
+        self.progress = self.program_page.progress
+        self.progress_label = self.program_page.progress_label
+        self.main_tabs = self.program_page.main_tabs
 
-        # Progress bar always visible (value 0 when idle)
-        self.progress_label: QLabel = form.findChild(QLabel, "progressLabel")
-        self.progress_label.setObjectName("progressLabel")
-        self.progress_label.setText("")
-        self.progress_label.hide()
-        self.progress: QProgressBar = form.findChild(QProgressBar, "progressBar")
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        self.progress.setTextVisible(False)
-        self.progress.setFixedHeight(10)
-        self.progress.show()
-
-        # Left: probe panel fills width of splitter pane
-        left_container = form.findChild(QWidget, "leftContainer")
-        self.probe_panel = ProbePanel()
-        left_layout = left_container.layout()
-        if left_layout is None:
-            left_layout = QVBoxLayout(left_container)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(0)
-        # Expand with left pane; no bottom stretch so it tracks width
-        left_layout.addWidget(self.probe_panel, 1)
-        self.probe_panel.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
-        )
-
-        left_scroll = form.findChild(QWidget, "leftScroll")
-        if left_scroll is not None:
-            from PySide6.QtWidgets import QScrollArea
-
-            if isinstance(left_scroll, QScrollArea):
-                left_scroll.setHorizontalScrollBarPolicy(
-                    Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-                )
-                left_scroll.setWidgetResizable(True)
-                left_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-
-        # Right tabs: 固件操作 | 目标信息 | Hex 预览 | 设备管理
-        self.flash_panel = FlashPanel()
-        self.target_info_panel = TargetInfoPanel()
-        self.hex_preview = HexPreviewPanel()
-        self.device_manager = DeviceManagerPanel()
-        tab_flash = form.findChild(QWidget, "tabFlash")
-        tab_info = form.findChild(QWidget, "tabInfo")
-        tab_hex = form.findChild(QWidget, "tabHex")
-        tab_dev = form.findChild(QWidget, "tabDevices")
-        lay_f = tab_flash.layout() or QVBoxLayout(tab_flash)
-        lay_f.setContentsMargins(0, 0, 0, 0)
-        lay_f.addWidget(self.flash_panel)
-        lay_f.addStretch(1)  # keep content top-aligned when height grows
-        lay_i = tab_info.layout() or QVBoxLayout(tab_info)
-        lay_i.setContentsMargins(0, 0, 0, 0)
-        lay_i.addWidget(self.target_info_panel)
-        lay_i.addStretch(1)
-        lay_h = tab_hex.layout() or QVBoxLayout(tab_hex)
-        lay_h.setContentsMargins(0, 0, 0, 0)
-        lay_h.addWidget(self.hex_preview)  # hex table fills height
-        lay_d = tab_dev.layout() or QVBoxLayout(tab_dev)
-        lay_d.setContentsMargins(0, 0, 0, 0)
-        lay_d.addWidget(self.device_manager)
-
-        # RTT / SWO tabs
-        self.rtt_panel = RttPanel()
-        self.swo_panel = SwvPanel()  # SWV page (object name kept as swo_panel)
-        tab_rtt = form.findChild(QWidget, "tabRtt")
-        tab_swo = form.findChild(QWidget, "tabSwo")
-        lay_r = tab_rtt.layout() or QVBoxLayout(tab_rtt)
-        lay_r.setContentsMargins(0, 0, 0, 0)
-        lay_r.addWidget(self.rtt_panel)
-        lay_s = tab_swo.layout() or QVBoxLayout(tab_swo)
-        lay_s.setContentsMargins(0, 0, 0, 0)
-        lay_s.addWidget(self.swo_panel)
-
-        # session accessor for RTT/SWO
         def _sess():
             return getattr(self.driver, "session", None)
 
-        self.rtt_panel.set_session_getter(_sess)
-        self.swo_panel.set_session_getter(_sess)
+        self.program_page.set_session_getter(_sess)
 
-        # Compact right panels vertically
-        self._compact_form_layout(self.flash_panel._form)
-        self._compact_form_layout(self.target_info_panel._form)
+        self.program_page.set_handlers(
+            {
+                "open": self._toolbar_open_firmware,
+                "program": self._toolbar_program,
+                "erase": self._toolbar_erase,
+                "verify": self._toolbar_verify,
+                "reset": self._toolbar_reset,
+                "read": self._toolbar_read_chip,
+                "hex": lambda: self._goto_tab("Hex"),
+            }
+        )
 
-        # Log host
-        log_host = form.findChild(QWidget, "logPanelHost")
-        self.log_panel = LogPanel()
-        log_lay = log_host.layout()
-        if log_lay is None:
-            log_lay = QVBoxLayout(log_host)
-        log_lay.setContentsMargins(0, 0, 0, 0)
-        log_lay.addWidget(self.log_panel)
+        def program_actions():
+            return self.program_page.toolbar_actions()
 
-        # Horizontal splitter: left ~260, right takes all extra width
-        splitter = form.findChild(QSplitter, "mainSplitter")
-        if splitter is not None:
-            splitter.setStretchFactor(0, 0)
-            splitter.setStretchFactor(1, 1)
-            splitter.setSizes([260, 920])
-            splitter.setChildrenCollapsible(False)
-            splitter.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-            )
+        def terminal_actions():
+            # SFTP actions are already owned by TerminalPage.toolbar_actions()
+            return self.terminal_page.toolbar_actions()
 
-        # Vertical body splitter: content on top, progress+log below.
-        body = form.findChild(QSplitter, "bodySplitter")
-        if body is not None:
-            body.setStretchFactor(0, 2)
-            body.setStretchFactor(1, 2)
-            body.setSizes([400, 280])
-            body.setChildrenCollapsible(False)
-            log_host_min = form.findChild(QWidget, "logPanelHost")
-            if log_host_min is not None:
-                log_host_min.setMinimumHeight(150)
-                log_host_min.setSizePolicy(
-                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-                )
-            top_pane = form.findChild(QWidget, "topPane")
-            if top_pane is not None:
-                top_pane.setMinimumHeight(220)
-                top_pane.setSizePolicy(
-                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-                )
-            bottom_pane = form.findChild(QWidget, "bottomPane")
-            if bottom_pane is not None:
-                bottom_pane.setMinimumHeight(180)
-                bottom_pane.setSizePolicy(
-                    QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-                )
+        pages = {
+            "program": self.program_page,
+            "serial": self.serial_page,
+            "ethernet": self.ethernet_page,
+            "terminal": self.terminal_page,
+        }
+        providers = {
+            "program": program_actions,
+            "serial": lambda: self.serial_page.toolbar_actions(),
+            "ethernet": lambda: self.ethernet_page.toolbar_actions(),
+            "terminal": terminal_actions,
+        }
+        self.shell = ToolShell(pages, providers, parent=self)
+        self.setCentralWidget(self.shell)
 
-        root_lay = form.layout()
-        if root_lay is not None:
-            root_lay.setStretch(0, 1)  # body splitter fills the window
+        self.conn_badge = QLabel(tr("status.disconnected"))
+        self.conn_badge.setObjectName("statusWarn")
+        self.statusBar().addWidget(self.conn_badge)
+        self.task_badge = QLabel()
+        self.task_badge.setObjectName("statusTask")
+        self.statusBar().addPermanentWidget(self.task_badge)
+        self._refresh_task_summary()
+        self.statusBar().setSizeGripEnabled(True)
 
-        for w in (
-            self.probe_panel,
-            self.flash_panel,
-            self.target_info_panel,
-            self.hex_preview,
-            self.log_panel,
-        ):
-            w.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.apply_theme(get_config().theme or "dark")
 
-        # Right pane: keep a usable minimum so labels/tables don't overlap
-        right = form.findChild(QWidget, "rightContainer")
-        if right is not None:
-            right.setMinimumWidth(720)
-            right.setMaximumWidth(16777215)
-            right.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-            )
+    def _refresh_task_summary(self, *_args) -> None:
+        running = sum(1 for info in self.task_manager._tasks.values() if info.runner.busy)
+        self.task_badge.setText(tr("task.running", n=running) if running else tr("task.none"))
 
-        # Ensure every combo uses triangle arrow + rounded popup
-        self._refresh_combo_popups(get_theme(get_config().theme))
-
-        # Default page: 目标信息
-        tabs = form.findChild(QTabWidget, "mainTabs")
-        if tabs is not None:
-            for i, name in enumerate(
-                ("info", "hex", "program", "devices", "rtt", "swv")
-            ):
-                if i < tabs.count():
-                    set_tab_icon(tabs, i, name)
-            tabs.setCurrentIndex(0)
-
-    def _build_menu_and_toolbar(self) -> None:
-        """Menu bar + icon toolbar for firmware / flash actions."""
-        from PySide6.QtCore import QSize
+    def _build_menu(self) -> None:
+        """Application menu bar only — tool actions live on each tool toolbar."""
         from PySide6.QtGui import QAction, QActionGroup
-        from PySide6.QtWidgets import QToolBar
 
         def act(text: str, icon_name: str | None = None, shortcut: str = "") -> QAction:
             a = QAction(text, self)
@@ -468,24 +243,6 @@ class MainWindow(QMainWindow):
         m_help.addSeparator()
         m_help.addAction(a_about)
 
-        # rebuild toolbar
-        for tb in self.findChildren(QToolBar):
-            self.removeToolBar(tb)
-        tb = QToolBar(tr("tb.main"), self)
-        tb.setMovable(False)
-        tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        tb.setIconSize(QSize(18, 18))
-        self.addToolBar(tb)
-        tb.addAction(a_open)
-        tb.addSeparator()
-        tb.addAction(a_prog)
-        tb.addAction(a_erase)
-        tb.addAction(a_verify)
-        tb.addAction(a_reset)
-        tb.addSeparator()
-        tb.addAction(a_read_chip)
-        tb.addAction(a_hex)
-
         a_open.triggered.connect(self._toolbar_open_firmware)
         a_quit.triggered.connect(self.close)
         a_prog.triggered.connect(self._toolbar_program)
@@ -502,18 +259,12 @@ class MainWindow(QMainWindow):
         a_check_update.triggered.connect(lambda: self._check_updates(silent=False))
 
     def _schedule_startup_update_check(self) -> None:
-        """One automatic check shortly after launch (no dialog if already latest)."""
         QTimer.singleShot(1500, self._startup_update_check)
 
     def _startup_update_check(self) -> None:
         self._check_updates(silent=True)
 
     def _check_updates(self, silent: bool = False) -> None:
-        """Query GitHub latest release.
-
-        silent=True: no message when already latest or on failure;
-        if a newer version exists, still pop the update dialog.
-        """
         if self._update_thread is not None and self._update_thread.isRunning():
             return
         if not silent:
@@ -555,7 +306,6 @@ class MainWindow(QMainWindow):
                 )
             return
 
-        # Newer release available — always show the dialog (startup silent path too).
         self._log(tr("log.update_available", latest=info.latest))
         from etools.ui.widgets.update_dialog import UpdateAvailableDialog
 
@@ -568,22 +318,23 @@ class MainWindow(QMainWindow):
 
     def _switch_language(self, lang: str) -> None:
         set_language(lang)
-        self._build_menu_and_toolbar()
-        self._retranslate_tabs()
-        self.hex_preview.retranslate()
+        self._build_menu()
+        if hasattr(self, "shell"):
+            self.shell.apply_language()
+        self.program_page.retranslate()
+        for page in (
+            self.serial_page,
+            self.ethernet_page,
+            self.terminal_page,
+        ):
+            if hasattr(page, "retranslate"):
+                page.retranslate()
         connected = self.service.connected
-        self.conn_badge.setText(tr("status.connected") if connected else tr("status.disconnected"))
+        self.conn_badge.setText(
+            tr("status.connected") if connected else tr("status.disconnected")
+        )
+        self._refresh_task_summary()
         self._log(tr("log.lang_switched"))
-
-    def _retranslate_tabs(self) -> None:
-        tabs = self.centralWidget().findChild(QTabWidget, "mainTabs")
-        if not tabs:
-            return
-        keys = ["tab.info", "tab.hex", "tab.flash", "tab.devices", "tab.rtt", "tab.swo"]
-        # match by current index order
-        for i, key in enumerate(keys):
-            if i < tabs.count():
-                tabs.setTabText(i, tr(key))
 
     def _set_theme(self, name: str) -> None:
         self.apply_theme(name)
@@ -594,21 +345,7 @@ class MainWindow(QMainWindow):
             self._log(tr("log.theme_dark") if name == "dark" else tr("log.theme_light"))
 
     def _goto_tab(self, keyword: str) -> None:
-        tabs = self.centralWidget().findChild(QTabWidget, "mainTabs")
-        if not tabs:
-            return
-        mapping = {
-            "Hex": (tr("tab.hex"), "Hex"),
-            "info": (tr("tab.info"),),
-            "flash": (tr("tab.flash"),),
-            "devices": (tr("tab.devices"),),
-        }
-        needles = mapping.get(keyword, (keyword,))
-        for i in range(tabs.count()):
-            t = tabs.tabText(i)
-            if any(n and n in t for n in needles):
-                tabs.setCurrentIndex(i)
-                return
+        self.program_page.goto_tab(keyword)
 
     def _show_about(self) -> None:
         from etools.core.updater import REPO_URL
@@ -632,14 +369,13 @@ class MainWindow(QMainWindow):
 
         from etools.core.models import FIRMWARE_EXTENSIONS
 
-        path, _ = QFileDialog.getOpenFileName(self, "打开固件", "", FIRMWARE_EXTENSIONS)
+        path, _ = QFileDialog.getOpenFileName(self, tr("act.open"), "", FIRMWARE_EXTENSIONS)
         if not path:
             return
         self.flash_panel.fw_edit.setText(path)
-        # also open hex tab
         self.hex_preview.load_file(path)
         self._goto_tab("Hex")
-        self._log(f"已打开 {Path(path).name}")
+        self._log(tr("log.firmware_opened", name=Path(path).name))
 
     def _toolbar_program(self) -> None:
         path = self.flash_panel.firmware_path()
@@ -651,7 +387,15 @@ class MainWindow(QMainWindow):
         self._start_program(path, self.flash_panel.verify_check.isChecked())
 
     def _toolbar_erase(self) -> None:
-        self._start_erase()
+        ret = QMessageBox.warning(
+            self,
+            tr("confirm.erase_all_title"),
+            tr("confirm.erase_all_text"),
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if ret == QMessageBox.StandardButton.Ok:
+            self._start_erase()
 
     def _toolbar_verify(self) -> None:
         path = self.flash_panel.firmware_path()
@@ -667,24 +411,6 @@ class MainWindow(QMainWindow):
         size = self.hex_preview._read_size_bytes()
         self._start_read_chip(addr, size)
 
-    @staticmethod
-    def _compact_form_layout(form: QWidget) -> None:
-        """Tighten a panel form so it hugs content (less empty space)."""
-
-        lay = form.layout()
-        if lay is None:
-            return
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.setSpacing(6)
-        for i in range(lay.count() - 1, -1, -1):
-            item = lay.itemAt(i)
-            if item is None:
-                continue
-            sp = item.spacerItem()
-            if sp is not None:
-                lay.takeAt(i)
-        form.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-
     def apply_theme(self, name: str) -> None:
         theme = get_theme(name)
         app = QApplication.instance()
@@ -692,6 +418,8 @@ class MainWindow(QMainWindow):
             app.setStyleSheet(build_stylesheet(theme))
         self._refresh_combo_popups(theme)
         refresh_icons(self, theme)
+        if hasattr(self, "shell"):
+            self.shell.refresh_rail_icons(theme)
 
     def _refresh_combo_popups(self, theme) -> None:
         from PySide6.QtWidgets import QComboBox
@@ -705,6 +433,7 @@ class MainWindow(QMainWindow):
 
         self.flash_panel.program_requested.connect(self._start_program)
         self.flash_panel.erase_requested.connect(self._start_erase)
+        self.flash_panel.erase_range_requested.connect(self._start_erase_range)
         self.flash_panel.read_requested.connect(self._start_read)
         self.flash_panel.verify_requested.connect(self._start_verify)
         self.flash_panel.reset_requested.connect(self._start_reset)
@@ -717,7 +446,6 @@ class MainWindow(QMainWindow):
         self.device_manager.catalog_changed.connect(self._on_catalog_changed)
 
     def _hotplug_tick(self) -> None:
-        """Periodic USB/probe refresh. Skips while another op is running."""
         if self._runner.busy:
             return
         self._start_scan(silent=True)
@@ -731,11 +459,9 @@ class MainWindow(QMainWindow):
         extra = info.format_bytes
         if extra:
             text = f"{text}  ({extra})"
-        # Log everything except pure idle chatter from scan
         if info.stage != ProgressStage.IDLE or info.is_error:
             self._log(text, info.is_error)
 
-        # Progress bar only for real flash/connect operations — not probe scan
         flash_stages = (
             ProgressStage.PROGRAM,
             ProgressStage.ERASE,
@@ -755,7 +481,6 @@ class MainWindow(QMainWindow):
                 self.progress.show()
             else:
                 self._show_progress(info.percent, text)
-        # IDLE: log only; bar stays at 0
 
     def _show_progress(self, percent: int, label: str = "") -> None:
         self.progress.setRange(0, 100)
@@ -768,7 +493,6 @@ class MainWindow(QMainWindow):
             self.progress_label.hide()
 
     def _hide_progress(self) -> None:
-        # Keep the thin bar visible; just clear the label
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.progress_label.hide()
@@ -791,35 +515,27 @@ class MainWindow(QMainWindow):
         st.unpolish(self.conn_badge)
         st.polish(self.conn_badge)
 
-    # ------------------------------------------------------------------
-    # Async runner — handlers are invoked on the GUI thread via _OpRunner slots
-    # ------------------------------------------------------------------
-
     def _run_async(self, fn, on_ok, on_err=None, *, quiet_busy: bool = False) -> bool:
-        if self._runner.busy:
-            if not quiet_busy:
-                self._log("已有操作进行中，请稍候", True)
-            return False
-
         def ok(result) -> None:
             self._set_busy(False)
             on_ok(result)
 
         def err(msg: str) -> None:
             self._set_busy(False)
-            self._log(msg, True)
+            if not quiet_busy:
+                self._log(msg, True)
             self._hide_progress()
             if on_err:
                 on_err(msg)
 
         if not self._runner.start(fn, ok, err):
             return False
-        self._set_busy(True)
+        if not quiet_busy:
+            self._set_busy(True)
         return True
 
     def _set_busy(self, busy: bool) -> None:
         self.flash_panel.set_busy(busy)
-        # Keep hotplug timer; tick itself skips when runner is busy
 
     # ------------------------------------------------------------------
     # Actions
@@ -829,8 +545,8 @@ class MainWindow(QMainWindow):
         if self._runner.busy:
             return
         if not silent:
-            self._log("正在扫描探针 …")
-        self.probe_panel.set_scanning_hint(True)
+            self._log(tr("log.scan_probes"))
+            self.probe_panel.set_scanning_hint(True)
 
         def on_ok(probes) -> None:
             probes = probes or []
@@ -838,10 +554,10 @@ class MainWindow(QMainWindow):
             if ids != self._last_probe_ids:
                 self._last_probe_ids = ids
                 if probes:
-                    self._log(f"探针列表更新：{len(probes)} 个")
+                    self._log(tr("log.probe_list", n=len(probes)))
                 else:
                     if not silent:
-                        self._log("未发现探针，请检查 USB 连接", True)
+                        self._log(tr("log.probe_none"), True)
             self.probe_panel.set_probes(probes)
 
         def on_err(_msg: str) -> None:
@@ -850,10 +566,16 @@ class MainWindow(QMainWindow):
         self._run_async(self.service.scan_probes, on_ok, on_err, quiet_busy=silent)
 
     def _start_connect(self, probe: ProbeInfo, target: TargetInfo) -> None:
-        self._log(f"连接 {probe.display_name} → {target.target_override} …")
+        self._log(
+            tr(
+                "log.connecting",
+                probe=probe.display_name,
+                target=target.target_override,
+            )
+        )
         self.probe_panel.set_connecting()
-        self._set_status("连接中…", "warn")
-        self._show_progress(0, "连接中…")
+        self._set_status(tr("status.probe_connecting"), "warn")
+        self._show_progress(0, tr("status.probe_connecting"))
 
         def on_ok(result) -> None:
             if result.ok:
@@ -869,21 +591,20 @@ class MainWindow(QMainWindow):
                     self.hex_preview._flash_size_hint = int(details_for_flash.flash_size)
                 else:
                     self.hex_preview._flash_size_hint = 0
-                self._set_status(f"已连接 · {target.target_override}", "ok")
+                self._set_status(tr("log.connected", target=target.target_override), "ok")
                 self._log(result.message)
                 details = getattr(result, "data", None)
                 if details is not None:
                     self.target_info_panel.apply(details)
                 else:
                     self._start_refresh_info()
-                # CubeProgrammer-like: pull the first flash page into Hex preview
                 self._auto_preview_chip(details)
             else:
                 self.probe_panel.set_error(result.message)
                 self.flash_panel.set_ops_enabled(False)
                 self.hex_preview.set_chip_read_enabled(False)
                 self.target_info_panel.clear()
-                self._set_status("连接失败", "err")
+                self._set_status(tr("status.failed"), "err")
                 self._log(result.message, True)
                 self._hide_progress()
 
@@ -892,12 +613,11 @@ class MainWindow(QMainWindow):
             self.flash_panel.set_ops_enabled(False)
             self.hex_preview.set_chip_read_enabled(False)
             self.target_info_panel.clear()
-            self._set_status("连接失败", "err")
+            self._set_status(tr("status.failed"), "err")
 
         self._run_async(lambda: self.service.connect(probe, target), on_ok, on_err)
 
     def _auto_preview_chip(self, details: object | None) -> None:
-        """After connect, load the first flash page into Hex (CubeProgrammer-like)."""
         addr = 0x0800_0000
         size = 0x1000
         if details is not None:
@@ -912,41 +632,40 @@ class MainWindow(QMainWindow):
             self.hex_preview.size_spin.setValue(size)
         except Exception:
             log.debug("sync hex spins failed", exc_info=True)
-        self._log(f"正在加载 Hex 预览：0x{addr:08X} + {size:,} 字节 …")
+        self._log(tr("log.hex_loading", addr=f"{addr:08X}", size=f"{size:,}"))
         self._start_read_chip(addr, size)
 
     def _do_disconnect(self) -> None:
         try:
             self.service.disconnect()
         except Exception as exc:
-            self._log(f"断开异常: {exc}", True)
+            self._log(tr("log.disconnect_err", err=str(exc)), True)
         self.probe_panel.set_connected(False)
         self.flash_panel.set_ops_enabled(False)
         self.hex_preview.set_chip_read_enabled(False)
         self.rtt_panel.set_connected(False)
         self.swo_panel.set_connected(False)
         self.target_info_panel.clear()
-        self._set_status("未连接", "warn")
+        self._set_status(tr("status.disconnected"), "warn")
         self._hide_progress()
-        self._log("已断开")
+        self._log(tr("log.disconnected"))
 
     def _on_catalog_changed(self) -> None:
         self.probe_panel.reload_targets()
-        self._log("设备列表已更新")
+        self._log(tr("log.devices_updated"))
 
     def _on_firmware_path_changed(self, path: str) -> None:
-        """Auto-load selected firmware into Hex preview (new sub-page)."""
         path = path.strip()
         if not path or not Path(path).is_file():
             return
         try:
             self.hex_preview.load_file(path)
-            self._log(f"Hex 预览已打开 {Path(path).name}")
+            self._log(tr("log.hex_loaded", name=Path(path).name))
         except Exception:
             log.exception("hex preview load")
 
     def _start_read_chip(self, addr: int, size: int) -> None:
-        self._show_progress(0, f"读取芯片 0x{addr:08X} …")
+        self._show_progress(0, tr("log.chip_read", addr=f"0x{addr:08X}"))
 
         def work():
             data = self.service.read_memory_bytes(addr, size)
@@ -954,135 +673,142 @@ class MainWindow(QMainWindow):
 
         def on_ok(result) -> None:
             a, data = result
-            self.hex_preview.load_bytes(a, data, source=f"芯片 0x{a:08X}")
-            self._show_progress(100, f"已读取 {len(data):,} 字节")
-            self._log(f"芯片内存已加载到 Hex 预览：0x{a:08X} + {len(data):,} 字节")
-            # switch to hex tab
-            tabs = self.centralWidget().findChild(QTabWidget, "mainTabs")
-            if tabs is not None:
-                for i in range(tabs.count()):
-                    if "Hex" in tabs.tabText(i):
-                        tabs.setCurrentIndex(i)
-                        break
+            self.hex_preview.load_bytes(a, data, source=None)
+            self._show_progress(100, tr("log.chip_read_done", size=f"{len(data):,}"))
 
-        self._run_async(work, on_ok)
+        def on_err(msg: str) -> None:
+            self._log(msg, True)
+            self._hide_progress()
 
-    def _start_fill_ram(self, addr: int, size: int, value: int) -> None:
-        self._show_progress(0, f"填充 RAM 0x{addr:08X} …")
-        self._log(f"开始填充 RAM 0x{addr:08X} + {size:,} 字节（0x{value:02X}）")
+        self._run_async(work, on_ok, on_err)
 
-        def work():
-            result = self.service.fill_memory(addr, size, value)
-            data = b""
-            if result.ok:
-                data = self.service.read_memory_bytes(addr, size)
-            return result, data
+    def _start_program(self, path: str, verify: bool = True) -> None:
+        self._show_progress(0, tr("log.programming"))
 
-        def on_ok(payload) -> None:
-            result, data = payload
+        def on_ok(result) -> None:
+            self._set_busy(False)
             self._log(result.message, not result.ok)
             if result.ok:
-                self._show_progress(100, result.message)
-                if data:
-                    self.hex_preview.load_bytes(
-                        addr, data, source=f"RAM 填充 0x{value:02X}"
-                    )
-                QMessageBox.information(self, "填充完成", result.message)
+                self._show_progress(100, result.message or "OK")
             else:
                 self._hide_progress()
-                QMessageBox.warning(self, "填充失败", result.message)
 
-        self._run_async(work, on_ok)
+        def on_err(msg: str) -> None:
+            self._set_busy(False)
+            self._log(msg, True)
+            self._hide_progress()
+
+        if not self._run_async(
+            lambda: self.service.program_file(path, verify=verify), on_ok, on_err
+        ):
+            self._log(tr("log.busy"), True)
+
+    def _start_erase(self) -> None:
+        self._show_progress(0, tr("log.erasing"))
+
+        def on_ok(result) -> None:
+            self._set_busy(False)
+            self._log(result.message, not result.ok)
+            self._hide_progress()
+
+        def on_err(msg: str) -> None:
+            self._set_busy(False)
+            self._log(msg, True)
+            self._hide_progress()
+
+        self._run_async(self.service.erase_all, on_ok, on_err)
+
+    def _start_erase_range(self, address: int, size: int) -> None:
+        self._show_progress(0, tr("log.erasing_range"))
+
+        def on_ok(result) -> None:
+            self._set_busy(False)
+            self._log(result.message, not result.ok)
+            self._hide_progress()
+
+        def on_err(msg: str) -> None:
+            self._set_busy(False)
+            self._log(msg, True)
+            self._hide_progress()
+
+        self._run_async(lambda: self.service.erase_range(address, size), on_ok, on_err)
+
+    def _start_read(self, address: int, size: int, out_path: str) -> None:
+        self._show_progress(0, tr("log.reading"))
+
+        def on_ok(result) -> None:
+            self._set_busy(False)
+            self._log(result.message, not result.ok)
+            self._hide_progress()
+
+        def on_err(msg: str) -> None:
+            self._set_busy(False)
+            self._log(msg, True)
+            self._hide_progress()
+
+        self._run_async(
+            lambda: self.service.read_flash(address, size, out_path), on_ok, on_err
+        )
+
+    def _start_verify(self, path: str) -> None:
+        self._show_progress(0, tr("log.verifying"))
+
+        def on_ok(result) -> None:
+            self._set_busy(False)
+            self._log(result.message, not result.ok)
+            self._hide_progress()
+
+        def on_err(msg: str) -> None:
+            self._set_busy(False)
+            self._log(msg, True)
+            self._hide_progress()
+
+        self._run_async(lambda: self.service.verify_file(path), on_ok, on_err)
+
+    def _start_reset(self) -> None:
+        def on_ok(result) -> None:
+            self._set_busy(False)
+            self._log(result.message, not result.ok)
+
+        def on_err(msg: str) -> None:
+            self._set_busy(False)
+            self._log(msg, True)
+
+        self._run_async(lambda: self.service.reset_target(halt=False), on_ok, on_err)
 
     def _start_refresh_info(self) -> None:
         def on_ok(details) -> None:
             self.target_info_panel.apply(details)
-            self._log(f"目标信息已更新 — {details.summary_line()}")
 
-        self._run_async(self.service.target_details, on_ok)
+        def on_err(msg: str) -> None:
+            self._log(msg, True)
 
-    def _start_program(self, path: str, verify: bool) -> None:
-        self._show_progress(0, f"烧录 {path} …")
-        self._log(f"开始烧录 {path} …")
+        self._run_async(self.service.target_details, on_ok, on_err, quiet_busy=True)
+
+    def _start_fill_ram(self, addr: int, size: int, value: int) -> None:
+        self._show_progress(0, tr("log.filling"))
 
         def on_ok(result) -> None:
-            if result.ok:
-                self._show_progress(100, result.message)
-                self._log(result.message)
-                QMessageBox.information(self, "烧录完成", result.message)
-            else:
-                self._hide_progress()
-                self._log(result.message, True)
-                QMessageBox.warning(self, "烧录失败", result.message)
+            self._set_busy(False)
+            self._log(result.message, not result.ok)
+            self._hide_progress()
 
-        self._run_async(lambda: self.service.program_file(path, verify), on_ok)
+        def on_err(msg: str) -> None:
+            self._set_busy(False)
+            self._log(msg, True)
+            self._hide_progress()
 
-    def _start_erase(self) -> None:
-        reply = QMessageBox.question(
-            self,
-            "确认擦除",
-            "将对目标芯片执行全片擦除，此操作不可撤销。继续？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
+        self._run_async(
+            lambda: self.service.fill_memory(addr, size, value), on_ok, on_err
         )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
 
-        self._show_progress(0, "擦除中…")
-
-        def on_ok(result) -> None:
-            self._log(result.message, not result.ok)
-            if result.ok:
-                self._show_progress(100, result.message)
-                QMessageBox.information(self, "擦除完成", result.message)
-            else:
-                self._hide_progress()
-
-        self._run_async(self.service.erase_all, on_ok)
-
-    def _start_read(self, addr: int, size: int, out: str) -> None:
-        self._show_progress(0, f"读取 0x{addr:08X} …")
-
-        def on_ok(result) -> None:
-            self._log(result.message, not result.ok)
-            if result.ok:
-                self._show_progress(100, result.message)
-                QMessageBox.information(self, "读取完成", result.message)
-            else:
-                self._hide_progress()
-
-        self._run_async(lambda: self.service.read_flash(addr, size, out), on_ok)
-
-    def _start_verify(self, path: str) -> None:
-        self._show_progress(0, "校验中…")
-
-        def on_ok(result) -> None:
-            self._log(result.message, not result.ok)
-            if result.ok:
-                self._show_progress(100, result.message)
-                QMessageBox.information(self, "校验通过", result.message)
-            else:
-                self._hide_progress()
-                QMessageBox.warning(self, "校验失败", result.message)
-
-        self._run_async(lambda: self.service.verify_file(path), on_ok)
-
-    def _start_reset(self) -> None:
-        def on_ok(result) -> None:
-            self._log(result.message, not result.ok)
-
-        self._run_async(lambda: self.service.reset_target(False), on_ok)
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
-    def closeEvent(self, event) -> None:
+    def closeEvent(self, event) -> None:  # noqa: N802
         try:
+            if hasattr(self, "shell"):
+                self.shell.shutdown()
             self.rtt_panel.shutdown()
             self.swo_panel.shutdown()
             self._runner.shutdown()
-            self.service.disconnect()
         except Exception:
-            log.exception("close cleanup")
+            log.exception("shutdown error")
         super().closeEvent(event)

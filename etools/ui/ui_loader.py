@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QFile
+from PySide6.QtCore import QFile, Qt
 from PySide6.QtUiTools import QUiLoader
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import QSizePolicy, QVBoxLayout, QWidget
 
 FORMS_DIR = Path(__file__).resolve().parent / "forms"
 
@@ -53,4 +53,7 @@ def embed_form(host: QWidget, name: str) -> QWidget:
         if w is not None:
             w.deleteLater()
     lay.addWidget(form)
+    # Expand to fill the host (e.g. log view reaches the bottom).
+    # Do not set AlignTop here — alignment disables widget expansion.
+    form.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
     return form

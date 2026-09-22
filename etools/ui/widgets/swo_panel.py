@@ -21,6 +21,9 @@ from etools.logger import get_logger
 log = get_logger("ui.swv")
 
 MAX_VIEW_LINES = 5000
+from etools.i18n import tr as _tr
+
+
 # Common ITM ports people use; user can type any 0–31
 DEFAULT_PORTS = [0]
 
@@ -87,7 +90,7 @@ class _SwvReader:
     ) -> bool:
         self.stop()
         if session is None:
-            self._bridge.status.emit("未连接")
+            self._bridge.status.emit("—")
             return False
         probe = getattr(session, "probe", None)
         if probe is None:
@@ -191,6 +194,7 @@ class _SwvReader:
 
 class SwvPanel(QWidget):
     """SWV console with multi ITM port tabs (renamed from SWO)."""
+    """SWV console with multi ITM port tabs (renamed from SWO)."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -206,14 +210,16 @@ class SwvPanel(QWidget):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
 
+        from etools.i18n import tr as _tr
+
         bar = QHBoxLayout()
         bar.setSpacing(6)
-        title = QLabel("SWV (Serial Wire Viewer)")
+        title = QLabel("SWV")
         title.setObjectName("panelTitle")
         bar.addWidget(title)
         bar.addStretch(1)
 
-        bar.addWidget(QLabel("系统时钟 Hz"))
+        bar.addWidget(QLabel(_tr("swv.sysclk")))
         from etools.ui.widgets.spin_boxes import int_spin
 
         spin_w = 110
@@ -224,7 +230,7 @@ class SwvPanel(QWidget):
         self.sys_edit = self.sys_spin
         bar.addWidget(self.sys_spin)
 
-        bar.addWidget(QLabel("SWO 时钟 Hz"))
+        bar.addWidget(QLabel(_tr("swv.swoclk")))
         self.swo_spin = int_spin(
             2_000_000, minimum=1_000, maximum=50_000_000, step=100_000, width=spin_w
         )
@@ -232,23 +238,23 @@ class SwvPanel(QWidget):
         self.swo_edit = self.swo_spin
         bar.addWidget(self.swo_spin)
 
-        bar.addWidget(QLabel("ITM 端口"))
+        bar.addWidget(QLabel(_tr("swv.itm_port")))
         self.port_spin = int_spin(0, minimum=0, maximum=31, step=1, width=spin_w)
         self.port_spin.setFixedWidth(spin_w)
         self.port_edit = self.port_spin
         bar.addWidget(self.port_spin)
 
-        self.start_btn = QPushButton("启动 SWV")
+        self.start_btn = QPushButton(_tr("swv.start"))
         self.start_btn.setObjectName("accent")
         self.start_btn.setEnabled(False)
         bar.addWidget(self.start_btn)
 
-        self.clear_btn = QPushButton("清空")
+        self.clear_btn = QPushButton(_tr("swv.clear"))
         self.clear_btn.setObjectName("ghost")
         bar.addWidget(self.clear_btn)
         root.addLayout(bar)
 
-        self.status_label = QLabel("未启动（需探针 SWO + 目标 ITM/TPIU；端口用逗号分隔）")
+        self.status_label = QLabel(_tr("swv.status_off"))
         self.status_label.setObjectName("hint")
         root.addWidget(self.status_label)
 
@@ -264,7 +270,7 @@ class SwvPanel(QWidget):
         ph = QPlainTextEdit()
         ph.setObjectName("logView")
         ph.setReadOnly(True)
-        ph.setPlaceholderText("启动 SWV 后按端口生成页签，例如端口填 0,1")
+        ph.setPlaceholderText(_tr("swv.placeholder"))
         self.tabs.addTab(ph, "端口 —")
 
     def _wire(self) -> None:
@@ -272,6 +278,11 @@ class SwvPanel(QWidget):
         self.clear_btn.clicked.connect(self._clear_current)
         self._bridge.text_received.connect(self._on_text)
         self._bridge.status.connect(lambda m: self.status_label.setText(m))
+
+    def retranslate(self) -> None:
+        from etools.i18n import tr as _tr
+
+        self.clear_btn.setText(_tr("swv.clear"))
 
     def set_connected(self, connected: bool) -> None:
         self.start_btn.setEnabled(connected)
@@ -300,7 +311,7 @@ class SwvPanel(QWidget):
 
     def _stop(self) -> None:
         self._reader.stop()
-        self.start_btn.setText("启动 SWV")
+        self.start_btn.setText(_tr("swv.start"))
         self.status_label.setText("已停止")
 
     def _build_channel_tabs(self, ports: set[int]) -> None:

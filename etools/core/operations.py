@@ -41,6 +41,13 @@ class FlashService:
     def erase_sector(self) -> OperationResult:
         return self.driver.erase(full_chip=False)
 
+    def erase_range(self, address: int, size: int) -> OperationResult:
+        """Erase flash blocks covering [address, address+size)."""
+        eraser = getattr(self.driver, "erase_range", None)
+        if eraser is None:
+            raise RuntimeError("Driver does not support erase_range")
+        return eraser(int(address), int(size))
+
     def program_file(self, path: str | Path, verify: bool = True) -> OperationResult:
         img = FirmwareImage(path=Path(path))
         if not img.exists:

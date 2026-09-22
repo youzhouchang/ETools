@@ -55,7 +55,7 @@ class HexDocumentView(QWidget):
 
         self.table = QTableWidget(0, 18)
         self.table.setHorizontalHeaderLabels(
-            ["地址"] + [f"{i:02X}" for i in range(16)] + ["ASCII"]
+            [tr("hex.addr_col")] + [f"{i:02X}" for i in range(16)] + ["ASCII"]
         )
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -91,8 +91,8 @@ class HexDocumentView(QWidget):
             segments = load_image_segments(p)
         self.load_segments(segments, source=p.name)
 
-    def load_bytes(self, addr: int, data: bytes, source: str = "芯片内存") -> None:
-        self.load_segments([(addr, data)], source=source)
+    def load_bytes(self, addr: int, data: bytes, source: str | None = None) -> None:
+        self.load_segments([(addr, data)], source=source or tr("hex.chip_mem"))
 
     def _render(self, source: str = "") -> None:
         rows_data: list[tuple[str, str, str]] = []
@@ -248,7 +248,7 @@ class HexPreviewPanel(QWidget):
         self.mem_view.load_bytes(
             0x0800_0000,
             b"\xFF" * 0x400,
-            source="空白芯片示意（0xFF）",
+            source=tr("hex.blank_source"),
         )
 
     def _select_read_action(self, action) -> None:
@@ -341,7 +341,7 @@ class HexPreviewPanel(QWidget):
 
     def load_bytes(self, addr: int, data: bytes, source: str | None = None) -> None:
         """Load into 内存信息 page (device memory)."""
-        self.mem_view.load_bytes(addr, data, source=source or f"芯片 0x{addr:08X}")
+        self.mem_view.load_bytes(addr, data, source=source or tr("hex.chip_src", addr=f"{addr:08X}"))
         idx = self.tabs.indexOf(self.mem_view)
         if idx >= 0:
             self.tabs.setCurrentIndex(idx)
@@ -381,7 +381,7 @@ class HexPreviewPanel(QWidget):
         try:
             data = self.mem_view._segments
             if not data:
-                self.mem_view.info_label.setText("无内存数据可保存，请先读取芯片")
+                self.mem_view.info_label.setText(tr("hex.need_data_save"))
                 return
             blob = b"".join(d for _, d in data)
             Path(path).write_bytes(blob)
@@ -396,7 +396,7 @@ class HexPreviewPanel(QWidget):
         addr = self._current_addr()
         size = self._read_size_bytes()
         if size <= 0 or size > 256 * 1024:
-            self.mem_view.info_label.setText("填充长度需在 1 … 256 KiB")
+            self.mem_view.info_label.setText(tr("hex.fill_limit"))
             return
 
         text, ok = QInputDialog.getText(
@@ -419,11 +419,8 @@ class HexPreviewPanel(QWidget):
 
         confirm = QMessageBox.question(
             self,
-            "确认填充",
-            (
-                f"将向 RAM 0x{addr:08X} 写入 {size:,} 字节（0x{value:02X}）。\n"
-                "这会破坏该区域原有数据。继续？"
-            ),
+            tr("hex.fill_confirm_title"),
+            tr("confirm.fill_text", addr=addr, size=size, value=value),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -435,19 +432,19 @@ class HexPreviewPanel(QWidget):
         # Check if current mem dump is all 0xFF
         segs = self.mem_view._segments
         if not segs:
-            self.mem_view.info_label.setText("请先读取芯片再做空白检查")
+            self.mem_view.info_label.setText(tr("hex.need_chip_blank"))
             return
         blank = all(all(b == 0xFF for b in d) for _, d in segs)
         total = sum(len(d) for _, d in segs)
-        msg = "空白检查通过（全部 0xFF）" if blank else "空白检查失败（存在非 0xFF 数据）"
+        msg = tr("hex.blank_ok") if blank else tr("hex.blank_fail")
         self.mem_view.info_label.setText(f"{msg} · {total:,} 字节")
 
     def _on_compare_with_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "选择比较文件", "", FIRMWARE_EXTENSIONS)
+        path, _ = QFileDialog.getOpenFileName(self, tr("hex.cmp_file_title"), "", FIRMWARE_EXTENSIONS)
         if not path:
             return
         if not self.mem_view._segments:
-            self.mem_view.info_label.setText("请先读取芯片内存")
+            self.mem_view.info_label.setText(tr("hex.need_chip"))
             return
         try:
             from etools.core.hexdump import load_image_segments
@@ -459,36 +456,34 @@ class HexPreviewPanel(QWidget):
             n = min(len(chip), len(file_blob))
             mismatch = next((i for i in range(n) if chip[i] != file_blob[i]), None)
             if mismatch is None and len(chip) == len(file_blob):
-                self.mem_view.info_label.setText(f"与 {Path(path).name} 完全一致")
+                self.mem_view.info_label.setText(tr("hex.cmp_with", name=Path(path).name))
             elif mismatch is None:
                 self.mem_view.info_label.setText(
-                    f"长度不同：芯片 {len(chip):,} vs 文件 {len(file_blob):,}"
+                    tr("hex.cmp_len_diff", a=len(chip), b=len(file_blob))
                 )
             else:
                 self.mem_view.info_label.setText(
-                    f"与 {Path(path).name} 不一致，首处偏移 0x{mismatch:X}"
+                    tr("hex.cmp_mismatch", name=Path(path).name, offset=mismatch)
                 )
         except Exception as exc:
-            self.mem_view.info_label.setText(f"比较失败：{exc}")
+            self.mem_view.info_label.setText(tr("hex.cmp_fail", err=str(exc)))
 
     def _on_compare_two_files(self) -> None:
-        p1, _ = QFileDialog.getOpenFileName(self, "选择文件 1", "", FIRMWARE_EXTENSIONS)
+        p1, _ = QFileDialog.getOpenFileName(self, tr("hex.cmp_p1"), "", FIRMWARE_EXTENSIONS)
         if not p1:
             return
-        p2, _ = QFileDialog.getOpenFileName(self, "选择文件 2", "", FIRMWARE_EXTENSIONS)
+        p2, _ = QFileDialog.getOpenFileName(self, tr("hex.cmp_p2"), "", FIRMWARE_EXTENSIONS)
         if not p2:
             return
         try:
             b1 = Path(p1).read_bytes()
             b2 = Path(p2).read_bytes()
             if b1 == b2:
-                msg = "两个文件完全一致"
+                msg = tr("hex.cmp_files_ok")
             else:
                 n = min(len(b1), len(b2))
                 i = next((j for j in range(n) if b1[j] != b2[j]), n)
-                msg = (
-                    f"不一致，首处偏移 0x{i:X}；长度 {len(b1):,} vs {len(b2):,}"
-                )
+                msg = tr("hex.cmp_files_diff", offset=i, a=len(b1), b=len(b2))
             self.mem_view.info_label.setText(msg)
         except Exception as exc:
-            self.mem_view.info_label.setText(f"比较失败：{exc}")
+            self.mem_view.info_label.setText(tr("hex.cmp_fail", err=str(exc)))
