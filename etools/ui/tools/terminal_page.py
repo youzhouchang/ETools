@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QToolButton,
 )
 
 from etools.core.ssh_link import (
@@ -61,22 +62,24 @@ class TerminalPage(ToolPage):
         self.password.setFixedHeight(28)
         self.lbl_pass = self.form_row(tr("term.password"), self.password)
 
-        key_row = QHBoxLayout()
-        key_row.setSpacing(6)
+        # Private key: browse button sits inside the line edit (visible label).
         self.key_edit = QLineEdit()
         self.key_edit.setFixedHeight(28)
-        self.key_edit.setPlaceholderText(tr("term.keyfile"))
-        self.key_browse = QPushButton(tr("term.key_browse"))
-        self.key_browse.setObjectName("ghost")
-        self.key_browse.setFixedHeight(28)
-        key_row.addWidget(self.key_edit, 1)
-        key_row.addWidget(self.key_browse)
-        from PySide6.QtWidgets import QWidget as _QW
-
-        key_box = _QW()
-        key_box.setLayout(key_row)
-        self.lbl_key = self.form_row(tr("term.keyfile"), key_box)
+        self.key_edit.setTextMargins(0, 0, 56, 0)
+        self.key_edit.setPlaceholderText(tr("term.keyfile_ph"))
+        self.key_browse = QToolButton(self.key_edit)
+        self.key_browse.setText(tr("term.key_browse"))
+        self.key_browse.setFixedHeight(22)
+        self.key_browse.setStyleSheet(
+            "QToolButton { border: none; background: transparent;"
+            " padding: 0 6px; color: #8A96A8; font-size: 11px; }"
+            "QToolButton:hover { color: #1F2933; background: rgba(0,0,0,0.08);"
+            " border-radius: 4px; }"
+        )
         self.key_browse.clicked.connect(self._browse_key)
+        self.lbl_key = self.form_row(tr("term.keyfile"), self.key_edit)
+        self.key_edit.installEventFilter(self)
+        self._place_key_browse()
 
         self.conn_btn = QPushButton()
         self.conn_btn.setObjectName("accent")
@@ -133,11 +136,22 @@ class TerminalPage(ToolPage):
     def eventFilter(self, obj, event):  # noqa: N802
         from PySide6.QtCore import QEvent, Qt
 
-        if obj is self.cmd and event.type() == QEvent.Type.KeyPress:
+        if obj is getattr(self, "key_edit", None) and event.type() == QEvent.Type.Resize:
+            self._place_key_browse()
+        if obj is getattr(self, "cmd", None) and event.type() == QEvent.Type.KeyPress:
             if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
                 self._browse_history(event.key() == Qt.Key.Key_Up)
                 return True
         return super().eventFilter(obj, event)
+
+    def _place_key_browse(self) -> None:
+        btn = getattr(self, "key_browse", None)
+        edit = getattr(self, "key_edit", None)
+        if btn is None or edit is None:
+            return
+        w = max(40, btn.sizeHint().width())
+        btn.resize(w, 22)
+        btn.move(edit.width() - w - 3, (edit.height() - 22) // 2)
 
     def _browse_history(self, up: bool) -> None:
         if not self._history:
@@ -166,7 +180,7 @@ class TerminalPage(ToolPage):
         self.lbl_pass.setText(tr("term.password"))
         self.lbl_key.setText(tr("term.keyfile"))
         self.key_browse.setText(tr("term.key_browse"))
-        self.key_edit.setPlaceholderText(tr("term.keyfile"))
+        self.key_edit.setPlaceholderText(tr("term.keyfile_ph"))
         self.conn_btn.setText(tr("term.disconnect") if self._opened else tr("term.connect"))
         self.term.setPlaceholderText(tr("term.placeholder"))
         self.cmd.setPlaceholderText(tr("term.cmd_ph"))
@@ -180,11 +194,19 @@ class TerminalPage(ToolPage):
             ToolActionSpec("toggle", "term.connect", "connect", self.toggle_connection),
             ToolActionSpec("exec", "term.exec", "read", self.exec_command),
             ToolActionSpec(
+                "run_script", "script.run_menu", "hex", self._run_script_menu
+            ),
+            ToolActionSpec(
                 "clear", "term.clear", "clear", self.clear_view, separator_before=True
             ),
         ]
         acts.extend(self.sftp_panel.toolbar_actions())
         return acts
+
+    def _run_script_menu(self) -> None:
+        from etools.ui.tools.script_menu import exec_script_menu
+
+        exec_script_menu(self)
 
     def toggle_connection(self) -> None:
         self._on_toggle()
@@ -194,6 +216,24 @@ class TerminalPage(ToolPage):
 
     def clear_view(self) -> None:
         self.term.clear()
+
+    def lua_send_text(self, text: str) -> bool:
+        """Run one SSH command from Lua (terminal tool)."""
+        if not self._opened:
+            return False
+        text = str(text)
+        try:
+            status, out, err = self._ssh.exec_command(text)
+            self._log(f"$ {text}")
+            if out:
+                self._log(out.rstrip())
+            if err:
+                self._log(err.rstrip())
+            self._log(f"[exit {status}]")
+            return status == 0
+        except Exception as exc:  # noqa: BLE001
+            self._log(tr("term.err", err=str(exc)))
+            return False
 
     def _log(self, line: str) -> None:
         self.term.appendPlainText(line)

@@ -58,6 +58,7 @@ _SEMANTIC_ROLE: dict[str, str] = {
     "tool-serial": "success",
     "tool-ethernet": "accent",
     "tool-terminal": "warning",
+    "tool-script": "accent",
 }
 
 _cache: dict[tuple[str, str, int], QPixmap] = {}

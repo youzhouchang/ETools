@@ -216,9 +216,17 @@ class EthernetPage(ToolPage):
             ToolActionSpec("toggle", "net.connect", "connect", self.toggle_connection),
             ToolActionSpec("send", "net.send", "program", self.send),
             ToolActionSpec(
+                "run_script", "script.run_menu", "hex", self._run_script_menu
+            ),
+            ToolActionSpec(
                 "clear", "mon.clear", "clear", self.clear_view, separator_before=True
             ),
         ]
+
+    def _run_script_menu(self) -> None:
+        from etools.ui.tools.script_menu import exec_script_menu
+
+        exec_script_menu(self)
 
     def toggle_connection(self) -> None:
         self._on_toggle()
@@ -228,6 +236,42 @@ class EthernetPage(ToolPage):
 
     def clear_view(self) -> None:
         self.traffic.clear()
+
+    # -- Lua bridge helpers --------------------------------------------
+
+    def lua_send_text(self, text: str) -> bool:
+        from etools.ui.widgets.traffic_view import parse_hex_input
+
+        if not self._opened:
+            return False
+        end_key = self.ending.currentData() or "crlf"
+        end_map = {"crlf": b"\r\n", "lf": b"\n", "cr": b"\r", "none": b""}
+        ending_bytes = end_map.get(str(end_key), b"\r\n")
+        try:
+            if self.mode_combo.currentData() == "hex":
+                data = parse_hex_input(text) + ending_bytes
+            else:
+                data = text.encode("utf-8") + ending_bytes
+        except ValueError:
+            self.traffic.append_status(tr("net.err", err="bad hex"))
+            return False
+        try:
+            self._link.send(data)
+        except Exception as exc:  # noqa: BLE001
+            self.traffic.append_status(tr("net.err", err=str(exc)))
+            return False
+        self.traffic.append_tx(data)
+        return True
+
+    def lua_take_rx(self, max_bytes: int = 4096) -> bytes:
+        buf = getattr(self, "_lua_rx", None)
+        if buf is None:
+            self._lua_rx = bytearray()
+            buf = self._lua_rx
+        n = max(0, int(max_bytes))
+        data = bytes(buf[:n])
+        del buf[:n]
+        return data
 
     def _load_prefs(self) -> None:
         prefs = load_tool_prefs(self.tool_id)
@@ -338,6 +382,11 @@ class EthernetPage(ToolPage):
         self.send_edit.clear()
 
     def _on_rx(self, data: bytes, peer: str) -> None:
+        if not hasattr(self, "_lua_rx"):
+            self._lua_rx = bytearray()
+        self._lua_rx.extend(data)
+        if len(self._lua_rx) > 65536:
+            del self._lua_rx[:-65536]
         self.traffic.append_rx(data, peer=peer)
 
     def _on_rx_mode_changed(self, _index: int = 0) -> None:

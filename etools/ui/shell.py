@@ -36,6 +36,7 @@ TOOL_ORDER: list[tuple[str, str]] = [
     ("serial", "tool-serial"),
     ("ethernet", "tool-ethernet"),
     ("terminal", "tool-terminal"),
+    ("script", "tool-script"),
 ]
 
 _RAIL_BTN = 48

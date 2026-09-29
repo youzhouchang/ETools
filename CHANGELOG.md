@@ -12,6 +12,22 @@ Release workflow 会读取与 tag 匹配的小节（如 `## [0.1.2]` 或 `## [0.
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **全局 Lua 脚本**（新工具页 `tool-script`）：`etools.app/util/serial/net/term/flash` 跨工具 API，支持数据处理、串口联调、自定义烧录流程；后台线程执行不卡 UI
+- 串口**收包校验**：按当前校验算法核对 RX 帧尾，状态栏显示 OK/FAIL
+- 串口**帧校验**：XOR / SUM8 / SUM16 / CRC-8 / CRC-16-MODBUS / CRC-16-CCITT / CRC-32，发送自动附加，实时预览校验值
+- 串口**自动化脚本**：`send` / `send_hex` / `wait` / `expect` / `log`，不阻塞 UI 的逐步执行与超时中止
+- Windows 安装包（Inno Setup / NSIS）安装与卸载后自动刷新 Explorer 图标缓存（`SHChangeNotify` + `ie4uinit -show`/`-ClearIconCache`），桌面图标立即更新
+
+### Changed
+
+- 桌面品牌图标改为高对比亮蓝芯片+闪电，小尺寸可读；依赖新增 `lupa`
+
+---
+
 ## [0.3.0] - 2026-09-29
 
 ### Added

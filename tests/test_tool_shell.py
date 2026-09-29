@@ -60,9 +60,15 @@ def test_tool_prefs_readonly_save_is_best_effort(monkeypatch):
 
 
 def test_tool_pages_public_api(qapp):
-    from etools.ui.tools import EthernetPage, ProgramPage, SerialPage, TerminalPage
+    from etools.ui.tools import (
+        EthernetPage,
+        ProgramPage,
+        ScriptPage,
+        SerialPage,
+        TerminalPage,
+    )
 
-    for page_cls in (ProgramPage, SerialPage, EthernetPage, TerminalPage):
+    for page_cls in (ProgramPage, SerialPage, EthernetPage, TerminalPage, ScriptPage):
         page = page_cls()
         actions = page.toolbar_actions()
         assert actions, page_cls.__name__
@@ -102,6 +108,9 @@ def test_serial_presets_and_cyclic(qapp, tmp_path, monkeypatch):
     assert page.cyclic_check is not None
     assert page.cyclic_interval.minimum() == 1
     assert page.cyclic_interval.value() >= 1
+    assert page.checksum.count() >= 5
+    assert page.work_tabs.count() == 3
+    assert page.script_edit is not None
 
     page._preset_edits[0].setText("AT+RST")
     page._preset_checks[0].setChecked(True)
@@ -262,6 +271,7 @@ def test_shell_builds_and_switches(qapp):
     from etools.ui.tools import (
         EthernetPage,
         ProgramPage,
+        ScriptPage,
         SerialPage,
         SftpPanel,
         TerminalPage,
@@ -271,6 +281,7 @@ def test_shell_builds_and_switches(qapp):
     serial = SerialPage()
     ethernet = EthernetPage()
     terminal = TerminalPage()
+    script = ScriptPage()
     sftp = SftpPanel()
     terminal.ssh_link_changed.connect(sftp.set_ssh)
 
@@ -279,12 +290,14 @@ def test_shell_builds_and_switches(qapp):
         "serial": serial,
         "ethernet": ethernet,
         "terminal": terminal,
+        "script": script,
     }
     providers = {
         "program": program.toolbar_actions,
         "serial": serial.toolbar_actions,
         "ethernet": ethernet.toolbar_actions,
         "terminal": lambda: list(terminal.toolbar_actions()) + list(sftp.toolbar_actions()),
+        "script": script.toolbar_actions,
     }
     shell = ToolShell(pages, providers)
     assert shell.tool_keys == [k for k, _ in TOOL_ORDER]
@@ -298,7 +311,7 @@ def test_shell_builds_and_switches(qapp):
     assert shell._rail.maximumHeight() >= n * 48
 
     shell.shutdown()
-    for p in (program, serial, ethernet, terminal, sftp):
+    for p in (program, serial, ethernet, terminal, script, sftp):
         p.close()
     shell.close()
 

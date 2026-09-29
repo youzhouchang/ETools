@@ -7,8 +7,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QGuiApplication, QIcon, QImage, QPainter
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QGuiApplication, QImage, QPainter
 from PySide6.QtSvg import QSvgRenderer
 
 ROOT = Path(__file__).resolve().parent
@@ -52,24 +52,14 @@ def main() -> int:
         if src.exists():
             shutil.copyfile(src, OUT_PNG / f"etools-{size}.png")
 
-    # Multi-size ICO via QIcon
-    icon = QIcon(str(logo))
+    # Multi-size ICO via Pillow (256 base + explicit sizes so every entry is present)
     icon_path = OUT_PNG / "etools.ico"
-    # QImageWriter ICO is unreliable across Qt builds — stitch with Pillow if available
     try:
         from PIL import Image
 
         sizes = [16, 24, 32, 48, 64, 128, 256]
-        pil_images = []
-        for size in sizes:
-            png = OUT_PNG / f"logo-{size}.png"
-            pil_images.append(Image.open(png).convert("RGBA"))
-        pil_images[0].save(
-            icon_path,
-            format="ICO",
-            sizes=[(s, s) for s in sizes],
-            append_images=pil_images[1:],
-        )
+        base = Image.open(OUT_PNG / "logo-256.png").convert("RGBA")
+        base.save(icon_path, format="ICO", sizes=[(s, s) for s in sizes])
         print(icon_path.name)
     except Exception as exc:
         # Fallback: save largest as PNG only

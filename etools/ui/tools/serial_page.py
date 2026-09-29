@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from etools.core.checksum import ALGORITHMS, append_checksum, compute_checksum
 from etools.core.serial_link import SerialLink, list_serial_ports
 from etools.i18n import tr
 from etools.ui.shell import ToolActionSpec
@@ -212,6 +213,16 @@ class SerialPage(ToolPage):
         self.ending.setFixedHeight(28)
         self.ending.setFixedWidth(88)
         self.lbl_ending = QLabel(tr("serial.ending"))
+        self.checksum = QComboBox()
+        for algo in ALGORITHMS:
+            self.checksum.addItem(tr(f"serial.checksum.{algo}"), algo)
+        self.checksum.setFixedHeight(28)
+        self.checksum.setFixedWidth(130)
+        self.lbl_checksum = QLabel(tr("serial.checksum"))
+        self.checksum_preview = QLabel("")
+        self.checksum_preview.setObjectName("mutedLabel")
+        self.rx_verify = QCheckBox(tr("serial.rx_verify"))
+        self.rx_verify.setChecked(True)
         self.history_btn = QPushButton(tr("serial.history"))
         self.history_btn.setObjectName("ghost")
         self.history_btn.setFixedHeight(28)
@@ -284,6 +295,10 @@ class SerialPage(ToolPage):
         top_meta.addWidget(self.rx_mode)
         top_meta.addWidget(self.lbl_ending)
         top_meta.addWidget(self.ending)
+        top_meta.addWidget(self.lbl_checksum)
+        top_meta.addWidget(self.checksum)
+        top_meta.addWidget(self.checksum_preview)
+        top_meta.addWidget(self.rx_verify)
         top_meta.addWidget(self.history_btn)
         top_meta.addStretch(1)
         send_row.addWidget(self.send_edit, 1)
@@ -319,6 +334,39 @@ class SerialPage(ToolPage):
         terminal_lay.addWidget(self.terminal_view, 1)
         self.work_tabs.addTab(self.terminal_box, tr("serial.terminal"))
 
+        # Automation script tab: send / wait / expect / log without blocking UI.
+        self.script_box = QWidget()
+        script_lay = QVBoxLayout(self.script_box)
+        script_lay.setContentsMargins(8, 8, 8, 8)
+        script_lay.setSpacing(6)
+        script_bar = QHBoxLayout()
+        self.script_run = QPushButton(tr("serial.script.run"))
+        self.script_run.setObjectName("accent")
+        self.script_stop = QPushButton(tr("serial.script.stop"))
+        self.script_stop.setObjectName("ghost")
+        self.script_stop.setEnabled(False)
+        self.script_status = QLabel(tr("serial.script.idle"))
+        self.script_status.setObjectName("mutedLabel")
+        script_bar.addWidget(self.script_run)
+        script_bar.addWidget(self.script_stop)
+        script_bar.addWidget(self.script_status, 1)
+        self.script_edit = QPlainTextEdit()
+        self.script_edit.setObjectName("logView")
+        self.script_edit.setPlaceholderText(tr("serial.script.placeholder"))
+        self.script_edit.setStyleSheet("font-family: Consolas, 'Courier New', monospace;")
+        script_lay.addLayout(script_bar)
+        script_lay.addWidget(self.script_edit, 1)
+        self.work_tabs.addTab(self.script_box, tr("serial.script"))
+        self._script_cmds: list = []
+        self._script_index = 0
+        self._script_rx = bytearray()
+        self._script_timer = QTimer(self)
+        self._script_timer.setSingleShot(True)
+        self._script_timer.timeout.connect(self._script_step)
+        self._script_running = False
+        self._script_expect: str | None = None
+        self._script_deadline: float = 0.0
+
         self.open_btn.clicked.connect(self._on_toggle)
         self.send_btn.clicked.connect(self._on_send)
         self.send_edit.returnPressed.connect(self._on_send)
@@ -330,6 +378,8 @@ class SerialPage(ToolPage):
         self.port_combo.about_to_show.connect(self._refresh_ports)
         self.cyclic_check.toggled.connect(self._on_cyclic_toggled)
         self.cyclic_interval.valueChanged.connect(self._on_interval_changed)
+        self.script_run.clicked.connect(self._on_script_run)
+        self.script_stop.clicked.connect(self._on_script_stop)
 
         self._hotplug = QTimer(self)
         self._hotplug.setInterval(2000)
@@ -350,6 +400,30 @@ class SerialPage(ToolPage):
         self.port_combo.currentIndexChanged.connect(lambda _i: self._persist_prefs())
         self.dtr.toggled.connect(lambda _c: self._apply_modem())
         self.rts.toggled.connect(lambda _c: self._apply_modem())
+        self.checksum.currentIndexChanged.connect(self._on_checksum_changed)
+        self.send_edit.textChanged.connect(self._refresh_checksum_preview)
+        self.mode_combo.currentIndexChanged.connect(lambda _i: self._refresh_checksum_preview())
+
+    def _on_checksum_changed(self, _index: int = 0) -> None:
+        self._refresh_checksum_preview()
+        self._persist_prefs()
+
+    def _refresh_checksum_preview(self, *_args) -> None:
+        algo = str(self.checksum.currentData() or "none")
+        text = self.send_edit.text()
+        if algo == "none" or not text:
+            self.checksum_preview.setText("")
+            return
+        try:
+            if self.mode_combo.currentData() == "hex":
+                body = parse_hex_input(text)
+            else:
+                body = text.encode("utf-8")
+        except ValueError:
+            self.checksum_preview.setText("")
+            return
+        field = compute_checksum(body, algo)
+        self.checksum_preview.setText(field.hex(" ").upper() if field else "")
 
     def eventFilter(self, obj, event):  # noqa: N802
         from PySide6.QtCore import QEvent, Qt
@@ -417,6 +491,10 @@ class SerialPage(ToolPage):
         self.ending.setItemText(1, tr("serial.ending.lf"))
         self.ending.setItemText(2, tr("serial.ending.cr"))
         self.ending.setItemText(3, tr("serial.ending.none"))
+        self.lbl_checksum.setText(tr("serial.checksum"))
+        self.rx_verify.setText(tr("serial.rx_verify"))
+        for i, algo in enumerate(ALGORITHMS):
+            self.checksum.setItemText(i, tr(f"serial.checksum.{algo}"))
         self.history_btn.setText(tr("serial.history"))
         self.preset_box.setTitle(tr("serial.presets"))
         for i, edit in enumerate(self._preset_edits):
@@ -427,13 +505,27 @@ class SerialPage(ToolPage):
             btn.setText(tr("serial.send"))
         self.cyclic_check.setText(tr("serial.cyclic"))
         self.lbl_interval.setText(tr("serial.cyclic_interval"))
+        self.work_tabs.setTabText(2, tr("serial.script"))
+        self.script_run.setText(tr("serial.script.run"))
+        self.script_stop.setText(tr("serial.script.stop"))
+        if not self._script_running:
+            self.script_status.setText(tr("serial.script.idle"))
+        self.script_edit.setPlaceholderText(tr("serial.script.placeholder"))
 
     def toolbar_actions(self) -> list[ToolActionSpec]:
         return [
             ToolActionSpec("toggle", "serial.open", "connect", self.toggle_connection),
             ToolActionSpec("send", "serial.send", "program", self.send),
+            ToolActionSpec(
+                "run_script", "script.run_menu", "hex", self._run_script_menu
+            ),
             ToolActionSpec("clear", "mon.clear", "clear", self.clear_view, separator_before=True),
         ]
+
+    def _run_script_menu(self) -> None:
+        from etools.ui.tools.script_menu import exec_script_menu
+
+        exec_script_menu(self)
 
     def toggle_connection(self) -> None:
         self._on_toggle()
@@ -462,6 +554,10 @@ class SerialPage(ToolPage):
             idx = self.ending.findData(str(prefs["ending"]))
             if idx >= 0:
                 self.ending.setCurrentIndex(idx)
+        if prefs.get("checksum"):
+            idx = self.checksum.findData(str(prefs["checksum"]))
+            if idx >= 0:
+                self.checksum.setCurrentIndex(idx)
         if prefs.get("send_mode"):
             idx = self.mode_combo.findData(str(prefs["send_mode"]))
             if idx >= 0:
@@ -508,6 +604,7 @@ class SerialPage(ToolPage):
                 "stopbits": self.stop.currentText(),
                 "flow": self.flow.currentData(),
                 "ending": self.ending.currentData(),
+                "checksum": self.checksum.currentData(),
                 "send_mode": self.mode_combo.currentData(),
                 "receive_mode": self.rx_mode.currentData(),
                 "dtr": self.dtr.isChecked(),
@@ -578,6 +675,8 @@ class SerialPage(ToolPage):
     def _on_toggle(self) -> None:
         if self._opened:
             self._stop_cyclic()
+            if self._script_running:
+                self._on_script_stop()
             self._link.close()
             self._opened = False
             self._set_send_enabled(False)
@@ -609,20 +708,27 @@ class SerialPage(ToolPage):
         self._repaint_btn()
         self.traffic.append_status(tr("serial.opened", port=port))
 
-    def _encode_payload(self, text: str) -> bytes | None:
+    def _encode_payload(self, text: str, *, force_hex: bool = False) -> bytes | None:
         ending = _ENDINGS.get(str(self.ending.currentData() or "crlf"), b"\r\n")
+        algo = str(self.checksum.currentData() or "none")
         try:
-            if self.mode_combo.currentData() == "hex":
-                return parse_hex_input(text) + ending
-            return text.encode("utf-8") + ending
+            if force_hex or self.mode_combo.currentData() == "hex":
+                body = parse_hex_input(text)
+            else:
+                body = text.encode("utf-8")
         except ValueError:
             self.traffic.append_status(tr("serial.err", err="bad hex"))
             return None
+        if algo != "none":
+            body = append_checksum(body, algo)
+        return body + ending
 
-    def _send_payload(self, text: str, *, record_history: bool = False) -> bool:
+    def _send_payload(
+        self, text: str, *, record_history: bool = False, force_hex: bool = False
+    ) -> bool:
         if not text or not self._opened:
             return False
-        data = self._encode_payload(text)
+        data = self._encode_payload(text, force_hex=force_hex)
         if data is None:
             return False
         try:
@@ -701,8 +807,153 @@ class SerialPage(ToolPage):
         self._send_payload(text)
 
     def _on_rx(self, data: bytes) -> None:
+        self._script_rx.extend(data)
+        if len(self._script_rx) > 65536:
+            del self._script_rx[:-65536]
+        self._maybe_verify_rx(data)
         self.traffic.append_rx(data)
         self._terminal_write(data.decode("utf-8", errors="replace"))
+
+    # -- Lua / bridge helpers ------------------------------------------
+
+    def lua_send_text(self, text: str, force_hex: bool = False) -> bool:
+        return self._send_payload(text, record_history=True, force_hex=force_hex)
+
+    def lua_write(self, raw: bytes) -> bool:
+        if not self._opened:
+            return False
+        try:
+            self._link.write(bytes(raw))
+            self.traffic.append_tx(bytes(raw))
+            return True
+        except Exception as exc:  # noqa: BLE001
+            self.traffic.append_status(tr("serial.err", err=str(exc)))
+            return False
+
+    def lua_take_rx(self, max_bytes: int = 4096) -> bytes:
+        n = max(0, int(max_bytes))
+        data = bytes(self._script_rx[:n])
+        del self._script_rx[:n]
+        return data
+
+    def _maybe_verify_rx(self, data: bytes) -> None:
+        """Heuristic RX frame check: chunk ends with a matching checksum trailer."""
+        from etools.core.checksum import checksum_width, compute_checksum, verify_checksum
+
+        if not self.rx_verify.isChecked():
+            return
+        algo = str(self.checksum.currentData() or "none")
+        width = checksum_width(algo)
+        if algo == "none" or len(data) <= width:
+            return
+        if verify_checksum(data, algo):
+            self.traffic.append_status(tr("serial.rx_crc_ok"))
+        else:
+            want = compute_checksum(data[:-width], algo).hex(" ").upper()
+            self.traffic.append_status(tr("serial.rx_crc_bad", want=want))
+
+    # -- automation script ---------------------------------------------
+
+    def _on_script_run(self) -> None:
+        from etools.core.serial_script import ScriptError, parse_script
+
+        try:
+            cmds = parse_script(self.script_edit.toPlainText())
+        except ScriptError as exc:
+            self.script_status.setText(str(exc))
+            self.traffic.append_status(tr("serial.script.err", err=str(exc)))
+            return
+        if not cmds:
+            self.script_status.setText(tr("serial.script.empty"))
+            return
+        if not self._opened:
+            self.traffic.append_status(tr("serial.cyclic_need_open"))
+            self.script_status.setText(tr("serial.cyclic_need_open"))
+            return
+        self._script_cmds = cmds
+        self._script_index = 0
+        self._script_expect = None
+        self._script_rx.clear()
+        self._script_running = True
+        self.script_run.setEnabled(False)
+        self.script_stop.setEnabled(True)
+        self.script_status.setText(tr("serial.script.running"))
+        self.traffic.append_status(tr("serial.script.running"))
+        self._script_timer.start(0)
+
+    def _on_script_stop(self) -> None:
+        self._script_running = False
+        self._script_timer.stop()
+        self._script_expect = None
+        self.script_run.setEnabled(True)
+        self.script_stop.setEnabled(False)
+        self.script_status.setText(tr("serial.script.stopped"))
+        self.traffic.append_status(tr("serial.script.stopped"))
+
+    def _finish_script(self, message_key: str) -> None:
+        self._script_running = False
+        self._script_timer.stop()
+        self._script_expect = None
+        self.script_run.setEnabled(True)
+        self.script_stop.setEnabled(False)
+        self.script_status.setText(tr(message_key))
+        self.traffic.append_status(tr(message_key))
+
+    def _script_step(self) -> None:
+        import time
+
+        if not self._script_running:
+            return
+        if not self._opened:
+            self._finish_script("serial.script.disconnected")
+            return
+
+        expect_text = self._script_expect
+        if expect_text is not None:
+            buf = self._script_rx.decode("utf-8", errors="replace")
+            if expect_text in buf:
+                self._script_expect = None
+                self._script_timer.start(0)
+                return
+            if time.monotonic() >= self._script_deadline:
+                self.traffic.append_status(
+                    tr("serial.script.err", err=f"expect timeout: {expect_text!r}")
+                )
+                self._finish_script("serial.script.timeout")
+                return
+            self._script_timer.start(20)
+            return
+
+        if self._script_index >= len(self._script_cmds):
+            self._finish_script("serial.script.done")
+            return
+
+        cmd = self._script_cmds[self._script_index]
+        self._script_index += 1
+        try:
+            if cmd.op == "send":
+                if not self._send_payload(cmd.text, record_history=True):
+                    self._finish_script("serial.script.err_send")
+                    return
+            elif cmd.op == "send_hex":
+                if not self._send_payload(cmd.text, record_history=True, force_hex=True):
+                    self._finish_script("serial.script.err_send")
+                    return
+            elif cmd.op == "log":
+                self.traffic.append_status(cmd.text)
+            elif cmd.op == "wait":
+                self._script_timer.start(max(0, int(cmd.value)))
+                return
+            elif cmd.op == "expect":
+                self._script_deadline = time.monotonic() + max(1, int(cmd.value)) / 1000.0
+                self._script_expect = cmd.text
+                self._script_timer.start(20)
+                return
+        except Exception as exc:  # noqa: BLE001
+            self.traffic.append_status(tr("serial.script.err", err=str(exc)))
+            self._finish_script("serial.script.failed")
+            return
+        self._script_timer.start(0)
 
     def _terminal_write(self, text: str) -> None:
         """Render serial stream without adding a newline per read chunk."""
@@ -740,6 +991,8 @@ class SerialPage(ToolPage):
         self.traffic.append_status(tr("serial.err", err=message))
         self._opened = False
         self._stop_cyclic()
+        if self._script_running:
+            self._on_script_stop()
         self._set_send_enabled(False)
         self.open_btn.setText(tr("serial.open"))
         self._repaint_btn()
@@ -747,5 +1000,7 @@ class SerialPage(ToolPage):
     def shutdown(self) -> None:
         self._hotplug.stop()
         self._cyclic_timer.stop()
+        self._script_timer.stop()
+        self._script_running = False
         self._persist_prefs()
         self._link.close()

@@ -164,11 +164,38 @@ class ToolPage(QWidget):
             self._active_form = form
         if isinstance(field, QWidget):
             field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            # Composite fields (e.g. edit+button) must share the row height
+            # so they stay baseline-aligned with plain QLineEdits.
+            if field.layout() is not None:
+                field.setFixedHeight(28)
+                lay = field.layout()
+                lay.setContentsMargins(0, 0, 0, 0)
         lab = QLabel(label)
         if key:
             lab.setProperty("i18nKey", key)
         form.addRow(lab, field)
+        self._sync_form_labels(form)
         return lab
+
+    def _sync_form_labels(self, form: QFormLayout) -> None:
+        """Keep all labels in the same column width so 2-char and 4-char
+        captions do not stagger the left edge."""
+        width = 0
+        labels: list[QLabel] = []
+        for row in range(form.rowCount()):
+            item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+            if item is None:
+                continue
+            w = item.widget()
+            if isinstance(w, QLabel):
+                labels.append(w)
+                width = max(width, w.sizeHint().width())
+        if not labels:
+            return
+        # Cap at ~4 CJK chars so narrow side panels keep room for fields.
+        width = min(max(width, 56) + 4, 96)
+        for lab in labels:
+            lab.setMinimumWidth(width)
 
     def ctx_action(self, widget: QWidget) -> None:
         """Put a button inside the current left group, right under the form."""

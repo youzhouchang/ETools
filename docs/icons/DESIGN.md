@@ -68,7 +68,7 @@ fill = none（默认）
 
 | ID | 语义 | 形态 |
 |----|------|------|
-| `logo` | 应用主图标 | 深色圆角方 + QFP 芯片 + 引脚 + 烧录闪电 |
+| `logo` | 应用主图标 | 高对比蓝底色块 + 深色 QFP 芯片 + 粗引脚 + 实心白色闪电（无光晕） |
 | `logo-mark` | 纯标记（无底） | 同上主体，透明底 |
 
 ### 工具栏 / 主操作
@@ -133,6 +133,7 @@ fill = none（默认）
 | `tool-serial` | 串口助手 | 串口连接器 + 针脚孔 | success |
 | `tool-ethernet` | 网络助手 | RJ45 网口 | accent |
 | `tool-terminal` | 终端工具 | 窗口 + 提示符（无 RTT 圆点） | warning |
+| `tool-script` | Lua 脚本 | 代码尖括号 + 斜线 | accent |
 
 Rail 选中态由 `ToolShell.refresh_rail_icons` 统一改为 `on_accent`，未选中用上表语义色。
 

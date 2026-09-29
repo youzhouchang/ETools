@@ -190,7 +190,15 @@ class ProgramPage(ToolPage):
                 separator_before=True,
             ),
             ToolActionSpec("hex", "act.hex", "hex", h.get("hex", lambda: None)),
+            ToolActionSpec(
+                "run_script", "script.run_menu", "hex", self._run_script_menu
+            ),
         ]
+
+    def _run_script_menu(self) -> None:
+        from etools.ui.tools.script_menu import exec_script_menu
+
+        exec_script_menu(self)
 
     def retranslate(self) -> None:
         self.left_box.setTitle(tr("probe.group"))

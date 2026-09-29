@@ -50,10 +50,16 @@ Section "Install ${APP_NAME}" SEC_MAIN
     "DisplayIcon" "$INSTDIR\${EXE_NAME}"
 
   CreateShortCut "$SMPROGRAMS\${APP_NAME}.lnk" "$INSTDIR\${EXE_NAME}"
+
+  ; Refresh Explorer icon cache so the new desktop/start icon shows immediately
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
+  IfFileExists "$SYSDIR\ie4uinit.exe" 0 +2
+    ExecWait '"$SYSDIR\ie4uinit.exe" -show' $0
 SectionEnd
 
 Section "Desktop shortcut" SEC_DESK
   CreateShortCut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\${EXE_NAME}"
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
 SectionEnd
 
 Section "Uninstall"
@@ -63,4 +69,7 @@ Section "Uninstall"
   Delete "$DESKTOP\${APP_NAME}.lnk"
   DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}"
   DeleteRegKey HKLM "Software\${APP_NAME}"
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, i 0, i 0)'
+  IfFileExists "$SYSDIR\ie4uinit.exe" 0 +2
+    ExecWait '"$SYSDIR\ie4uinit.exe" -show' $0
 SectionEnd

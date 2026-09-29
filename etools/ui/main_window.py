@@ -26,6 +26,7 @@ from etools.ui.styles import apply_combo_style, build_stylesheet, get_theme
 from etools.ui.tools import (
     EthernetPage,
     ProgramPage,
+    ScriptPage,
     SerialPage,
     TerminalPage,
 )
@@ -98,6 +99,7 @@ class MainWindow(QMainWindow):
         self.serial_page = SerialPage()
         self.ethernet_page = EthernetPage()
         self.terminal_page = TerminalPage()
+        self.script_page = ScriptPage()
         # SFTP lives inside the Terminal page (bottom group).
         self.sftp_panel = self.terminal_page.sftp_panel
 
@@ -144,14 +146,21 @@ class MainWindow(QMainWindow):
             "serial": self.serial_page,
             "ethernet": self.ethernet_page,
             "terminal": self.terminal_page,
+            "script": self.script_page,
         }
         providers = {
             "program": program_actions,
             "serial": lambda: self.serial_page.toolbar_actions(),
             "ethernet": lambda: self.ethernet_page.toolbar_actions(),
             "terminal": terminal_actions,
+            "script": lambda: self.script_page.toolbar_actions(),
         }
         self.shell = ToolShell(pages, providers, parent=self)
+        # Global Lua bridges: scripts can drive any connected tool surface.
+        self.script_page.bind_flash(self.service)
+        self.script_page.bind_serial(self.serial_page)
+        self.script_page.bind_net(self.ethernet_page)
+        self.script_page.bind_term(self.terminal_page)
         self.setCentralWidget(self.shell)
 
         self.conn_badge = QLabel(tr("status.disconnected"))

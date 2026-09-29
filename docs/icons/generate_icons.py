@@ -25,11 +25,16 @@ ACCENT = "#3B9EFF"
 DARK_BG = "#0B1220"
 CHIP_FILL = "#1A2740"
 CHIP_FILL_HI = "#243452"
-WHITE = "#E6EAF0"
+WHITE = "#FFFFFF"
 SUCCESS = "#3DDC97"
 DANGER = "#FF5C5C"
 WARNING = "#F5A623"
 RING = "#2A3A55"
+# Brand tile: vivid blue so the icon stays readable on any wallpaper / taskbar.
+TILE_HI = "#4DA6FF"
+TILE_LO = "#0B5FE0"
+PIN = "#B7D7FF"
+CHIP_EDGE = "#E8F1FF"
 
 
 def write_ui(name: str, body: str) -> None:
@@ -58,41 +63,34 @@ def main() -> None:
     APP_OUT.mkdir(parents=True, exist_ok=True)
 
     # ---- brand logo (app icon) ----
+    # High-contrast tile: vivid blue field + thick chip silhouette + solid bolt.
+    # No blur/glow filters — they smear to mud at 16/24 px.
     logo = dedent(
         f"""\
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
           <defs>
-            <linearGradient id="bg" x1="0" y1="0" x2="256" y2="256" gradientUnits="userSpaceOnUse">
-              <stop offset="0%" stop-color="{DARK_BG}"/>
-              <stop offset="100%" stop-color="#1A2740"/>
+            <linearGradient id="bg" x1="40" y1="20" x2="216" y2="236" gradientUnits="userSpaceOnUse">
+              <stop offset="0%" stop-color="{TILE_HI}"/>
+              <stop offset="100%" stop-color="{TILE_LO}"/>
             </linearGradient>
-            <linearGradient id="die" x1="84" y1="84" x2="172" y2="172" gradientUnits="userSpaceOnUse">
-              <stop offset="0%" stop-color="{CHIP_FILL_HI}"/>
-              <stop offset="100%" stop-color="#152038"/>
+            <linearGradient id="gloss" x1="128" y1="8" x2="128" y2="140" gradientUnits="userSpaceOnUse">
+              <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.28"/>
+              <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
             </linearGradient>
-            <filter id="soft" x="-24%" y="-24%" width="148%" height="148%">
-              <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#000" flood-opacity="0.4"/>
-            </filter>
-            <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
-              <feGaussianBlur stdDeviation="6" result="b"/>
-              <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-            </filter>
           </defs>
           <rect width="256" height="256" rx="56" fill="url(#bg)"/>
-          <rect x="2" y="2" width="252" height="252" rx="54" fill="none" stroke="{RING}" stroke-width="2"/>
-          <g stroke="{ACCENT}" stroke-width="7" stroke-linecap="round">
-            <path d="M76 100H58"/><path d="M76 128H58"/><path d="M76 156H58"/>
-            <path d="M180 100h18"/><path d="M180 128h18"/><path d="M180 156h18"/>
-            <path d="M108 76V58"/><path d="M148 76V58"/>
-            <path d="M108 180v18"/><path d="M148 180v18"/>
+          <path d="M56 8h144c26 0 48 22 48 48v64c-24 36-68 56-120 56S32 156 8 120V56C8 30 30 8 56 8z"
+                fill="url(#gloss)"/>
+          <g stroke="{PIN}" stroke-width="14" stroke-linecap="round">
+            <path d="M92 78V54"/><path d="M128 78V54"/><path d="M164 78V54"/>
+            <path d="M92 202v24"/><path d="M128 202v24"/><path d="M164 202v24"/>
+            <path d="M78 92H54"/><path d="M78 164H54"/>
+            <path d="M202 92h24"/><path d="M202 164h24"/>
           </g>
-          <g filter="url(#soft)">
-            <rect x="76" y="76" width="104" height="104" rx="22" fill="url(#die)" stroke="{ACCENT}" stroke-width="4"/>
-            <circle cx="100" cy="100" r="5" fill="{ACCENT}" opacity="0.55"/>
-          </g>
-          <path filter="url(#glow)"
-                d="M145 88 L104 142 H124 L111 176 L152 120 H130 L145 88 Z"
-                fill="{WHITE}"/>
+          <rect x="68" y="68" width="120" height="120" rx="28"
+                fill="{CHIP_FILL}" stroke="{CHIP_EDGE}" stroke-width="8"/>
+          <circle cx="98" cy="98" r="10" fill="{TILE_HI}"/>
+          <path d="M154 76 L96 152 H128 L108 206 L178 120 H140 Z" fill="{WHITE}"/>
         </svg>
         """
     )
@@ -101,15 +99,16 @@ def main() -> None:
     logo_mark = dedent(
         f"""\
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
-          <g stroke="{ACCENT}" stroke-width="7" stroke-linecap="round">
-            <path d="M76 100H58"/><path d="M76 128H58"/><path d="M76 156H58"/>
-            <path d="M180 100h18"/><path d="M180 128h18"/><path d="M180 156h18"/>
-            <path d="M108 76V58"/><path d="M148 76V58"/>
-            <path d="M108 180v18"/><path d="M148 180v18"/>
+          <g stroke="{TILE_LO}" stroke-width="14" stroke-linecap="round">
+            <path d="M92 78V54"/><path d="M128 78V54"/><path d="M164 78V54"/>
+            <path d="M92 202v24"/><path d="M128 202v24"/><path d="M164 202v24"/>
+            <path d="M78 92H54"/><path d="M78 164H54"/>
+            <path d="M202 92h24"/><path d="M202 164h24"/>
           </g>
-          <rect x="76" y="76" width="104" height="104" rx="22" fill="{CHIP_FILL}" stroke="{ACCENT}" stroke-width="4"/>
-          <circle cx="100" cy="100" r="5" fill="{ACCENT}" opacity="0.55"/>
-          <path d="M145 88 L104 142 H124 L111 176 L152 120 H130 L145 88 Z" fill="{WHITE}"/>
+          <rect x="68" y="68" width="120" height="120" rx="28"
+                fill="{CHIP_FILL}" stroke="{TILE_HI}" stroke-width="8"/>
+          <circle cx="98" cy="98" r="10" fill="{TILE_HI}"/>
+          <path d="M154 76 L96 152 H128 L108 206 L178 120 H140 Z" fill="{WHITE}"/>
         </svg>
         """
     )
@@ -471,6 +470,15 @@ def main() -> None:
   <path d="M3.75 8.4h16.5"/>
   <path d="M7.4 12.4l2.4 2.15-2.4 2.15"/>
   <path d="M12.2 16.7H16.4"/>
+""",
+    )
+
+    write_ui(
+        "tool-script",
+        """
+  <path d="M8.2 5.2L3.8 12l4.4 6.8"/>
+  <path d="M15.8 5.2L20.2 12l-4.4 6.8"/>
+  <path d="M13.2 6.8l-2.4 10.4" opacity="0.85"/>
 """,
     )
 
