@@ -14,7 +14,7 @@ permissions:
 jobs:
   prepare:
     name: Validate tag
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.ver.outputs.version }}
     steps:
@@ -34,7 +34,7 @@ jobs:
   test:
     name: Test
     needs: prepare
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -87,7 +87,7 @@ jobs:
   build-linux:
     name: Build Linux
     needs: [prepare, test]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -146,7 +146,7 @@ jobs:
   publish:
     name: Publish GitHub Release
     needs: [prepare, build-windows, build-linux]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v8
