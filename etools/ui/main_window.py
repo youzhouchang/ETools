@@ -109,6 +109,7 @@ class MainWindow(QMainWindow):
         self.device_manager = self.program_page.device_manager
         self.rtt_panel = self.program_page.rtt_panel
         self.swo_panel = self.program_page.swo_panel
+        self.variable_monitor = self.program_page.variable_monitor
         self.log_panel = self.program_page.log_panel
         self.progress = self.program_page.progress
         self.progress_label = self.program_page.progress_label
@@ -584,6 +585,7 @@ class MainWindow(QMainWindow):
                 self.hex_preview.set_chip_read_enabled(True)
                 self.rtt_panel.set_connected(True)
                 self.swo_panel.set_connected(True)
+                self.variable_monitor.set_connected(True)
                 details_for_flash = getattr(result, "data", None)
                 if details_for_flash is not None and getattr(
                     details_for_flash, "flash_size", 0
@@ -645,6 +647,7 @@ class MainWindow(QMainWindow):
         self.hex_preview.set_chip_read_enabled(False)
         self.rtt_panel.set_connected(False)
         self.swo_panel.set_connected(False)
+        self.variable_monitor.set_connected(False)
         self.target_info_panel.clear()
         self._set_status(tr("status.disconnected"), "warn")
         self._hide_progress()
@@ -660,6 +663,8 @@ class MainWindow(QMainWindow):
             return
         try:
             self.hex_preview.load_file(path)
+            if Path(path).suffix.lower() in {".elf", ".axf", ".alf"}:
+                self.variable_monitor.load_path(path)
             self._log(tr("log.hex_loaded", name=Path(path).name))
         except Exception:
             log.exception("hex preview load")
@@ -808,6 +813,7 @@ class MainWindow(QMainWindow):
                 self.shell.shutdown()
             self.rtt_panel.shutdown()
             self.swo_panel.shutdown()
+            self.variable_monitor.shutdown()
             self._runner.shutdown()
         except Exception:
             log.exception("shutdown error")

@@ -54,6 +54,8 @@ class TrafficView(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._hex_mode = False
+        self._records: list[tuple[str, bytes, str, str]] = []
+        self._ascii_carry = bytearray()
         self._show_ts = False
         self._paused = False
         self._autoscroll = True
@@ -92,6 +94,7 @@ class TrafficView(QWidget):
         root.addLayout(bar)
 
         self.view = QPlainTextEdit()
+        self.view.setUndoRedoEnabled(False)
         self.view.setObjectName("logView")
         self.view.setReadOnly(True)
         self.view.setPlaceholderText(tr("serial.placeholder"))
@@ -119,10 +122,15 @@ class TrafficView(QWidget):
 
     def _on_mode_changed(self) -> None:
         self._hex_mode = self.mode_combo.currentData() == "hex"
+        self._render_records()
 
     def _on_flags(self) -> None:
         self._show_ts = self.ts_check.isChecked()
         self._autoscroll = self.scroll_check.isChecked()
+        if self._records:
+            self._render_records()
+        if self._records:
+            self._render_records()
 
     def _on_pause(self) -> None:
         self._paused = self.pause_check.isChecked()
@@ -147,17 +155,33 @@ class TrafficView(QWidget):
     def _append_stream(self, tag: str, data: bytes, peer: str = "") -> None:
         if self._paused or not data:
             return
-        prefix = f"{self._stamp()}{tag}"
-        if peer:
-            prefix += f" [{peer}]"
-        if self._hex_mode:
-            body = format_hex(data, self._offset)
-            self._offset += len(data)
-            self._pending.append(f"{prefix}\n{body}")
-        else:
-            text = data.decode("utf-8", errors="replace")
-            self._pending.append(f"{prefix}  {text}")
+        self._records.append((tag, bytes(data), peer, self._stamp()))
+        if len(self._records) > 5000:
+            del self._records[: len(self._records) - 5000]
+        self._render_records()
+
+    def set_display_mode(self, mode: str) -> None:
+        idx = self.mode_combo.findData(mode)
+        if idx >= 0:
+            self.mode_combo.setCurrentIndex(idx)
+
+    def _render_records(self) -> None:
+        self._pending.clear()
+        self._offset = 0
+        self.view.setUpdatesEnabled(False)
+        self.view.clear()
+        for tag, data, peer, stamp in self._records:
+            prefix = f"{stamp}{tag}"
+            if peer:
+                prefix += f" [{peer}]"
+            if self._hex_mode:
+                body = format_hex(data, self._offset)
+                self._offset += len(data)
+                self._pending.append(f"{prefix}\n{body}")
+            else:
+                self._pending.append(f"{prefix}  {data.decode('utf-8', errors='replace')}")
         self._flush()
+        self.view.setUpdatesEnabled(True)
 
     def _flush(self) -> None:
         if not self._pending:
@@ -181,6 +205,8 @@ class TrafficView(QWidget):
 
     def clear(self) -> None:
         self._pending.clear()
+        self._records.clear()
+        self._ascii_carry.clear()
         self._offset = 0
         self.view.clear()
 

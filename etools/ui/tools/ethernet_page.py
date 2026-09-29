@@ -78,6 +78,7 @@ class EthernetPage(ToolPage):
             on_peer=self._relay.peer.emit,
         )
         self._opened = False
+        self._peer_connected = False
 
         self.ctx_conn = self.ctx_group(tr("net.title"))
 
@@ -117,6 +118,12 @@ class EthernetPage(ToolPage):
         self.mode_combo.setFixedHeight(28)
         self.mode_combo.setFixedWidth(88)
         self.lbl_mode = QLabel(tr("serial.send_mode"))
+        self.rx_mode = QComboBox()
+        self.rx_mode.addItem(tr("net.mode.ascii"), "ascii")
+        self.rx_mode.addItem(tr("net.mode.hex"), "hex")
+        self.rx_mode.setFixedHeight(28)
+        self.rx_mode.setFixedWidth(88)
+        self.lbl_rx_mode = QLabel(tr("serial.receive_mode"))
         self.ending = QComboBox()
         self.ending.addItem(tr("serial.ending.crlf"), "crlf")
         self.ending.addItem(tr("serial.ending.lf"), "lf")
@@ -133,6 +140,8 @@ class EthernetPage(ToolPage):
         self.send_btn.setEnabled(False)
         send_row.addWidget(self.lbl_mode)
         send_row.addWidget(self.mode_combo)
+        send_row.addWidget(self.lbl_rx_mode)
+        send_row.addWidget(self.rx_mode)
         send_row.addWidget(self.lbl_ending)
         send_row.addWidget(self.ending)
         send_row.addWidget(self.send_edit, 1)
@@ -152,6 +161,8 @@ class EthernetPage(ToolPage):
         self.host.editingFinished.connect(self._persist_prefs)
         self.ending.currentIndexChanged.connect(lambda _i: self._persist_prefs())
         self.mode_combo.currentIndexChanged.connect(lambda _i: self._persist_prefs())
+        self.rx_mode.currentIndexChanged.connect(self._on_rx_mode_changed)
+        self.rx_mode.currentIndexChanged.connect(lambda _i: self._persist_prefs())
 
     def _on_proto_changed(self) -> None:
         mode = self.proto.currentIndex()
@@ -191,6 +202,7 @@ class EthernetPage(ToolPage):
         self.send_edit.setPlaceholderText(tr("net.send_ph"))
         self.send_btn.setText(tr("net.send"))
         self.lbl_mode.setText(tr("serial.send_mode"))
+        self.lbl_rx_mode.setText(tr("serial.receive_mode"))
         self.mode_combo.setItemText(0, tr("net.mode.ascii"))
         self.mode_combo.setItemText(1, tr("net.mode.hex"))
         self.lbl_ending.setText(tr("net.ending"))
@@ -237,6 +249,10 @@ class EthernetPage(ToolPage):
             idx = self.mode_combo.findData(str(prefs["send_mode"]))
             if idx >= 0:
                 self.mode_combo.setCurrentIndex(idx)
+        if prefs.get("receive_mode"):
+            idx = self.rx_mode.findData(str(prefs["receive_mode"]))
+            if idx >= 0:
+                self.rx_mode.setCurrentIndex(idx)
 
     def _persist_prefs(self) -> None:
         save_tool_prefs(
@@ -248,6 +264,7 @@ class EthernetPage(ToolPage):
                 "local_port": self.local_port.text().strip(),
                 "ending": self.ending.currentData(),
                 "send_mode": self.mode_combo.currentData(),
+                "receive_mode": self.rx_mode.currentData(),
             },
         )
 
@@ -261,6 +278,7 @@ class EthernetPage(ToolPage):
         if self._opened:
             self._link.close()
             self._opened = False
+            self._peer_connected = False
             self.send_btn.setEnabled(False)
             self._on_proto_changed()
             self._repaint_btn()
@@ -292,7 +310,8 @@ class EthernetPage(ToolPage):
             self.traffic.append_status(tr("net.err", err=str(exc)))
             return
         self._opened = True
-        self.send_btn.setEnabled(True)
+        self._peer_connected = mode != _PROTO_SERVER
+        self.send_btn.setEnabled(self._peer_connected)
         self.conn_btn.setText(tr("net.disconnect"))
         self._repaint_btn()
         self.traffic.append_status(opened)
@@ -321,15 +340,24 @@ class EthernetPage(ToolPage):
     def _on_rx(self, data: bytes, peer: str) -> None:
         self.traffic.append_rx(data, peer=peer)
 
+    def _on_rx_mode_changed(self, _index: int = 0) -> None:
+        self.traffic.set_display_mode(str(self.rx_mode.currentData() or "ascii"))
+
     def _on_peer(self, kind: str, peer: str) -> None:
         if kind == "on":
+            self._peer_connected = True
+            self.send_btn.setEnabled(True)
             self.traffic.append_status(tr("net.peer_on", peer=peer))
         else:
+            self._peer_connected = False
+            if self.proto.currentIndex() == _PROTO_SERVER:
+                self.send_btn.setEnabled(False)
             self.traffic.append_status(tr("net.peer_off", peer=peer))
 
     def _on_error(self, message: str) -> None:
         self.traffic.append_status(tr("net.err", err=message))
         self._opened = False
+        self._peer_connected = False
         self.send_btn.setEnabled(False)
         self._on_proto_changed()
         self._repaint_btn()

@@ -15,7 +15,7 @@ def load_image_segments(path: str | Path) -> list[tuple[int, bytes]]:
 
     if suffix == ".hex":
         return parse_ihex(raw.decode("ascii", errors="replace"))
-    if suffix in (".elf", ".axf"):
+    if suffix in (".elf", ".axf", ".alf"):
         return parse_elf(p)
     if suffix == ".srec":
         return parse_srec(raw.decode("ascii", errors="replace"))

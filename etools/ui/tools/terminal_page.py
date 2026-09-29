@@ -90,6 +90,7 @@ class TerminalPage(ToolPage):
         self.term = QPlainTextEdit()
         self.term.setObjectName("logView")
         self.term.setReadOnly(True)
+        self.term.document().setMaximumBlockCount(10000)
         term_lay.addWidget(self.term, 3)
 
         cmd_row = QHBoxLayout()

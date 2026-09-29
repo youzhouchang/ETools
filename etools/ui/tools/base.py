@@ -16,6 +16,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+_LEFT_MIN = 180
+_LEFT_MAX = 520
+
 
 def _form_layout() -> QFormLayout:
     form = QFormLayout()
@@ -76,31 +79,31 @@ class ToolPage(QWidget):
         self._build()
 
     def set_left_width(self, width: int) -> None:
-        """Pin the left context pane width (window resize won't change it)."""
-        self._left_width = max(180, int(width))
-        self._apply_left_width()
+        """Set default left width. Window resize keeps it; user may still drag."""
+        self._left_width = max(_LEFT_MIN, min(int(width), _LEFT_MAX))
+        self._restore_left_width()
 
-    def _apply_left_width(self) -> None:
+    def _restore_left_width(self) -> None:
+        """Re-apply remembered left width (window resize path)."""
         left = self.splitter.widget(0)
         if left is None:
             return
         w = self._left_width
-        left.setMinimumWidth(w)
-        left.setMaximumWidth(w)
+        # Soft bounds only — allow manual drag within [_LEFT_MIN, _LEFT_MAX].
+        left.setMinimumWidth(_LEFT_MIN)
+        left.setMaximumWidth(_LEFT_MAX)
         total = self.splitter.width() or (w + 720)
         self.splitter.blockSignals(True)
         self.splitter.setSizes([w, max(200, total - w)])
         self.splitter.blockSignals(False)
 
     def _on_left_split_moved(self, pos: int, _index: int) -> None:
-        if abs(int(pos) - self._left_width) <= 2:
-            return
-        self._left_width = max(180, int(pos))
-        self._apply_left_width()
+        """User dragged the handle — accept and remember the new width."""
+        self._left_width = max(_LEFT_MIN, min(int(pos), _LEFT_MAX))
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        self._apply_left_width()
+        self._restore_left_width()
 
     def _build(self) -> None:
         """Subclass populates ctx_layout / main_layout."""

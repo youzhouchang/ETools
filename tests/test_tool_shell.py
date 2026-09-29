@@ -88,6 +88,77 @@ def test_serial_toolbar_not_private(qapp):
     page.close()
 
 
+def test_serial_presets_and_cyclic(qapp, tmp_path, monkeypatch):
+    from etools import config as config_mod
+    from etools.ui.tools import SerialPage
+
+    monkeypatch.setattr(config_mod, "get_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(config_mod, "_config", config_mod.AppConfig())
+
+    page = SerialPage()
+    assert len(page._preset_edits) == 5
+    assert len(page._preset_btns) == 5
+    assert len(page._preset_checks) == 5
+    assert page.cyclic_check is not None
+    assert page.cyclic_interval.minimum() == 1
+    assert page.cyclic_interval.value() >= 1
+
+    page._preset_edits[0].setText("AT+RST")
+    page._preset_checks[0].setChecked(True)
+    page._preset_edits[2].setText("STATUS?")
+    page.cyclic_interval.setValue(250)
+    page._persist_prefs()
+    prefs = page._preset_edits[0].text(), page.cyclic_interval.value()
+    assert prefs == ("AT+RST", 250)
+
+    # cyclic start without an open port is rejected
+    page.cyclic_check.setChecked(True)
+    assert page.cyclic_check.isChecked() is False
+    assert not page._cyclic_timer.isActive()
+
+    # reload restores presets / interval / cycle flags
+    page2 = SerialPage()
+    assert page2._preset_edits[0].text() == "AT+RST"
+    assert page2._preset_edits[2].text() == "STATUS?"
+    assert page2._preset_checks[0].isChecked() is True
+    assert page2.cyclic_interval.value() == 250
+    page.shutdown()
+    page.close()
+    page2.shutdown()
+    page2.close()
+
+
+def test_serial_cyclic_tick_uses_checked_presets(qapp):
+    from etools.ui.tools import SerialPage
+
+    page = SerialPage()
+    page._opened = True
+    sent: list[str] = []
+    page._send_payload = lambda text, **kw: sent.append(text) or True  # type: ignore[method-assign]
+    page._preset_edits[0].setText("A")
+    page._preset_edits[1].setText("B")
+    page._preset_checks[0].setChecked(True)
+    page._preset_checks[1].setChecked(True)
+    page._on_cyclic_tick()
+    page._on_cyclic_tick()
+    page._on_cyclic_tick()
+    assert sent == ["A", "B", "A"]
+
+    # no checked presets → falls back to the main send box
+    sent.clear()
+    for check in page._preset_checks:
+        check.setChecked(False)
+    page.send_edit.setText("MAIN")
+    page._on_cyclic_tick()
+    assert sent == ["MAIN"]
+
+    page._opened = False
+    page._on_cyclic_tick()
+    assert sent == ["MAIN"]  # no further sends after link drop
+    page.shutdown()
+    page.close()
+
+
 def test_terminal_owns_sftp_panel(qapp):
     from etools.ui.tools import TerminalPage
 
@@ -107,6 +178,74 @@ def test_traffic_view_hex_and_parse():
     assert parse_hex_input("0xde,0xad") == b"\xde\xad"
     dump = format_hex(b"\x00\x41", base_offset=0)
     assert "00000000" in dump and "41" in dump
+
+
+def test_rail_is_two_state_only(qapp):
+    from etools.ui.shell import _RAIL_W_COLLAPSED, _RAIL_W_EXPANDED, ToolShell
+    from etools.ui.tools import (
+        EthernetPage,
+        ProgramPage,
+        SerialPage,
+        TerminalPage,
+    )
+
+    pages = {
+        "program": ProgramPage(),
+        "serial": SerialPage(),
+        "ethernet": EthernetPage(),
+        "terminal": TerminalPage(),
+    }
+    providers = {k: p.toolbar_actions for k, p in pages.items()}
+    shell = ToolShell(pages, providers)
+
+    shell.set_rail_collapsed(False)
+    assert shell._rail.width() == _RAIL_W_EXPANDED or shell._rail.maximumWidth() == _RAIL_W_EXPANDED
+    # toggle sits in the icon column (not a detached header chip)
+    lay = shell._rail.layout()
+    widgets = [lay.itemAt(i).widget() for i in range(lay.count())]
+    assert shell._collapse_btn in widgets
+    # drag left → hide
+    shell._on_splitter_moved(4, 0)
+    assert shell._rail_collapsed is True
+    assert shell._rail.maximumWidth() == _RAIL_W_COLLAPSED
+    assert shell._collapse_btn.width() <= _RAIL_W_COLLAPSED
+    # drag right → expand
+    shell._on_splitter_moved(50, 0)
+    assert shell._rail_collapsed is False
+    assert shell._rail.maximumWidth() == _RAIL_W_EXPANDED
+    # intermediate drag still snaps (never free width)
+    shell._on_splitter_moved(40, 0)
+    assert shell._rail.maximumWidth() == _RAIL_W_EXPANDED
+
+    shell.shutdown()
+    for p in pages.values():
+        p.close()
+    shell.close()
+
+
+def test_left_context_default_fixed_but_draggable(qapp):
+    from etools.ui.tools.base import _LEFT_MAX, _LEFT_MIN, ToolPage
+
+    class _Page(ToolPage):
+        tool_id = "t"
+
+        def _build(self) -> None:
+            self.ctx_group("ctx")
+            self.main_group("main")
+            self.set_left_width(260)
+
+    page = _Page()
+    left = page.splitter.widget(0)
+    assert page._left_width == 260
+    # soft bounds allow manual drag (not min==max pin)
+    assert left.minimumWidth() <= _LEFT_MIN
+    assert left.maximumWidth() >= _LEFT_MAX > _LEFT_MIN
+    # user drag is accepted and remembered
+    page._on_left_split_moved(360, 0)
+    assert page._left_width == 360
+    page._on_left_split_moved(50, 0)
+    assert page._left_width == _LEFT_MIN
+    page.close()
 
 
 def test_ssh_host_key_errors():

@@ -1,6 +1,6 @@
 [project]
 name = "etools"
-version = "0.2.0"
+version = "0.3.0"
 description = "ETools — Embedded engineer workbench (MCU flash + serial / network / SSH tools)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -11,6 +11,7 @@ dependencies = [
     "pyocd>=0.40",
     "pyserial>=3.5",
     "paramiko>=3.0",
+    "pyelftools>=0.31",
 ]
 
 [project.optional-dependencies]

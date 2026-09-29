@@ -31,9 +31,10 @@ from etools.ui.widgets.probe_panel import ProbePanel
 from etools.ui.widgets.rtt_panel import RttPanel
 from etools.ui.widgets.swo_panel import SwvPanel
 from etools.ui.widgets.target_info_panel import TargetInfoPanel
+from etools.ui.widgets.variable_monitor import VariableMonitorPanel
 
-_TAB_KEYS = ("hex", "program", "devices", "rtt", "swv")
-_TAB_I18N = ("tab.hex", "tab.flash", "tab.devices", "tab.rtt", "tab.swo")
+_TAB_KEYS = ("hex", "program", "devices", "rtt", "swv", "monitor")
+_TAB_I18N = ("tab.hex", "tab.flash", "tab.devices", "tab.rtt", "tab.swo", "tab.monitor")
 
 
 class ProgramPage(ToolPage):
@@ -52,6 +53,9 @@ class ProgramPage(ToolPage):
         self.device_manager = DeviceManagerPanel()
         self.rtt_panel = RttPanel()
         self.swo_panel = SwvPanel()
+        self.variable_monitor = VariableMonitorPanel()
+        self.rtt_panel.data_received.connect(self.variable_monitor.feed_rtt_data)
+        self.swo_panel.data_received.connect(self.variable_monitor.feed_swo_data)
         self.log_panel = LogPanel()
 
         # Left context: one GroupBox wrapping probe + target info.
@@ -92,6 +96,7 @@ class ProgramPage(ToolPage):
             ("tabDevices", self.device_manager),
             ("tabRtt", self.rtt_panel),
             ("tabSwo", self.swo_panel),
+            ("tabMonitor", self.variable_monitor),
         ]
         for obj_name, widget in tabs_spec:
             page = QWidget()
@@ -200,6 +205,7 @@ class ProgramPage(ToolPage):
             self.hex_preview,
             self.rtt_panel,
             self.swo_panel,
+            self.variable_monitor,
         ):
             if hasattr(panel, "retranslate"):
                 panel.retranslate()
@@ -212,6 +218,7 @@ class ProgramPage(ToolPage):
             "rtt": (tr("tab.rtt"), "RTT"),
             "swv": (tr("tab.swo"), "SWV"),
             "swo": (tr("tab.swo"), "SWV"),
+            "monitor": (tr("tab.monitor"), "变量", "Monitor"),
         }
         needles = mapping.get(keyword, (keyword,))
         for i in range(self.main_tabs.count()):
@@ -228,3 +235,10 @@ class ProgramPage(ToolPage):
         self._sess = fn
         self.rtt_panel.set_session_getter(fn)
         self.swo_panel.set_session_getter(fn)
+        self.variable_monitor.set_session_getter(fn)
+
+    def set_connected(self, connected: bool) -> None:
+        """Propagate target connection state to monitor-capable panels."""
+        self.rtt_panel.set_connected(connected)
+        self.swo_panel.set_connected(connected)
+        self.variable_monitor.set_connected(connected)

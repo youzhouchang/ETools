@@ -852,7 +852,7 @@ class PyOCDDriver(ProbeDriver):
 
         if suffix == ".hex":
             return self._parse_hex(data.decode("ascii", errors="replace"))
-        if suffix in (".elf", ".axf"):
+        if suffix in (".elf", ".axf", ".alf"):
             return self._parse_elf(path)
         if suffix == ".srec":
             return self._parse_srec(data.decode("ascii", errors="replace"))

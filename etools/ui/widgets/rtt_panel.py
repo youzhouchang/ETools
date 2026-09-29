@@ -29,6 +29,7 @@ class _RttReader(QObject):
     """Poll all RTT up-channels; emit (channel_index, text)."""
 
     text_received = Signal(int, str)
+    raw_received = Signal(int, bytes)
     status = Signal(str)
     channels_ready = Signal(int, int)  # n_up, n_down
 
@@ -114,7 +115,9 @@ class _RttReader(QObject):
             for i, ch in enumerate(ups):
                 raw = ch.read()
                 if raw:
-                    text = bytes(raw).decode("utf-8", errors="replace")
+                    payload = bytes(raw)
+                    self.raw_received.emit(i, payload)
+                    text = payload.decode("utf-8", errors="replace")
                     if text:
                         self.text_received.emit(i, text)
         except Exception as exc:
@@ -125,6 +128,8 @@ class _RttReader(QObject):
 
 class RttPanel(QWidget):
     """Multi-channel RTT console."""
+
+    data_received = Signal(int, bytes)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -212,6 +217,7 @@ class RttPanel(QWidget):
         self.send_btn.clicked.connect(self._send)
         self.send_edit.returnPressed.connect(self._send)
         self._reader.text_received.connect(self._on_text)
+        self._reader.raw_received.connect(self.data_received)
         self._reader.status.connect(lambda m: self.status_label.setText(m))
         self._reader.channels_ready.connect(self._on_channels)
 

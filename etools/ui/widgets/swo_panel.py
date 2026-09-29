@@ -30,6 +30,7 @@ DEFAULT_PORTS = [0]
 
 class _Bridge(QObject):
     text_received = Signal(int, str)  # port, text
+    raw_received = Signal(int, bytes)
     status = Signal(str)
 
 
@@ -52,13 +53,15 @@ class _MultiPortSink:
             width = int(getattr(event, "width", 1))
             data = int(getattr(event, "data", 0))
             if width == 1:
-                text = chr(data & 0xFF)
+                raw = bytes((data & 0xFF,))
             elif width == 2:
-                text = chr(data & 0xFF) + chr((data >> 8) & 0xFF)
+                raw = bytes((data & 0xFF, (data >> 8) & 0xFF))
             elif width == 4:
-                text = "".join(chr((data >> (8 * i)) & 0xFF) for i in range(4))
+                raw = bytes((data >> (8 * i)) & 0xFF for i in range(4))
             else:
                 return
+            self._bridge.raw_received.emit(port, raw)
+            text = raw.decode("utf-8", errors="replace")
             if text:
                 self._bridge.text_received.emit(port, text)
         except Exception:
@@ -196,6 +199,8 @@ class SwvPanel(QWidget):
     """SWV console with multi ITM port tabs (renamed from SWO)."""
     """SWV console with multi ITM port tabs (renamed from SWO)."""
 
+    data_received = Signal(int, bytes)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._bridge = _Bridge(self)
@@ -277,6 +282,7 @@ class SwvPanel(QWidget):
         self.start_btn.clicked.connect(self._toggle)
         self.clear_btn.clicked.connect(self._clear_current)
         self._bridge.text_received.connect(self._on_text)
+        self._bridge.raw_received.connect(self.data_received)
         self._bridge.status.connect(lambda m: self.status_label.setText(m))
 
     def retranslate(self) -> None:

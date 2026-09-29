@@ -6,10 +6,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QColor, QKeySequence, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
     QHBoxLayout,
+    QSizePolicy,
+    QSpacerItem,
     QSplitter,
     QStackedWidget,
     QToolBar,
@@ -25,6 +27,9 @@ from etools.ui.icons import semantic_color, set_action_icon
 from etools.ui.styles import Theme, get_theme
 from etools.ui.widgets.icon_button import IconToolButton
 
+#: Qt's QWIDGETSIZE_MAX — allow the collapsed strip to fill the rail column.
+_QWIDGETSIZE_MAX = 16_777_215
+
 #: Canonical tool order for the rail. Icon ids are dedicated shell glyphs.
 TOOL_ORDER: list[tuple[str, str]] = [
     ("program", "tool-program"),
@@ -36,6 +41,72 @@ TOOL_ORDER: list[tuple[str, str]] = [
 _RAIL_BTN = 48
 _RAIL_GAP = 6
 _RAIL_PAD = 16
+#: Rail has exactly two widths — drag snaps between them (never free-resize).
+_RAIL_W_COLLAPSED = 20
+_RAIL_W_EXPANDED = 52
+
+
+class _RailToggle(QToolButton):
+    """Collapse/expand chevron that shares the tool-button visual language.
+
+    Painted (not text) so it reads as one family with the icon rail, and
+    adapts to the thin collapsed strip without looking like a foreign header.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("railCollapseBtn")
+        self.setAutoRaise(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._collapsed = False
+        self._hover_bg: str | None = None
+        self._fg = "#9AA3B2"
+        self.setFixedSize(_RAIL_W_EXPANDED - 4, 36)
+
+    def set_appearance(self, fg: str, hover_bg: str | None) -> None:
+        self._fg = fg
+        self._hover_bg = hover_bg
+        self.update()
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        self._collapsed = bool(collapsed)
+        if self._collapsed:
+            self.setFixedSize(_RAIL_W_COLLAPSED, 28)
+        else:
+            self.setFixedSize(_RAIL_W_EXPANDED - 4, 36)
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = self.rect()
+        if self.underMouse() and self._hover_bg:
+            inner = rect.adjusted(2, 2, -2, -2)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(self._hover_bg))
+            painter.drawRoundedRect(inner, 8, 8)
+
+        # Chevron: ‹ when expanded (collapse next), › when collapsed (expand next).
+        arm = 5 if self._collapsed else 6
+        cx, cy = rect.center().x(), rect.center().y()
+        pen = QPen(QColor(self._fg))
+        pen.setWidthF(1.8)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        path = QPainterPath()
+        if self._collapsed:
+            path.moveTo(cx - 2, cy - arm)
+            path.lineTo(cx + 2, cy)
+            path.lineTo(cx - 2, cy + arm)
+        else:
+            path.moveTo(cx + 2, cy - arm)
+            path.lineTo(cx - 2, cy)
+            path.lineTo(cx + 2, cy + arm)
+        painter.drawPath(path)
+        painter.end()
 
 
 @dataclass(frozen=True)
@@ -92,19 +163,11 @@ class ToolShell(QWidget):
 
         self._rail = QWidget()
         self._rail.setObjectName("toolRail")
-        self._rail.setMinimumWidth(0)
-        self._rail.setMaximumWidth(52)
+        self._rail.setMinimumWidth(_RAIL_W_EXPANDED)
+        self._rail.setMaximumWidth(_RAIL_W_EXPANDED)
         rail_lay = QVBoxLayout(self._rail)
         rail_lay.setContentsMargins(4, 8, 4, 8)
         rail_lay.setSpacing(_RAIL_GAP)
-        self._collapse_btn = QToolButton()
-        self._collapse_btn.setObjectName("railCollapseBtn")
-        self._collapse_btn.setText("‹")
-        self._collapse_btn.setToolTip(tr("tool.rail_collapse"))
-        self._collapse_btn.setAccessibleName(tr("tool.rail_collapse"))
-        self._collapse_btn.setFixedSize(40, 28)
-        self._collapse_btn.clicked.connect(self.toggle_rail)
-        rail_lay.addWidget(self._collapse_btn, 0, Qt.AlignmentFlag.AlignHCenter)
 
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
@@ -119,7 +182,23 @@ class ToolShell(QWidget):
             self._group.addButton(btn, i)
             rail_lay.addWidget(btn, 0, Qt.AlignmentFlag.AlignHCenter)
             self._tool_buttons[key] = btn
+
+        # Collapse control lives at the bottom of the icon column (same visual
+        # family as the tool buttons) — not a detached header chip.
+        self._pre_toggle_spacer = QSpacerItem(
+            0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding
+        )
+        self._post_toggle_spacer = QSpacerItem(
+            0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred
+        )
+        rail_lay.addSpacerItem(self._pre_toggle_spacer)
+        self._collapse_btn = _RailToggle()
+        self._collapse_btn.set_appearance(theme.text_dim, theme.bg_hover)
+        self._collapse_btn.clicked.connect(self.toggle_rail)
+        rail_lay.addWidget(self._collapse_btn, 0, Qt.AlignmentFlag.AlignHCenter)
+        rail_lay.addSpacerItem(self._post_toggle_spacer)
         self._update_rail_height()
+        self._rail.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Maximum)
         self._rail.mouseDoubleClickEvent = self._on_rail_double_click  # type: ignore[method-assign]
 
         rail_box = QWidget()
@@ -217,20 +296,52 @@ class ToolShell(QWidget):
             btn.setIcon(load_icon(icon_name, color, 28))
             btn.set_backgrounds(t.accent, t.bg_hover)
             btn.update()
+        self._collapse_btn.set_appearance(t.text_dim, t.bg_hover)
 
     def toggle_rail(self) -> None:
-        self._rail_collapsed = not self._rail_collapsed
+        self.set_rail_collapsed(not self._rail_collapsed)
+
+    def set_rail_collapsed(self, collapsed: bool) -> None:
+        """Two-state rail: expanded ↔ collapsed. Never free width."""
+        collapsed = bool(collapsed)
+        self._rail_collapsed = collapsed
+        width = _RAIL_W_COLLAPSED if collapsed else _RAIL_W_EXPANDED
         for btn in self._tool_buttons.values():
-            btn.setVisible(not self._rail_collapsed)
-        self._collapse_btn.setText("›" if self._rail_collapsed else "‹")
-        self._collapse_btn.setVisible(True)
-        width = 16 if self._rail_collapsed else 52
-        self._rail.setMinimumWidth(0)
+            btn.setVisible(not collapsed)
+        self._collapse_btn.set_collapsed(collapsed)
+        self._rail.setMinimumWidth(width)
         self._rail.setMaximumWidth(width)
-        self._split.setSizes([width, max(200, self._split.width() - width)])
-        self._rail.setToolTip(
-            tr("tool.rail_expand") if self._rail_collapsed else tr("tool.rail_collapse")
+        # Keep the chevron at the same Y as the expanded icon stack's bottom
+        # edge so collapse does not make the control jump.
+        tools_span = (
+            len(self._tool_buttons) * _RAIL_BTN
+            + max(1, len(self._tool_buttons)) * _RAIL_GAP
         )
+        if collapsed:
+            self._pre_toggle_spacer.changeSize(
+                0, tools_span, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+            )
+            self._post_toggle_spacer.changeSize(
+                0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred
+            )
+            self._rail.setMaximumHeight(_QWIDGETSIZE_MAX)
+        else:
+            self._pre_toggle_spacer.changeSize(
+                0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding
+            )
+            self._post_toggle_spacer.changeSize(
+                0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred
+            )
+            self._update_rail_height()
+        self._rail.layout().invalidate()
+        self._rail.layout().activate()
+        self._split.blockSignals(True)
+        self._split.setSizes([width, max(200, self._split.width() - width)])
+        self._split.blockSignals(False)
+        tip = tr("tool.rail_expand") if collapsed else tr("tool.rail_collapse")
+        self._rail.setToolTip(tip)
+        self._collapse_btn.setToolTip(tip)
+        self._collapse_btn.setAccessibleName(tip)
 
     def shutdown(self) -> None:
         for page in self._pages.values():
@@ -244,26 +355,17 @@ class ToolShell(QWidget):
 
     def _update_rail_height(self) -> None:
         n = max(1, len(self._tool_buttons))
-        self._rail.setMaximumHeight(n * _RAIL_BTN + (n + 2) * _RAIL_GAP + _RAIL_PAD)
+        # tools + bottom toggle + gaps + vertical padding
+        self._rail.setMaximumHeight(n * _RAIL_BTN + 36 + (n + 3) * _RAIL_GAP + _RAIL_PAD)
 
     def _on_rail_double_click(self, event) -> None:
         self.toggle_rail()
         event.accept()
 
     def _on_splitter_moved(self, pos: int, _index: int) -> None:
-        """Dragging the rail handle collapses/expands like the ‹ button."""
-        collapsed = pos <= 24
-        if collapsed != self._rail_collapsed:
-            self._rail_collapsed = collapsed
-            for btn in self._tool_buttons.values():
-                btn.setVisible(not collapsed)
-            self._collapse_btn.setText("›" if collapsed else "‹")
-            self._rail.setFixedWidth(16 if collapsed else 52)
-            self._rail.setToolTip(
-                tr("tool.rail_expand") if collapsed else tr("tool.rail_collapse")
-            )
-            self._collapse_btn.setToolTip(self._rail.toolTip())
-            self._collapse_btn.setAccessibleName(self._rail.toolTip())
+        """Drag left → hide, drag right → expand; always snap to two widths."""
+        mid = (_RAIL_W_COLLAPSED + _RAIL_W_EXPANDED) // 2
+        self.set_rail_collapsed(int(pos) <= mid)
 
     def _on_id_clicked(self, index: int) -> None:
         if 0 <= index < len(self._key_order):

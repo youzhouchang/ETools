@@ -49,6 +49,7 @@ class SerialLink:
         bytesize: int = 8,
         parity: str = "N",
         stopbits: float = 1,
+        flow_control: str = "none",
     ) -> None:
         try:
             import serial
@@ -61,12 +62,16 @@ class SerialLink:
             "E": serial.PARITY_EVEN,
             "O": serial.PARITY_ODD,
         }
+        flow = str(flow_control or "none").lower()
         self._ser = serial.Serial(
             port=port,
             baudrate=int(baudrate),
             bytesize=int(bytesize),
             parity=parity_map.get(parity.upper(), serial.PARITY_NONE),
             stopbits=float(stopbits),
+            xonxoff=flow == "software",
+            rtscts=flow == "hardware",
+            dsrdtr=False,
             timeout=0.05,
         )
         self._stop.clear()
@@ -78,6 +83,12 @@ class SerialLink:
             raise RuntimeError("serial not open")
         self._ser.write(data)
         self._ser.flush()
+
+    def send_break(self, duration: float = 0.25) -> None:
+        """Assert the serial BREAK condition briefly (as in minicom Ctrl-A F)."""
+        if not self.is_open:
+            raise RuntimeError("serial not open")
+        self._ser.send_break(duration=max(0.0, float(duration)))
 
     def set_dtr(self, on: bool) -> None:
         if self.is_open:

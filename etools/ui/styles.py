@@ -683,16 +683,13 @@ QToolButton#toolRailBtn {{
 }}
 QToolButton#railCollapseBtn {{
     background: transparent;
-    color: {text_dim};
-    border: 1px solid transparent;
-    border-radius: 5px;
-    font-size: 18px;
+    border: none;
+    border-radius: 8px;
     padding: 0;
 }}
 QToolButton#railCollapseBtn:hover {{
-    color: {text};
-    background: {bg_hover};
-    border-color: {border};
+    background: transparent;
+    border: none;
 }}
 QGroupBox#ctxGroup,
 QGroupBox#mainGroup {{

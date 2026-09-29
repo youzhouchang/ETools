@@ -47,7 +47,7 @@
         </size>
        </property>
        <property name="placeholderText">
-        <string>选择 .bin / .hex / .elf 固件…</string>
+        <string>选择 .bin / .hex / .elf / .alf 固件…</string>
        </property>
       </widget>
      </item>

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -12,13 +14,14 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
 from etools.i18n import tr
-from etools.ui.runtime import OpRunner
+from etools.ui.runtime import OpRunner, SignalRelay
 from etools.ui.shell import ToolActionSpec
 from etools.ui.tool_prefs import load_tool_prefs, save_tool_prefs
 
@@ -35,6 +38,9 @@ class SftpPanel(QWidget):
         self.setObjectName("sftpPanel")
         self._ssh = None
         self._runner = OpRunner(self)
+        self._progress_relay = SignalRelay(self)
+        self._progress_relay.progressed.connect(self._show_progress)
+        self._cancel_event: threading.Event | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 6, 8, 6)
@@ -70,11 +76,20 @@ class SftpPanel(QWidget):
         root.addLayout(row)
 
         self.file_list = QListWidget()
+        self.file_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         root.addWidget(self.file_list, 1)
 
         self.status = QLabel("")
         self.status.setObjectName("hint")
         root.addWidget(self.status)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(True)
+        root.addWidget(self.progress)
+        self.cancel_btn = QPushButton()
+        self.cancel_btn.setObjectName("ghost")
+        self.cancel_btn.setEnabled(False)
 
         actions = QHBoxLayout()
         actions.setSpacing(8)
@@ -86,6 +101,7 @@ class SftpPanel(QWidget):
         self.download_btn.setEnabled(False)
         actions.addWidget(self.upload_btn)
         actions.addWidget(self.download_btn)
+        actions.addWidget(self.cancel_btn)
         actions.addStretch(1)
         root.addLayout(actions)
 
@@ -94,6 +110,7 @@ class SftpPanel(QWidget):
         self.mkdir_btn.clicked.connect(self._mkdir)
         self.upload_btn.clicked.connect(self.upload)
         self.download_btn.clicked.connect(self.download)
+        self.cancel_btn.clicked.connect(self._cancel_transfer)
         self.file_list.itemDoubleClicked.connect(self._on_item)
         self.remote_edit.returnPressed.connect(self.refresh)
         self.retranslate()
@@ -109,6 +126,7 @@ class SftpPanel(QWidget):
         self.mkdir_btn.setText(tr("sftp.mkdir"))
         self.upload_btn.setText(tr("sftp.upload"))
         self.download_btn.setText(tr("sftp.download"))
+        self.cancel_btn.setText(tr("sftp.cancel"))
 
     def toolbar_actions(self) -> list[ToolActionSpec]:
         return [
@@ -145,13 +163,41 @@ class SftpPanel(QWidget):
             self.status.setText(tr("sftp.transfer_busy"))
             return
         self.status.setText("…")
-        self._runner.start(fn, on_ok, self._on_fail)
+        self.progress.setValue(0)
+        self._cancel_event = threading.Event()
+        cancel_event = self._cancel_event
+        self.cancel_btn.setEnabled(True)
+        self._runner.start(
+            fn,
+            on_ok,
+            self._on_fail,
+            cancel_event=cancel_event,
+            on_cancel=self._on_cancelled,
+        )
+
+    def _cancel_transfer(self) -> None:
+        if self._cancel_event is not None:
+            self._cancel_event.set()
+            self.status.setText(tr("sftp.cancelling"))
+            self.cancel_btn.setEnabled(False)
+
+    def _finish_transfer(self) -> None:
+        self._cancel_event = None
+        self.cancel_btn.setEnabled(False)
+
+    def _on_cancelled(self) -> None:
+        self._finish_transfer()
+        self.status.setText(tr("sftp.cancelled"))
+
+    def _show_progress(self, info) -> None:
+        done, total, label = info
+        self.progress.setRange(0, 100)
+        self.progress.setValue(min(100, int(done * 100 / total)) if total else 0)
+        self.status.setText(f"{label}: {done:,} / {total:,} B")
 
     def _on_fail(self, msg: str) -> None:
+        self._finish_transfer()
         self.status.setText(tr("sftp.err", err=msg))
-        self.file_list.clear()
-        item = QListWidgetItem(tr("sftp.err", err=msg))
-        self.file_list.addItem(item)
 
     def _remote_join(self, name: str) -> str:
         base = self.remote_edit.text().strip().rstrip("/")
@@ -178,6 +224,7 @@ class SftpPanel(QWidget):
         self._run(lambda: self._ssh.sftp_listdir(path), self._fill_list)
 
     def _fill_list(self, rows) -> None:
+        self._finish_transfer()
         self.file_list.clear()
         for name, kind, size in rows:
             label = f"{name}/" if kind == "dir" else f"{name}  ({size:,} B)"
@@ -226,18 +273,33 @@ class SftpPanel(QWidget):
         if self._ssh is None or not self._ssh.is_connected:
             self.status.setText(tr("sftp.no_ssh"))
             return
-        path, _ = QFileDialog.getOpenFileName(self, tr("sftp.upload"), "")
-        if not path:
+        paths, _ = QFileDialog.getOpenFileNames(self, tr("sftp.upload"), "")
+        if not paths:
             return
-        remote = self._remote_join(Path(path).name)
+        paths = list(paths)
+        relay = self._progress_relay
+        remote_base = self.remote_edit.text().strip().rstrip("/")
 
-        def work():
-            self._ssh.sftp_upload(path, remote)
-            return path, remote
+        def work(cancel_event):
+            for index, path in enumerate(paths, 1):
+                if cancel_event and cancel_event.is_set():
+                    return paths[: index - 1]
+                remote = f"{remote_base}/{Path(path).name}" if remote_base else Path(path).name
+                def progress(done, total, i=index, p=path):
+                    relay.push((done, total, f"{i}/{len(paths)} {Path(p).name}"))
+                self._ssh.sftp_upload(path, remote, progress)
+            return paths
 
         def done(result) -> None:
-            src, dst = result
-            self.status.setText(tr("sftp.up_ok", src=Path(src).name, dst=dst))
+            self._finish_transfer()
+            self.status.setText(
+                tr(
+                    "sftp.up_ok",
+                    src=f"{len(result)} file(s)",
+                    dst=remote_base or ".",
+                )
+            )
+            self.progress.setValue(100)
             self.refresh()
 
         self._run(work, done)
@@ -251,18 +313,44 @@ class SftpPanel(QWidget):
             self.status.setText(tr("sftp.select_file"))
             return
         name = sel[0]
-        local, _ = QFileDialog.getSaveFileName(self, tr("sftp.download"), name)
-        if not local:
+        selected = [item.data(ROLE) for item in self.file_list.selectedItems()]
+        files = [(str(row[0]), str(row[1])) for row in selected if row and row[1] == "file"]
+        if not files:
+            files = [(name, "file")]
+        target = (
+            QFileDialog.getExistingDirectory(self, tr("sftp.download"), "")
+            if len(files) > 1
+            else ""
+        )
+        if len(files) > 1 and not target:
             return
-        remote = self._remote_join(name)
+        if len(files) == 1:
+            local, _ = QFileDialog.getSaveFileName(self, tr("sftp.download"), name)
+            if not local:
+                return
+            destinations = [(files[0][0], local)]
+        else:
+            destinations = [(n, str(Path(target) / n)) for n, _ in files]
+        relay = self._progress_relay
+        remote_base = self.remote_edit.text().strip().rstrip("/")
 
-        def work():
-            self._ssh.sftp_download(remote, local)
-            return remote, local
+        def work(cancel_event):
+            for index, (remote_name, local_path) in enumerate(destinations, 1):
+                if cancel_event and cancel_event.is_set():
+                    return destinations[: index - 1]
+                remote = f"{remote_base}/{remote_name}" if remote_base else remote_name
+                def progress(done, total, i=index, n=remote_name):
+                    relay.push((done, total, f"{i}/{len(destinations)} {n}"))
+                self._ssh.sftp_download(remote, local_path, progress)
+            return destinations
 
         def done(result) -> None:
-            src, dst = result
-            self.status.setText(tr("sftp.down_ok", src=src, dst=dst))
+            self._finish_transfer()
+            destination = Path(result[0][1]).parent if result else ""
+            self.status.setText(
+                tr("sftp.down_ok", src=f"{len(result)} file(s)", dst=destination)
+            )
+            self.progress.setValue(100)
 
         self._run(work, done)
 
