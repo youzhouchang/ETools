@@ -114,11 +114,17 @@ class FlashPanel(QFrame):
         self.verify_btn.setText(tr("act.verify"))
         self.reset_btn.setText(tr("act.reset"))
         self.read_btn.setText(tr("act.read_chip"))
-        self.browse_btn.setToolTip(tr("act.open"))
+        self.browse_btn.setToolTip(tr("flash.recent_tip"))
         self._update_fw_info()
 
     def _wire(self) -> None:
         self.browse_btn.clicked.connect(self._browse)
+        from PySide6.QtCore import Qt
+
+        self.browse_btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.browse_btn.customContextMenuRequested.connect(
+            lambda _pos: self.show_firmware_history()
+        )
         self.program_btn.clicked.connect(self._on_program)
         self.erase_btn.clicked.connect(self._on_erase_clicked)
         self.verify_btn.clicked.connect(self._on_verify)
@@ -133,9 +139,33 @@ class FlashPanel(QFrame):
         )
         if path:
             self.fw_edit.setText(path)
-            cfg = get_config()
-            cfg.last_firmware = path
-            save_config()
+            self.remember_firmware(path)
+
+    def remember_firmware(self, path: str) -> None:
+        cfg = get_config()
+        cfg.last_firmware = path
+        extra = dict(cfg.extra or {})
+        history = [p for p in (extra.get("firmware_history") or []) if isinstance(p, str)]
+        history = [path] + [p for p in history if p != path]
+        extra["firmware_history"] = history[:10]
+        cfg.extra = extra
+        save_config()
+
+    def show_firmware_history(self, at_button=None) -> None:
+        """Popup of recent firmware paths for one-click restore."""
+        from PySide6.QtCore import QPoint
+        from PySide6.QtWidgets import QMenu
+
+        history = (get_config().extra or {}).get("firmware_history") or []
+        menu = QMenu(self)
+        if not history:
+            menu.addAction("—")
+        else:
+            for p in history:
+                menu.addAction(str(p), lambda t=str(p): self.fw_edit.setText(t))
+        btn = at_button or self.browse_btn
+        pos: QPoint = btn.mapToGlobal(btn.rect().bottomLeft())
+        menu.exec(pos)
 
     def _update_fw_info(self) -> None:
         p = Path(self.fw_edit.text().strip())
@@ -178,8 +208,8 @@ class FlashPanel(QFrame):
         verify = self.verify_check.isChecked()
         cfg = get_config()
         cfg.verify_after_program = verify
-        cfg.last_firmware = path
         save_config()
+        self.remember_firmware(path)
         self.program_requested.emit(path, verify)
 
     def _on_erase_clicked(self) -> None:

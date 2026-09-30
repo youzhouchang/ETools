@@ -78,6 +78,15 @@ class ProbePanel(QFrame):
         self.connect_btn.setEnabled(False)
         for name, label in list_target_choices():
             self.target_combo.addItem(label, name)
+        # Editable + substring completer so large chip catalogs stay searchable.
+        self.target_combo.setEditable(True)
+        self.target_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        completer = self.target_combo.completer()
+        if completer is not None:
+            completer.setFilterMode(Qt.MatchFlag.MatchContains)
+            completer.setCompletionMode(completer.CompletionMode.PopupCompletion)
+            completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.target_combo.setCurrentIndex(0)
         for value, label in CONNECT_MODES:
             self.mode_combo.addItem(label, value)
         for value, label in WIRE_PROTOCOLS:
@@ -293,6 +302,12 @@ class ProbePanel(QFrame):
             return
         text = self.target_combo.currentText().strip()
         data = self.target_combo.currentData()
+        # Prefer exact item data; fall back to matching typed text against labels.
+        if data is None:
+            for i in range(self.target_combo.count()):
+                if self.target_combo.itemText(i).strip().lower() == text.lower():
+                    data = self.target_combo.itemData(i)
+                    break
         # Allow typing a custom pyOCD target name not in the list
         target_name = data if isinstance(data, str) and data else text
         if not target_name:

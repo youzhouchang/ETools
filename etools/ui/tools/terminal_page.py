@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLineEdit,
@@ -28,6 +29,15 @@ from etools.ui.tools.sftp_panel import SftpPanel
 from etools.ui.widgets.ip_edit import IPv4Edit
 
 _HISTORY_MAX = 30
+_SESSIONS_MAX = 20
+_QUICK_COMMANDS = [
+    ("uptime", "uptime"),
+    ("df -h", "df -h"),
+    ("free -m", "free -m"),
+    ("uname -a", "uname -a"),
+    ("ip a", "ip a"),
+    ("top -bn1 | head", "top -bn1 | head -n 15"),
+]
 
 
 class TerminalPage(ToolPage):
@@ -45,6 +55,28 @@ class TerminalPage(ToolPage):
         self._history_idx = -1
 
         self.ctx_ssh = self.ctx_group(tr("term.title"))
+
+        self.session_combo = QComboBox()
+        self.session_combo.setFixedHeight(28)
+        self.session_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.lbl_session = self.form_row(tr("term.session"), self.session_combo)
+
+        from PySide6.QtWidgets import QWidget as _QWidget
+
+        sess_wrap = _QWidget()
+        sess_row = QHBoxLayout(sess_wrap)
+        sess_row.setContentsMargins(0, 0, 0, 0)
+        sess_row.setSpacing(6)
+        self.session_save_btn = QPushButton(tr("term.session_save"))
+        self.session_save_btn.setObjectName("ghost")
+        self.session_save_btn.setFixedHeight(26)
+        self.session_del_btn = QPushButton(tr("term.session_delete"))
+        self.session_del_btn.setObjectName("ghost")
+        self.session_del_btn.setFixedHeight(26)
+        sess_row.addWidget(self.session_save_btn)
+        sess_row.addWidget(self.session_del_btn)
+        sess_row.addStretch(1)
+        self.form_row("", sess_wrap)
 
         self.host = IPv4Edit("192.168.1.10")
         self.lbl_host = self.form_row(tr("term.host"), self.host)
@@ -111,6 +143,31 @@ class TerminalPage(ToolPage):
         cmd_row.addWidget(self.clear_btn)
         term_lay.addLayout(cmd_row)
 
+        quick_row = QHBoxLayout()
+        quick_row.setSpacing(6)
+        self._quick_btns: list[QPushButton] = []
+        for label, command in _QUICK_COMMANDS:
+            btn = QPushButton(label)
+            btn.setObjectName("ghost")
+            btn.setFixedHeight(26)
+            btn.setToolTip(command)
+            btn.setEnabled(False)
+            btn.clicked.connect(lambda _c=False, c=command: self._run_quick(c))
+            quick_row.addWidget(btn)
+            self._quick_btns.append(btn)
+        self.copy_out_btn = QPushButton(tr("mon.copy"))
+        self.copy_out_btn.setObjectName("ghost")
+        self.copy_out_btn.setFixedHeight(26)
+        self.copy_out_btn.clicked.connect(self._copy_output)
+        self.snippet_btn = QPushButton(tr("term.snippets"))
+        self.snippet_btn.setObjectName("ghost")
+        self.snippet_btn.setFixedHeight(26)
+        self.snippet_btn.clicked.connect(self._show_snippets)
+        quick_row.addStretch(1)
+        quick_row.addWidget(self.snippet_btn)
+        quick_row.addWidget(self.copy_out_btn)
+        term_lay.addLayout(quick_row)
+
         self.sftp_panel = SftpPanel()
         self.ssh_link_changed.connect(self.sftp_panel.set_ssh)
         sftp_box = self.main_group(tr("sftp.title"))
@@ -122,8 +179,12 @@ class TerminalPage(ToolPage):
         self.cmd.returnPressed.connect(self.exec_command)
         self.cmd.installEventFilter(self)
         self.clear_btn.clicked.connect(self.clear_view)
+        self.session_combo.currentIndexChanged.connect(self._on_session_selected)
+        self.session_save_btn.clicked.connect(self._save_session)
+        self.session_del_btn.clicked.connect(self._delete_session)
         self.retranslate()
         self._load_prefs()
+        self._reload_sessions()
         self.host.editingFinished.connect(self._persist_prefs)
         self.user.editingFinished.connect(self._persist_prefs)
         self.port.editingFinished.connect(self._persist_prefs)
@@ -174,6 +235,9 @@ class TerminalPage(ToolPage):
 
     def retranslate(self) -> None:
         self.ctx_ssh.setTitle(tr("term.title"))
+        self.lbl_session.setText(tr("term.session"))
+        self.session_save_btn.setText(tr("term.session_save"))
+        self.session_del_btn.setText(tr("term.session_delete"))
         self.lbl_host.setText(tr("term.host"))
         self.lbl_user.setText(tr("term.user"))
         self.lbl_port.setText(tr("term.port"))
@@ -186,6 +250,8 @@ class TerminalPage(ToolPage):
         self.cmd.setPlaceholderText(tr("term.cmd_ph"))
         self.exec_btn.setText(tr("term.exec"))
         self.clear_btn.setText(tr("term.clear"))
+        self.snippet_btn.setText(tr("term.snippets"))
+        self.copy_out_btn.setText(tr("mon.copy"))
         self.sftp_box.setTitle(tr("sftp.title"))
         self.sftp_panel.retranslate()
 
@@ -247,6 +313,144 @@ class TerminalPage(ToolPage):
     def _set_ready(self, on: bool) -> None:
         self.cmd.setEnabled(on)
         self.exec_btn.setEnabled(on)
+        for btn in self._quick_btns:
+            btn.setEnabled(on)
+
+    def _run_quick(self, command: str) -> None:
+        self.cmd.setText(command)
+        self._on_exec()
+
+    def _copy_output(self) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        text = self.term.toPlainText()
+        if text:
+            QApplication.clipboard().setText(text)
+            self._log(tr("mon.copied"))
+
+    def _snippets(self) -> list[str]:
+        prefs = load_tool_prefs(self.tool_id)
+        raw = prefs.get("snippets")
+        if not isinstance(raw, list):
+            return []
+        return [str(x) for x in raw if isinstance(x, str) and x.strip()][:30]
+
+    def _show_snippets(self) -> None:
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+        manage = menu.addAction(tr("term.snippets_edit"))
+        menu.addSeparator()
+        snippets = self._snippets()
+        if not snippets:
+            menu.addAction("—")
+        else:
+            for text in snippets:
+                menu.addAction(text, lambda t=text: self._run_quick(t))
+        chosen = menu.exec(self.snippet_btn.mapToGlobal(self.snippet_btn.rect().bottomLeft()))
+        if chosen is manage:
+            self._edit_snippets()
+
+    def _edit_snippets(self) -> None:
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox, QPlainTextEdit, QVBoxLayout
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(tr("term.snippets"))
+        dlg.setMinimumSize(420, 320)
+        lay = QVBoxLayout(dlg)
+        edit = QPlainTextEdit()
+        edit.setPlaceholderText(tr("term.snippets_ph"))
+        edit.setPlainText("\n".join(self._snippets()))
+        lay.addWidget(edit)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        lay.addWidget(buttons)
+        if dlg.exec():
+            lines = [ln.strip() for ln in edit.toPlainText().splitlines() if ln.strip()]
+            save_tool_prefs(self.tool_id, {"snippets": lines[:30]})
+
+    def _sessions(self) -> list[dict]:
+        prefs = load_tool_prefs(self.tool_id)
+        raw = prefs.get("sessions")
+        if not isinstance(raw, list):
+            return []
+        out = []
+        for item in raw:
+            if isinstance(item, dict) and item.get("name") and item.get("host"):
+                out.append(item)
+        return out[:_SESSIONS_MAX]
+
+    def _reload_sessions(self) -> None:
+        current = self.session_combo.currentData()
+        self.session_combo.blockSignals(True)
+        self.session_combo.clear()
+        self.session_combo.addItem(tr("term.session_none"), "")
+        for item in self._sessions():
+            label = f"{item.get('name')} · {item.get('user', '')}@{item.get('host')}"
+            self.session_combo.addItem(label, item.get("name"))
+        if current:
+            idx = self.session_combo.findData(current)
+            if idx >= 0:
+                self.session_combo.setCurrentIndex(idx)
+        self.session_combo.blockSignals(False)
+
+    def _on_session_selected(self, _index: int = 0) -> None:
+        name = self.session_combo.currentData()
+        if not name:
+            return
+        for item in self._sessions():
+            if item.get("name") == name:
+                self.host.setText(str(item.get("host", "")))
+                self.user.setText(str(item.get("user", "")))
+                self.port.setText(str(item.get("port", "22")))
+                self.key_edit.setText(str(item.get("keyfile", "") or ""))
+                self._persist_prefs()
+                break
+
+    def _save_session(self) -> None:
+        from PySide6.QtWidgets import QInputDialog
+
+        host = self.host.text().strip()
+        if not host:
+            self._log(tr("term.err", err="host required"))
+            return
+        default = f"{self.user.text().strip() or 'user'}@{host}"
+        name, ok = QInputDialog.getText(
+            self, tr("term.session_save"), tr("term.session_name"), text=default
+        )
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        sessions = [s for s in self._sessions() if s.get("name") != name]
+        sessions.insert(
+            0,
+            {
+                "name": name,
+                "host": host,
+                "user": self.user.text().strip(),
+                "port": self.port.text().strip() or "22",
+                "keyfile": self.key_edit.text().strip(),
+            },
+        )
+        sessions = sessions[:_SESSIONS_MAX]
+        save_tool_prefs(self.tool_id, {"sessions": sessions})
+        self._reload_sessions()
+        idx = self.session_combo.findData(name)
+        if idx >= 0:
+            self.session_combo.setCurrentIndex(idx)
+        self._log(tr("term.session_saved", name=name))
+
+    def _delete_session(self) -> None:
+        name = self.session_combo.currentData()
+        if not name:
+            return
+        sessions = [s for s in self._sessions() if s.get("name") != name]
+        save_tool_prefs(self.tool_id, {"sessions": sessions})
+        self._reload_sessions()
+        self._log(tr("term.session_deleted", name=name))
 
     def _load_prefs(self) -> None:
         prefs = load_tool_prefs(self.tool_id)

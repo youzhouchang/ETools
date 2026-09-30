@@ -116,3 +116,22 @@ def save_config() -> None:
         except OSError:
             # Preferences are best-effort; a read-only profile must not break UI actions.
             return
+
+
+def export_config(dest_path: str | Path) -> None:
+    """Write a JSON snapshot of the current config to *dest_path*."""
+    cfg = get_config()
+    payload = json.dumps(asdict(cfg), indent=2, ensure_ascii=False)
+    Path(dest_path).write_text(payload, encoding="utf-8")
+
+
+def import_config(src_path: str | Path) -> None:
+    """Replace config contents from a JSON snapshot and persist."""
+    global _config
+    data = json.loads(Path(src_path).read_text(encoding="utf-8"))
+    cfg = AppConfig()
+    for key, value in data.items():
+        if hasattr(cfg, key):
+            setattr(cfg, key, value)
+    _config = cfg
+    cfg.save()

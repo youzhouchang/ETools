@@ -78,6 +78,28 @@ class TestAppConfig:
         assert cfg.default_target == "cortex_m"
 
 
+def test_export_import_config_roundtrip(tmp_path, monkeypatch):
+    import etools.config as config_mod
+
+    monkeypatch.setattr(config_mod, "get_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(config_mod, "_config", config_mod.AppConfig())
+    cfg = config_mod.get_config()
+    cfg.theme = "light"
+    cfg.language = "en"
+    config_mod.save_config()
+
+    out = tmp_path / "snap.json"
+    config_mod.export_config(out)
+    assert out.exists()
+
+    cfg.theme = "dark"
+    cfg.language = "zh"
+    config_mod.save_config()
+    config_mod.import_config(out)
+    assert config_mod.get_config().theme == "light"
+    assert config_mod.get_config().language == "en"
+
+
 class TestFlashService:
     def test_scan(self):
         svc = FlashService(DummyDriver())

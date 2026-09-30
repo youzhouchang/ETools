@@ -212,12 +212,13 @@ class ToolShell(QWidget):
 
         self._split = QSplitter(Qt.Orientation.Horizontal)
         self._split.setChildrenCollapsible(False)
-        self._split.setCollapsible(0, True)
-        self._split.setCollapsible(1, False)
         self._split.setHandleWidth(4)
         self._split.setOpaqueResize(True)
         self._split.addWidget(rail_box)
         self._split.addWidget(self._stack)
+        # Index-dependent API must run after children exist (Qt warns otherwise).
+        self._split.setCollapsible(0, True)
+        self._split.setCollapsible(1, False)
         self._split.setStretchFactor(0, 0)
         self._split.setStretchFactor(1, 1)
         self._split.setSizes([52, 1000])

@@ -57,11 +57,15 @@ class SftpPanel(QWidget):
         self.mkdir_btn = QPushButton()
         self.mkdir_btn.setObjectName("ghost")
         self.mkdir_btn.setEnabled(False)
+        self.delete_btn = QPushButton()
+        self.delete_btn.setObjectName("ghost")
+        self.delete_btn.setEnabled(False)
         self.list_btn = QPushButton()
         self.list_btn.setObjectName("ghost")
         self.list_btn.setEnabled(False)
         head.addWidget(self.parent_btn)
         head.addWidget(self.mkdir_btn)
+        head.addWidget(self.delete_btn)
         head.addWidget(self.list_btn)
         root.addLayout(head)
 
@@ -108,6 +112,7 @@ class SftpPanel(QWidget):
         self.list_btn.clicked.connect(self.refresh)
         self.parent_btn.clicked.connect(self._go_parent)
         self.mkdir_btn.clicked.connect(self._mkdir)
+        self.delete_btn.clicked.connect(self._delete_selected)
         self.upload_btn.clicked.connect(self.upload)
         self.download_btn.clicked.connect(self.download)
         self.cancel_btn.clicked.connect(self._cancel_transfer)
@@ -124,6 +129,7 @@ class SftpPanel(QWidget):
         self.list_btn.setText(tr("sftp.list"))
         self.parent_btn.setText(tr("sftp.parent"))
         self.mkdir_btn.setText(tr("sftp.mkdir"))
+        self.delete_btn.setText(tr("sftp.delete"))
         self.upload_btn.setText(tr("sftp.upload"))
         self.download_btn.setText(tr("sftp.download"))
         self.cancel_btn.setText(tr("sftp.cancel"))
@@ -144,6 +150,7 @@ class SftpPanel(QWidget):
         self.download_btn.setEnabled(connected)
         self.parent_btn.setEnabled(connected)
         self.mkdir_btn.setEnabled(connected)
+        self.delete_btn.setEnabled(connected)
         if connected:
             self.refresh()
         else:
@@ -249,6 +256,41 @@ class SftpPanel(QWidget):
             self._set_path(self._remote_join(name))
         else:
             self.download()
+
+    def _delete_selected(self) -> None:
+        items = self.file_list.selectedItems()
+        if not items or self._ssh is None:
+            return
+        from PySide6.QtWidgets import QMessageBox
+
+        names = [it.text().split("\t")[0] for it in items]
+        ret = QMessageBox.question(
+            self,
+            tr("sftp.delete"),
+            tr("sftp.delete_confirm", names=", ".join(names[:5])),
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+        )
+        if ret != QMessageBox.StandardButton.Ok:
+            return
+        base = self.remote_edit.text().strip() or "/"
+        if not base.endswith("/"):
+            base += "/"
+
+        def work() -> int:
+            count = 0
+            for name in names:
+                self._ssh.sftp_remove(base + name)
+                count += 1
+            return count
+
+        def ok(count) -> None:
+            self.status.setText(tr("sftp.delete_done", n=int(count)))
+            self.refresh()
+
+        def fail(msg: str) -> None:
+            self.status.setText(msg)
+
+        self._runner.start(work, ok, fail)
 
     def _mkdir(self) -> None:
         if self._ssh is None or not self._ssh.is_connected:

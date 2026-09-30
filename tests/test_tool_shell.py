@@ -102,9 +102,9 @@ def test_serial_presets_and_cyclic(qapp, tmp_path, monkeypatch):
     monkeypatch.setattr(config_mod, "_config", config_mod.AppConfig())
 
     page = SerialPage()
-    assert len(page._preset_edits) == 5
-    assert len(page._preset_btns) == 5
-    assert len(page._preset_checks) == 5
+    assert len(page._preset_edits) == 8
+    assert len(page._preset_btns) == 8
+    assert len(page._preset_checks) == 8
     assert page.cyclic_check is not None
     assert page.cyclic_interval.minimum() == 1
     assert page.cyclic_interval.value() >= 1

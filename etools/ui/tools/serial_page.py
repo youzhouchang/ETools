@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -25,7 +27,7 @@ from etools.i18n import tr
 from etools.ui.shell import ToolActionSpec
 from etools.ui.tool_prefs import load_tool_prefs, save_tool_prefs
 from etools.ui.tools.base import ToolPage
-from etools.ui.widgets.traffic_view import TrafficView, parse_hex_input
+from etools.ui.widgets.traffic_view import ENCODINGS, TrafficView, decode_payload, parse_hex_input
 
 _BAUDS = [
     "1200",
@@ -49,7 +51,7 @@ _ENDINGS = {
 }
 
 _HISTORY_MAX = 30
-_PRESET_COUNT = 5
+_PRESET_COUNT = 8
 
 
 class _RxRelay(QObject):
@@ -174,6 +176,12 @@ class SerialPage(ToolPage):
         self.flow.setFixedHeight(28)
         self.lbl_flow = self.form_row(tr("serial.flow_mode"), self.flow)
 
+        self.encoding = QComboBox()
+        for value, label in ENCODINGS:
+            self.encoding.addItem(label, value)
+        self.encoding.setFixedHeight(28)
+        self.lbl_encoding = self.form_row(tr("mon.encoding"), self.encoding)
+
         self.open_btn = QPushButton()
         self.open_btn.setObjectName("accent")
         self.open_btn.setFixedHeight(32)
@@ -226,16 +234,34 @@ class SerialPage(ToolPage):
         self.history_btn = QPushButton(tr("serial.history"))
         self.history_btn.setObjectName("ghost")
         self.history_btn.setFixedHeight(28)
+        self.send_file_btn = QPushButton(tr("serial.send_file"))
+        self.send_file_btn.setObjectName("ghost")
+        self.send_file_btn.setFixedHeight(28)
+        self.send_file_btn.setEnabled(False)
         self.send_edit = QLineEdit()
         self.send_edit.setFixedHeight(30)
         self.send_edit.setPlaceholderText(tr("serial.send_ph"))
         self.send_btn = QPushButton()
-        self.send_btn.setObjectName("ghost")
+        self.send_btn.setObjectName("accent")
         self.send_btn.setEnabled(False)
+        self.preset_import_btn = QPushButton(tr("serial.presets_import"))
+        self.preset_import_btn.setObjectName("ghost")
+        self.preset_import_btn.setFixedHeight(26)
+        self.preset_export_btn = QPushButton(tr("serial.presets_export"))
+        self.preset_export_btn.setObjectName("ghost")
+        self.preset_export_btn.setFixedHeight(26)
 
         # Quick-send presets: editable command slots + optional cycle membership.
         self.preset_box = QGroupBox(tr("serial.presets"))
         self.preset_box.setObjectName("mainGroup")
+        self.preset_box.setCheckable(True)
+        self.preset_box.setChecked(False)
+
+        def _toggle_presets(on: bool) -> None:
+            self.preset_box.setMaximumHeight(16777215 if on else 40)
+
+        self.preset_box.toggled.connect(_toggle_presets)
+        self.preset_box.setMaximumHeight(40)
         preset_lay = QVBoxLayout(self.preset_box)
         preset_lay.setContentsMargins(8, 10, 8, 8)
         preset_lay.setSpacing(4)
@@ -282,6 +308,8 @@ class SerialPage(ToolPage):
         cyclic_row.addWidget(self.lbl_interval)
         cyclic_row.addWidget(self.cyclic_interval)
         cyclic_row.addStretch(1)
+        cyclic_row.addWidget(self.preset_import_btn)
+        cyclic_row.addWidget(self.preset_export_btn)
         preset_lay.addLayout(cyclic_row)
         self._cyclic_timer = QTimer(self)
         self._cyclic_timer.timeout.connect(self._on_cyclic_tick)
@@ -300,6 +328,7 @@ class SerialPage(ToolPage):
         top_meta.addWidget(self.checksum_preview)
         top_meta.addWidget(self.rx_verify)
         top_meta.addWidget(self.history_btn)
+        top_meta.addWidget(self.send_file_btn)
         top_meta.addStretch(1)
         send_row.addWidget(self.send_edit, 1)
         send_row.addWidget(self.send_btn)
@@ -372,6 +401,7 @@ class SerialPage(ToolPage):
         self.send_edit.returnPressed.connect(self._on_send)
         self.send_edit.installEventFilter(self)
         self.history_btn.clicked.connect(self._show_history)
+        self.send_file_btn.clicked.connect(self._on_send_file)
         self.terminal_view.send_bytes.connect(self._terminal_send)
         self.terminal_break.clicked.connect(self._send_break)
         self.terminal_clear.clicked.connect(self.terminal_view.clear)
@@ -380,6 +410,8 @@ class SerialPage(ToolPage):
         self.cyclic_interval.valueChanged.connect(self._on_interval_changed)
         self.script_run.clicked.connect(self._on_script_run)
         self.script_stop.clicked.connect(self._on_script_stop)
+        self.preset_import_btn.clicked.connect(self._import_presets)
+        self.preset_export_btn.clicked.connect(self._export_presets)
 
         self._hotplug = QTimer(self)
         self._hotplug.setInterval(2000)
@@ -391,9 +423,10 @@ class SerialPage(ToolPage):
         self._load_prefs()
         for combo in (
             self.baud, self.data, self.parity, self.stop, self.flow,
-            self.ending, self.mode_combo,
+            self.ending, self.mode_combo, self.encoding,
         ):
             combo.currentIndexChanged.connect(lambda _i: self._persist_prefs())
+        self.encoding.currentIndexChanged.connect(self._on_encoding_changed)
         self.rx_mode.currentIndexChanged.connect(self._on_rx_mode_changed)
         self.rx_mode.currentIndexChanged.connect(lambda _i: self._persist_prefs())
         self.baud.currentTextChanged.connect(lambda _t: self._persist_prefs())
@@ -418,12 +451,20 @@ class SerialPage(ToolPage):
             if self.mode_combo.currentData() == "hex":
                 body = parse_hex_input(text)
             else:
-                body = text.encode("utf-8")
+                body = text.encode(self._encoding_name(), errors="replace")
         except ValueError:
             self.checksum_preview.setText("")
             return
         field = compute_checksum(body, algo)
         self.checksum_preview.setText(field.hex(" ").upper() if field else "")
+
+    def _encoding_name(self) -> str:
+        return str(self.encoding.currentData() or "utf-8")
+
+    def _on_encoding_changed(self) -> None:
+        name = self._encoding_name()
+        self.traffic.set_encoding(name)
+        self._persist_prefs()
 
     def eventFilter(self, obj, event):  # noqa: N802
         from PySide6.QtCore import QEvent, Qt
@@ -469,6 +510,7 @@ class SerialPage(ToolPage):
         self.flow.setItemText(0, tr("serial.flow.none"))
         self.flow.setItemText(1, tr("serial.flow.software"))
         self.flow.setItemText(2, tr("serial.flow.hardware"))
+        self.lbl_encoding.setText(tr("mon.encoding"))
         self.dtr.setText(tr("serial.dtr"))
         self.rts.setText(tr("serial.rts"))
         self.open_btn.setText(tr("serial.close") if self._opened else tr("serial.open"))
@@ -496,6 +538,7 @@ class SerialPage(ToolPage):
         for i, algo in enumerate(ALGORITHMS):
             self.checksum.setItemText(i, tr(f"serial.checksum.{algo}"))
         self.history_btn.setText(tr("serial.history"))
+        self.send_file_btn.setText(tr("serial.send_file"))
         self.preset_box.setTitle(tr("serial.presets"))
         for i, edit in enumerate(self._preset_edits):
             edit.setPlaceholderText(tr("serial.presets_ph", n=i + 1))
@@ -505,6 +548,8 @@ class SerialPage(ToolPage):
             btn.setText(tr("serial.send"))
         self.cyclic_check.setText(tr("serial.cyclic"))
         self.lbl_interval.setText(tr("serial.cyclic_interval"))
+        self.preset_import_btn.setText(tr("serial.presets_import"))
+        self.preset_export_btn.setText(tr("serial.presets_export"))
         self.work_tabs.setTabText(2, tr("serial.script"))
         self.script_run.setText(tr("serial.script.run"))
         self.script_stop.setText(tr("serial.script.stop"))
@@ -519,8 +564,25 @@ class SerialPage(ToolPage):
             ToolActionSpec(
                 "run_script", "script.run_menu", "hex", self._run_script_menu
             ),
+            ToolActionSpec("modbus", "modbus.title", "compare", self._open_modbus),
             ToolActionSpec("clear", "mon.clear", "clear", self.clear_view, separator_before=True),
         ]
+
+    def _open_modbus(self) -> None:
+        from etools.ui.widgets.modbus_dialog import ModbusDialog
+
+        def send(frame: bytes) -> None:
+            if not self._opened:
+                self.traffic.append_status(tr("serial.cyclic_need_open"))
+                return
+            try:
+                self._link.write(frame)
+            except Exception as exc:  # noqa: BLE001
+                self.traffic.append_status(tr("serial.err", err=str(exc)))
+                return
+            self.traffic.append_tx(frame)
+
+        ModbusDialog(send, self).exec()
 
     def _run_script_menu(self) -> None:
         from etools.ui.tools.script_menu import exec_script_menu
@@ -592,6 +654,11 @@ class SerialPage(ToolPage):
                 self.cyclic_interval.setValue(int(prefs["cyclic_interval"]))
             except (TypeError, ValueError):
                 pass
+        if prefs.get("encoding"):
+            idx = self.encoding.findData(str(prefs["encoding"]))
+            if idx >= 0:
+                self.encoding.setCurrentIndex(idx)
+        self.traffic.set_encoding(self._encoding_name())
 
     def _persist_prefs(self) -> None:
         save_tool_prefs(
@@ -612,6 +679,7 @@ class SerialPage(ToolPage):
                 "presets": [e.text() for e in self._preset_edits],
                 "preset_cycle": [c.isChecked() for c in self._preset_checks],
                 "cyclic_interval": int(self.cyclic_interval.value()),
+                "encoding": self._encoding_name(),
             },
         )
 
@@ -669,8 +737,13 @@ class SerialPage(ToolPage):
     def _set_send_enabled(self, enabled: bool) -> None:
         self.send_btn.setEnabled(enabled)
         self.terminal_break.setEnabled(enabled)
+        self.send_file_btn.setEnabled(enabled)
         for btn in self._preset_btns:
             btn.setEnabled(enabled)
+        self.send_btn.setObjectName("accent" if enabled else "ghost")
+        st = self.send_btn.style()
+        st.unpolish(self.send_btn)
+        st.polish(self.send_btn)
 
     def _on_toggle(self) -> None:
         if self._opened:
@@ -715,7 +788,7 @@ class SerialPage(ToolPage):
             if force_hex or self.mode_combo.currentData() == "hex":
                 body = parse_hex_input(text)
             else:
-                body = text.encode("utf-8")
+                body = text.encode(self._encoding_name(), errors="replace")
         except ValueError:
             self.traffic.append_status(tr("serial.err", err="bad hex"))
             return None
@@ -750,6 +823,79 @@ class SerialPage(ToolPage):
             return
         if self._send_payload(text, record_history=True):
             self.send_edit.clear()
+
+    def _on_send_file(self) -> None:
+        from pathlib import Path
+
+        from PySide6.QtWidgets import QFileDialog
+
+        if not self._opened:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("serial.send_file_title"), "", tr("hex.file_filter")
+        )
+        if not path:
+            return
+        try:
+            data = Path(path).read_bytes()
+        except OSError as exc:
+            self.traffic.append_status(tr("serial.send_file_err", err=str(exc)))
+            return
+        try:
+            self._link.write(data)
+        except Exception as exc:  # noqa: BLE001
+            self.traffic.append_status(tr("serial.send_file_err", err=str(exc)))
+            return
+        self.traffic.append_tx(data)
+        self.traffic.append_status(
+            tr("serial.send_file_done", name=Path(path).name, size=len(data))
+        )
+
+    def _import_presets(self) -> None:
+        import json
+
+        from PySide6.QtWidgets import QFileDialog
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("serial.presets_import"), "", "JSON (*.json)"
+        )
+        if not path:
+            return
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            from etools.ui.kit import toast
+
+            toast(tr("serial.presets_import_err"))
+            return
+        items = data if isinstance(data, list) else data.get("presets")
+        if not isinstance(items, list):
+            return
+        for i, edit in enumerate(self._preset_edits):
+            if i < len(items) and isinstance(items[i], str):
+                edit.setText(items[i])
+        self._persist_prefs()
+        from etools.ui.kit import toast
+
+        toast(tr("serial.presets_imported", n=min(len(items), len(self._preset_edits))))
+
+    def _export_presets(self) -> None:
+        import json
+
+        from PySide6.QtWidgets import QFileDialog
+
+        from etools.ui.kit import toast
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, tr("serial.presets_export"), "etools-presets.json", "JSON (*.json)"
+        )
+        if not path:
+            return
+        payload = [e.text() for e in self._preset_edits]
+        Path(path).write_text(
+            json.dumps({"presets": payload}, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        toast(tr("serial.presets_exported"))
 
     def _on_preset_send(self, index: int) -> None:
         if not (0 <= index < len(self._preset_edits)):
@@ -812,7 +958,7 @@ class SerialPage(ToolPage):
             del self._script_rx[:-65536]
         self._maybe_verify_rx(data)
         self.traffic.append_rx(data)
-        self._terminal_write(data.decode("utf-8", errors="replace"))
+        self._terminal_write(decode_payload(data, self._encoding_name()))
 
     # -- Lua / bridge helpers ------------------------------------------
 
@@ -973,7 +1119,7 @@ class SerialPage(ToolPage):
             self._link.write(data)
             self.traffic.append_tx(data)
             if self.local_echo.isChecked():
-                self._terminal_write(data.decode("utf-8", errors="replace"))
+                self._terminal_write(decode_payload(data, self._encoding_name()))
         except Exception as exc:  # noqa: BLE001
             self.traffic.append_status(tr("serial.err", err=str(exc)))
 

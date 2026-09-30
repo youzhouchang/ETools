@@ -7,10 +7,13 @@ import socket
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
     QComboBox,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
 )
 
 from etools.core.net_link import NetLink
@@ -19,7 +22,7 @@ from etools.ui.shell import ToolActionSpec
 from etools.ui.tool_prefs import load_tool_prefs, save_tool_prefs
 from etools.ui.tools.base import ToolPage
 from etools.ui.widgets.ip_edit import IPv4Edit
-from etools.ui.widgets.traffic_view import TrafficView, parse_hex_input
+from etools.ui.widgets.traffic_view import ENCODINGS, TrafficView, parse_hex_input
 
 _ENDINGS = {
     "none": b"",
@@ -32,6 +35,9 @@ _ENDINGS = {
 _PROTO_CLIENT = 0
 _PROTO_SERVER = 1
 _PROTO_UDP = 2
+
+_PRESET_COUNT = 6
+_HISTORY_MAX = 30
 
 
 def _local_ipv4() -> str:
@@ -79,6 +85,8 @@ class EthernetPage(ToolPage):
         )
         self._opened = False
         self._peer_connected = False
+        self._history: list[str] = []
+        self._history_idx = -1
 
         self.ctx_conn = self.ctx_group(tr("net.title"))
 
@@ -97,6 +105,11 @@ class EthernetPage(ToolPage):
         self.local_port = QLineEdit("8080")
         self.local_port.setFixedHeight(28)
         self.lbl_local_port = self.form_row(tr("net.local_port"), self.local_port)
+
+        self.peer_combo = QComboBox()
+        self.peer_combo.setFixedHeight(28)
+        self.peer_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.lbl_peer = self.form_row(tr("net.peer"), self.peer_combo)
 
         self.conn_btn = QPushButton()
         self.conn_btn.setObjectName("accent")
@@ -132,25 +145,66 @@ class EthernetPage(ToolPage):
         self.ending.setFixedHeight(28)
         self.ending.setFixedWidth(88)
         self.lbl_ending = QLabel(tr("net.ending"))
+        self.encoding = QComboBox()
+        for value, label in ENCODINGS:
+            self.encoding.addItem(label, value)
+        self.encoding.setFixedHeight(28)
+        self.encoding.setFixedWidth(88)
+        self.lbl_encoding = QLabel(tr("mon.encoding"))
         self.send_edit = QLineEdit()
         self.send_edit.setFixedHeight(30)
         self.send_edit.setPlaceholderText(tr("net.send_ph"))
         self.send_btn = QPushButton()
         self.send_btn.setObjectName("ghost")
         self.send_btn.setEnabled(False)
+        self.history_btn = QPushButton(tr("serial.history"))
+        self.history_btn.setObjectName("ghost")
+        self.history_btn.setFixedHeight(28)
         send_row.addWidget(self.lbl_mode)
         send_row.addWidget(self.mode_combo)
         send_row.addWidget(self.lbl_rx_mode)
         send_row.addWidget(self.rx_mode)
         send_row.addWidget(self.lbl_ending)
         send_row.addWidget(self.ending)
+        send_row.addWidget(self.lbl_encoding)
+        send_row.addWidget(self.encoding)
         send_row.addWidget(self.send_edit, 1)
+        send_row.addWidget(self.history_btn)
         send_row.addWidget(self.send_btn)
+
+        preset_box = QGroupBox(tr("serial.presets"))
+        preset_box.setObjectName("mainGroup")
+        preset_lay = QVBoxLayout(preset_box)
+        preset_lay.setContentsMargins(8, 10, 8, 8)
+        preset_lay.setSpacing(4)
+        self._preset_edits: list[QLineEdit] = []
+        self._preset_btns: list[QPushButton] = []
+        for i in range(_PRESET_COUNT):
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            edit = QLineEdit()
+            edit.setFixedHeight(28)
+            edit.setPlaceholderText(tr("serial.presets_ph", n=i + 1))
+            btn = QPushButton(tr("net.send"))
+            btn.setObjectName("ghost")
+            btn.setFixedHeight(28)
+            btn.setFixedWidth(56)
+            btn.setEnabled(False)
+            row.addWidget(edit, 1)
+            row.addWidget(btn)
+            preset_lay.addLayout(row)
+            self._preset_edits.append(edit)
+            self._preset_btns.append(btn)
+            btn.clicked.connect(lambda _c=False, idx=i: self._on_preset_send(idx))
+            edit.editingFinished.connect(self._persist_prefs)
+        sess_lay.addWidget(preset_box, 0)
         sess_lay.addLayout(send_row)
 
         self.conn_btn.clicked.connect(self._on_toggle)
         self.send_btn.clicked.connect(self._on_send)
         self.send_edit.returnPressed.connect(self._on_send)
+        self.history_btn.clicked.connect(self._show_history)
+        self.send_edit.installEventFilter(self)
         self.proto.currentIndexChanged.connect(self._on_proto_changed)
         self.retranslate()
         self._load_prefs()
@@ -161,6 +215,7 @@ class EthernetPage(ToolPage):
         self.host.editingFinished.connect(self._persist_prefs)
         self.ending.currentIndexChanged.connect(lambda _i: self._persist_prefs())
         self.mode_combo.currentIndexChanged.connect(lambda _i: self._persist_prefs())
+        self.encoding.currentIndexChanged.connect(self._on_encoding_changed)
         self.rx_mode.currentIndexChanged.connect(self._on_rx_mode_changed)
         self.rx_mode.currentIndexChanged.connect(lambda _i: self._persist_prefs())
 
@@ -173,6 +228,8 @@ class EthernetPage(ToolPage):
         self.lbl_port.setText(tr("net.port") if is_server else tr("net.remote_port"))
         self.local_port.setVisible(is_udp)
         self.lbl_local_port.setVisible(is_udp)
+        self.peer_combo.setVisible(is_server)
+        self.lbl_peer.setVisible(is_server)
         if is_server:
             self.host.setText("0.0.0.0")
             self.conn_btn.setText(tr("net.listen"))
@@ -184,6 +241,7 @@ class EthernetPage(ToolPage):
             self.conn_btn.setText(tr("net.connect"))
         if not self._opened:
             self.conn_btn.setText(tr("net.listen") if is_server else tr("net.connect"))
+        self._refresh_peers()
 
     def retranslate(self) -> None:
         self.ctx_conn.setTitle(tr("net.title"))
@@ -192,6 +250,12 @@ class EthernetPage(ToolPage):
         self.lbl_host.setText(tr("net.host") if mode == _PROTO_SERVER else tr("net.remote_host"))
         self.lbl_port.setText(tr("net.port") if mode == _PROTO_SERVER else tr("net.remote_port"))
         self.lbl_local_port.setText(tr("net.local_port"))
+        self.lbl_peer.setText(tr("net.peer"))
+        self.history_btn.setText(tr("serial.history"))
+        for i, edit in enumerate(self._preset_edits):
+            edit.setPlaceholderText(tr("serial.presets_ph", n=i + 1))
+        for btn in self._preset_btns:
+            btn.setText(tr("net.send"))
         if self._opened:
             self.conn_btn.setText(tr("net.disconnect"))
         else:
@@ -210,6 +274,7 @@ class EthernetPage(ToolPage):
         self.ending.setItemText(1, tr("serial.ending.lf"))
         self.ending.setItemText(2, tr("serial.ending.cr"))
         self.ending.setItemText(3, tr("serial.ending.none"))
+        self.lbl_encoding.setText(tr("mon.encoding"))
 
     def toolbar_actions(self) -> list[ToolActionSpec]:
         return [
@@ -218,10 +283,34 @@ class EthernetPage(ToolPage):
             ToolActionSpec(
                 "run_script", "script.run_menu", "hex", self._run_script_menu
             ),
+            ToolActionSpec("diag", "diag.title", "compare", self._open_diag),
+            ToolActionSpec("modbus", "modbus.title", "hex", self._open_modbus),
             ToolActionSpec(
                 "clear", "mon.clear", "clear", self.clear_view, separator_before=True
             ),
         ]
+
+    def _open_diag(self) -> None:
+        from etools.ui.widgets.net_diag_dialog import NetDiagDialog
+
+        NetDiagDialog(self, host=self.host.text().strip() or "127.0.0.1").exec()
+
+    def _open_modbus(self) -> None:
+        from etools.core import modbus
+        from etools.ui.widgets.modbus_dialog import ModbusDialog
+
+        def send(frame: bytes) -> None:
+            if not self._opened:
+                self.traffic.append_status(tr("net.closed"))
+                return
+            try:
+                self._link.send(frame, peer=self._selected_peer())
+            except Exception as exc:  # noqa: BLE001
+                self.traffic.append_status(tr("net.err", err=str(exc)))
+                return
+            self.traffic.append_tx(frame)
+
+        ModbusDialog(send, self, mode=modbus.MODE_TCP).exec()
 
     def _run_script_menu(self) -> None:
         from etools.ui.tools.script_menu import exec_script_menu
@@ -251,12 +340,12 @@ class EthernetPage(ToolPage):
             if self.mode_combo.currentData() == "hex":
                 data = parse_hex_input(text) + ending_bytes
             else:
-                data = text.encode("utf-8") + ending_bytes
+                data = text.encode(self._encoding_name(), errors="replace") + ending_bytes
         except ValueError:
             self.traffic.append_status(tr("net.err", err="bad hex"))
             return False
         try:
-            self._link.send(data)
+            self._link.send(data, peer=self._selected_peer())
         except Exception as exc:  # noqa: BLE001
             self.traffic.append_status(tr("net.err", err=str(exc)))
             return False
@@ -297,6 +386,16 @@ class EthernetPage(ToolPage):
             idx = self.rx_mode.findData(str(prefs["receive_mode"]))
             if idx >= 0:
                 self.rx_mode.setCurrentIndex(idx)
+        if prefs.get("encoding"):
+            idx = self.encoding.findData(str(prefs["encoding"]))
+            if idx >= 0:
+                self.encoding.setCurrentIndex(idx)
+        self.traffic.set_encoding(self._encoding_name())
+        presets = prefs.get("presets")
+        if isinstance(presets, list):
+            for i, edit in enumerate(self._preset_edits):
+                if i < len(presets) and isinstance(presets[i], str):
+                    edit.setText(presets[i])
 
     def _persist_prefs(self) -> None:
         save_tool_prefs(
@@ -309,6 +408,8 @@ class EthernetPage(ToolPage):
                 "ending": self.ending.currentData(),
                 "send_mode": self.mode_combo.currentData(),
                 "receive_mode": self.rx_mode.currentData(),
+                "encoding": self._encoding_name(),
+                "presets": [e.text() for e in self._preset_edits],
             },
         )
 
@@ -323,7 +424,8 @@ class EthernetPage(ToolPage):
             self._link.close()
             self._opened = False
             self._peer_connected = False
-            self.send_btn.setEnabled(False)
+            self._set_send_enabled(False)
+            self._refresh_peers()
             self._on_proto_changed()
             self._repaint_btn()
             self.traffic.append_status(tr("net.closed"))
@@ -355,10 +457,39 @@ class EthernetPage(ToolPage):
             return
         self._opened = True
         self._peer_connected = mode != _PROTO_SERVER
-        self.send_btn.setEnabled(self._peer_connected)
+        self._set_send_enabled(self._peer_connected)
         self.conn_btn.setText(tr("net.disconnect"))
         self._repaint_btn()
+        self._refresh_peers()
         self.traffic.append_status(opened)
+
+    def _set_send_enabled(self, enabled: bool) -> None:
+        self.send_btn.setEnabled(enabled)
+        for btn in self._preset_btns:
+            btn.setEnabled(enabled)
+
+    def _selected_peer(self) -> str | None:
+        data = self.peer_combo.currentData()
+        if data in (None, "", "*"):
+            return None
+        return str(data)
+
+    def _refresh_peers(self) -> None:
+        peers = self._link.peers() if self._opened else []
+        current = self.peer_combo.currentData()
+        self.peer_combo.blockSignals(True)
+        self.peer_combo.clear()
+        if self.proto.currentIndex() == _PROTO_SERVER:
+            self.peer_combo.addItem(tr("net.peer_all"), "*")
+            for p in peers:
+                self.peer_combo.addItem(p, p)
+        else:
+            self.peer_combo.addItem(tr("net.peer_auto"), "")
+        if current is not None:
+            idx = self.peer_combo.findData(current)
+            if idx >= 0:
+                self.peer_combo.setCurrentIndex(idx)
+        self.peer_combo.blockSignals(False)
 
     def _on_send(self) -> None:
         text = self.send_edit.text()
@@ -369,17 +500,75 @@ class EthernetPage(ToolPage):
             if self.mode_combo.currentData() == "hex":
                 data = parse_hex_input(text) + ending
             else:
-                data = text.encode("utf-8") + ending
+                data = text.encode(self._encoding_name(), errors="replace") + ending
         except ValueError:
             self.traffic.append_status(tr("net.err", err="bad hex"))
             return
         try:
-            self._link.send(data)
+            self._link.send(data, peer=self._selected_peer())
         except Exception as exc:  # noqa: BLE001
             self.traffic.append_status(tr("net.err", err=str(exc)))
             return
         self.traffic.append_tx(data)
+        if text not in self._history:
+            self._history.append(text)
+            del self._history[:-_HISTORY_MAX]
+        self._history_idx = -1
         self.send_edit.clear()
+
+    def _on_preset_send(self, index: int) -> None:
+        if not (0 <= index < len(self._preset_edits)):
+            return
+        text = self._preset_edits[index].text().strip()
+        if not text:
+            return
+        ending = _ENDINGS.get(str(self.ending.currentData() or "crlf"), b"\r\n")
+        try:
+            if self.mode_combo.currentData() == "hex":
+                data = parse_hex_input(text) + ending
+            else:
+                data = text.encode(self._encoding_name(), errors="replace") + ending
+        except ValueError:
+            self.traffic.append_status(tr("net.err", err="bad hex"))
+            return
+        try:
+            self._link.send(data, peer=self._selected_peer())
+        except Exception as exc:  # noqa: BLE001
+            self.traffic.append_status(tr("net.err", err=str(exc)))
+            return
+        self.traffic.append_tx(data)
+
+    def eventFilter(self, obj, event):  # noqa: N802
+        from PySide6.QtCore import QEvent, Qt
+
+        if obj is self.send_edit and event.type() == QEvent.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+                self._browse_history(event.key() == Qt.Key.Key_Up)
+                return True
+        return super().eventFilter(obj, event)
+
+    def _browse_history(self, up: bool) -> None:
+        if not self._history:
+            return
+        if up:
+            self._history_idx = min(self._history_idx + 1, len(self._history) - 1)
+        else:
+            self._history_idx = max(self._history_idx - 1, -1)
+        if self._history_idx < 0:
+            self.send_edit.clear()
+        else:
+            self.send_edit.setText(self._history[-(self._history_idx + 1)])
+
+    def _show_history(self) -> None:
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+        if not self._history:
+            menu.addAction("—")
+        else:
+            for item in reversed(self._history[-_HISTORY_MAX:]):
+                menu.addAction(item, lambda t=item: self.send_edit.setText(t))
+        menu.exec(self.history_btn.mapToGlobal(self.history_btn.rect().bottomLeft()))
 
     def _on_rx(self, data: bytes, peer: str) -> None:
         if not hasattr(self, "_lua_rx"):
@@ -392,22 +581,43 @@ class EthernetPage(ToolPage):
     def _on_rx_mode_changed(self, _index: int = 0) -> None:
         self.traffic.set_display_mode(str(self.rx_mode.currentData() or "ascii"))
 
+    def _encoding_name(self) -> str:
+        return str(self.encoding.currentData() or "utf-8")
+
+    def _on_encoding_changed(self) -> None:
+        self.traffic.set_encoding(self._encoding_name())
+        self._persist_prefs()
+
     def _on_peer(self, kind: str, peer: str) -> None:
         if kind == "on":
             self._peer_connected = True
-            self.send_btn.setEnabled(True)
+            self._set_send_enabled(True)
+            self._refresh_peers()
+            if self.proto.currentIndex() == _PROTO_SERVER and self.peer_combo.currentData() in (
+                None,
+                "",
+                "*",
+            ):
+                idx = self.peer_combo.findData(peer)
+                if idx >= 0:
+                    self.peer_combo.setCurrentIndex(idx)
             self.traffic.append_status(tr("net.peer_on", peer=peer))
         else:
-            self._peer_connected = False
+            self._refresh_peers()
             if self.proto.currentIndex() == _PROTO_SERVER:
-                self.send_btn.setEnabled(False)
+                self._peer_connected = bool(self._link.peers())
+                self._set_send_enabled(self._peer_connected)
+            else:
+                self._peer_connected = False
+                self._set_send_enabled(False)
             self.traffic.append_status(tr("net.peer_off", peer=peer))
 
     def _on_error(self, message: str) -> None:
         self.traffic.append_status(tr("net.err", err=message))
         self._opened = False
         self._peer_connected = False
-        self.send_btn.setEnabled(False)
+        self._set_send_enabled(False)
+        self._refresh_peers()
         self._on_proto_changed()
         self._repaint_btn()
 

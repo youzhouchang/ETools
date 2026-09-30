@@ -73,6 +73,22 @@ _arrow_files: dict[str, str] = {}
 _tmpdir: Path | None = None
 
 
+def resolve_system_theme() -> str:
+    """Best-effort light/dark detection from the OS palette."""
+    try:
+        from PySide6.QtGui import QGuiApplication
+
+        app = QGuiApplication.instance()
+        if app is None:
+            return "dark"
+        # Window color luminance is a cheap proxy for system light/dark.
+        color = app.palette().color(app.palette().ColorRole.Window)
+        lum = (color.red() * 299 + color.green() * 587 + color.blue() * 114) / 1000
+        return "light" if lum >= 128 else "dark"
+    except Exception:  # noqa: BLE001
+        return "dark"
+
+
 def get_theme(name: str | None = None) -> Theme:
     """Resolve a theme by name; *None* uses the saved app config."""
     if not name:
@@ -82,7 +98,10 @@ def get_theme(name: str | None = None) -> Theme:
             name = get_config().theme
         except Exception:  # noqa: BLE001 — config optional in pure-style use
             name = "dark"
-    return THEMES.get((name or "dark").lower(), DARK)
+    key = (name or "dark").lower()
+    if key == "system":
+        key = resolve_system_theme()
+    return THEMES.get(key, DARK)
 
 
 def _ensure_tmpdir() -> Path:
@@ -741,4 +760,92 @@ QStatusBar {{
 QStatusBar QLabel {{
     background: transparent;
     padding: 0 4px;
-}}"""
+}}
+QLabel#statsLabel {{
+    color: {text_dim};
+    font-size: 11px;
+    font-family: "Cascadia Mono", "Consolas", monospace;
+}}
+QLabel#mutedLabel {{
+    color: {text_muted};
+    font-size: 11px;
+}}
+QLabel#statusTask {{
+    color: {text_dim};
+    font-size: 11px;
+}}
+/* Focus ring — one accent outline for keyboard users */
+QLineEdit:focus,
+QPlainTextEdit:focus,
+QComboBox:focus,
+QSpinBox:focus {{
+    border: 1px solid {accent};
+}}
+QPushButton:focus {{
+    border: 1px solid {accent};
+}}
+/* Command palette */
+QDialog#CommandPalette {{
+    background: {bg_panel};
+    border: 1px solid {border};
+    border-radius: 10px;
+}}
+QLineEdit#paletteInput {{
+    background: {bg_input};
+    border: 1px solid {border};
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 14px;
+    selection-background-color: {accent};
+    selection-color: {on_accent};
+}}
+QLineEdit#paletteInput:focus {{
+    border-color: {accent};
+}}
+QListWidget#paletteList {{
+    background: {bg};
+    border: 1px solid {border};
+    border-radius: 8px;
+    outline: none;
+    font-size: 13px;
+    padding: 4px;
+}}
+QListWidget#paletteList::item {{
+    min-height: 32px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    margin: 2px 4px;
+}}
+QListWidget#paletteList::item:selected {{
+    background: {accent};
+    color: {on_accent};
+}}
+QListWidget#paletteList::item:hover:!selected {{
+    background: {bg_hover};
+}}
+QLabel#toolBadge {{
+    color: {accent};
+    font-size: 11px;
+    font-weight: 600;
+    padding: 0 8px;
+}}
+QCheckBox {{
+    spacing: 6px;
+    color: {text_dim};
+    font-size: 12px;
+}}
+QCheckBox::indicator {{
+    width: 14px;
+    height: 14px;
+    border: 1px solid {border};
+    border-radius: 3px;
+    background: {bg_input};
+}}
+QCheckBox::indicator:checked {{
+    background: {accent};
+    border-color: {accent};
+}}
+QCheckBox::indicator:hover {{
+    border-color: {accent};
+}}
+"""

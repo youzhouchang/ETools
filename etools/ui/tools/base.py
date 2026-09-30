@@ -47,8 +47,6 @@ class ToolPage(QWidget):
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setChildrenCollapsible(False)
-        self.splitter.setStretchFactor(0, 0)
-        self.splitter.setStretchFactor(1, 1)
         self._left_width = 260
         self.splitter.splitterMoved.connect(self._on_left_split_moved)
 
@@ -73,6 +71,8 @@ class ToolPage(QWidget):
 
         self.splitter.addWidget(scroll)
         self.splitter.addWidget(self.main_host)
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
         self.splitter.setSizes([self._left_width, 720])
         root.addWidget(self.splitter)
 

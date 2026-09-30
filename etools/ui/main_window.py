@@ -52,6 +52,7 @@ class _UpdateChecker(QObject):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        self.setObjectName("MainWindow")
         self.setWindowTitle(f"{__app_name__}  v{__version__}")
 
         self.driver = PyOCDDriver()
@@ -79,10 +80,12 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._wire()
+        self._install_command_palette()
         self._log(tr("app.ready"))
 
         self._probe_timer.start()
-        self._start_scan(silent=True)
+        if get_config().auto_probe_scan:
+            self._start_scan(silent=True)
         self._schedule_startup_update_check()
 
     # ------------------------------------------------------------------
@@ -93,6 +96,7 @@ class MainWindow(QMainWindow):
         self.resize(1180, 820)
         self.setMinimumSize(1080, 720)
         self.setWindowIcon(app_icon())
+        self._restore_window_geometry()
         self._build_menu()
 
         self.program_page = ProgramPage()
@@ -162,21 +166,37 @@ class MainWindow(QMainWindow):
         self.script_page.bind_net(self.ethernet_page)
         self.script_page.bind_term(self.terminal_page)
         self.setCentralWidget(self.shell)
+        self._restore_tool_widths()
 
         self.conn_badge = QLabel(tr("status.disconnected"))
         self.conn_badge.setObjectName("statusWarn")
         self.statusBar().addWidget(self.conn_badge)
+        self.tool_badge = QLabel(tr("tool.program"))
+        self.tool_badge.setObjectName("toolBadge")
+        self.statusBar().addWidget(self.tool_badge)
         self.task_badge = QLabel()
         self.task_badge.setObjectName("statusTask")
         self.statusBar().addPermanentWidget(self.task_badge)
+        self.version_badge = QLabel(f"v{__version__}")
+        self.version_badge.setObjectName("mutedLabel")
+        self.statusBar().addPermanentWidget(self.version_badge)
         self._refresh_task_summary()
         self.statusBar().setSizeGripEnabled(True)
+        if hasattr(self.shell, "tool_changed"):
+            self.shell.tool_changed.connect(self._on_tool_changed)
 
         self.apply_theme(get_config().theme or "dark")
 
     def _refresh_task_summary(self, *_args) -> None:
         running = sum(1 for info in self.task_manager._tasks.values() if info.runner.busy)
         self.task_badge.setText(tr("task.running", n=running) if running else tr("task.none"))
+
+    def _on_tool_changed(self, tool_id: str) -> None:
+        key = f"tool.{tool_id}"
+        label = tr(key) if key else tool_id
+        self.tool_badge.setText(label)
+        self.version_badge.setText(f"v{__version__}")
+        self.setWindowTitle(f"{__app_name__}  v{__version__}  ·  {label}")
 
     def _build_menu(self) -> None:
         """Application menu bar only — tool actions live on each tool toolbar."""
@@ -196,8 +216,13 @@ class MainWindow(QMainWindow):
 
         m_file = mb.addMenu(tr("menu.file"))
         a_open = act(tr("act.open"), "open", "Ctrl+O")
+        a_settings = act(tr("act.settings"), "devices", "Ctrl+Shift+S")
         a_quit = act(tr("act.quit"), "quit", "Ctrl+Q")
         m_file.addAction(a_open)
+        a_batch = act(tr("batch.title"), "program", "")
+        m_file.addAction(a_batch)
+        m_file.addSeparator()
+        m_file.addAction(a_settings)
         m_file.addSeparator()
         m_file.addAction(a_quit)
 
@@ -215,16 +240,21 @@ class MainWindow(QMainWindow):
         current_theme_name = (get_config().theme or "dark").lower()
         a_theme_dark = act(tr("act.theme_dark"), "theme-dark", "")
         a_theme_light = act(tr("act.theme_light"), "theme-light", "")
+        a_theme_system = act(tr("settings.theme_system"), "theme-light", "")
         a_theme_dark.setCheckable(True)
         a_theme_light.setCheckable(True)
+        a_theme_system.setCheckable(True)
         a_theme_dark.setChecked(current_theme_name == "dark")
         a_theme_light.setChecked(current_theme_name == "light")
+        a_theme_system.setChecked(current_theme_name == "system")
         theme_group = QActionGroup(self)
         theme_group.setExclusive(True)
         theme_group.addAction(a_theme_dark)
         theme_group.addAction(a_theme_light)
+        theme_group.addAction(a_theme_system)
         m_theme.addAction(a_theme_dark)
         m_theme.addAction(a_theme_light)
+        m_theme.addAction(a_theme_system)
         m_view.addSeparator()
         a_hex = act(tr("act.hex"), "hex", "Ctrl+H")
         m_view.addAction(a_hex)
@@ -248,9 +278,11 @@ class MainWindow(QMainWindow):
 
         m_help = mb.addMenu(tr("menu.help"))
         a_check_update = act(tr("act.check_update"), "refresh", "")
+        a_shortcuts = act(tr("act.shortcuts"), "info", "F1")
         a_about = act(tr("act.about"), "info", "")
         m_help.addAction(a_check_update)
         m_help.addSeparator()
+        m_help.addAction(a_shortcuts)
         m_help.addAction(a_about)
 
         a_open.triggered.connect(self._toolbar_open_firmware)
@@ -262,16 +294,23 @@ class MainWindow(QMainWindow):
         a_read_chip.triggered.connect(self._toolbar_read_chip)
         a_theme_dark.triggered.connect(lambda: self._set_theme("dark"))
         a_theme_light.triggered.connect(lambda: self._set_theme("light"))
+        a_theme_system.triggered.connect(lambda: self._set_theme("system"))
         a_hex.triggered.connect(lambda: self._goto_tab("Hex"))
         a_lang_zh.triggered.connect(lambda: self._switch_language(LANG_ZH))
         a_lang_en.triggered.connect(lambda: self._switch_language(LANG_EN))
         a_about.triggered.connect(self._show_about)
         a_check_update.triggered.connect(lambda: self._check_updates(silent=False))
+        a_settings.triggered.connect(self._show_settings)
+        a_shortcuts.triggered.connect(self._show_shortcuts)
+        a_batch.triggered.connect(self._show_batch_program)
 
     def _schedule_startup_update_check(self) -> None:
         QTimer.singleShot(1500, self._startup_update_check)
 
     def _startup_update_check(self) -> None:
+        extra = get_config().extra or {}
+        if extra.get("auto_check_update", True) is False:
+            return
         self._check_updates(silent=True)
 
     def _check_updates(self, silent: bool = False) -> None:
@@ -336,6 +375,7 @@ class MainWindow(QMainWindow):
             self.serial_page,
             self.ethernet_page,
             self.terminal_page,
+            self.script_page,
         ):
             if hasattr(page, "retranslate"):
                 page.retranslate()
@@ -360,10 +400,38 @@ class MainWindow(QMainWindow):
     def _show_about(self) -> None:
         from etools.core.updater import REPO_URL
 
+        deps = []
+        for mod_name, label in (
+            ("PySide6", "PySide6"),
+            ("serial", "pyserial"),
+            ("paramiko", "paramiko"),
+            ("pyocd", "pyOCD"),
+            ("elftools", "pyelftools"),
+            ("lupa", "lupa"),
+        ):
+            try:
+                mod = __import__(mod_name)
+                ver = getattr(mod, "__version__", "?")
+                deps.append(f"{label} {ver}")
+            except Exception:  # noqa: BLE001
+                deps.append(f"{label} —")
+        try:
+            import sys
+
+            py_ver = sys.version.split()[0]
+        except Exception:  # noqa: BLE001
+            py_ver = "?"
+        text = (
+            tr("about.text", ver=__version__, github=REPO_URL)
+            + "\n\n"
+            + tr("about.deps")
+            + f":\nPython {py_ver} · "
+            + " · ".join(deps)
+        )
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Information)
         box.setWindowTitle(tr("act.about"))
-        box.setText(tr("about.text", ver=__version__, github=REPO_URL))
+        box.setText(text)
         box.setTextFormat(Qt.TextFormat.PlainText)
         open_btn = box.addButton(tr("about.github"), QMessageBox.ButtonRole.ActionRole)
         box.addButton(QMessageBox.StandardButton.Ok)
@@ -374,6 +442,93 @@ class MainWindow(QMainWindow):
 
             QDesktopServices.openUrl(QUrl(REPO_URL))
 
+    def _show_settings(self) -> None:
+        from etools.ui.widgets.settings_dialog import SettingsDialog
+
+        dlg = SettingsDialog(self)
+        if dlg.exec():
+            theme = dlg.selected_theme()
+            lang = dlg.selected_language()
+            if theme != (get_config().theme or "dark"):
+                self._set_theme(theme)
+            from etools.i18n import current_language
+
+            if lang != current_language():
+                self._switch_language(lang)
+            self._log(tr("settings.applied"))
+
+    def _show_shortcuts(self) -> None:
+        from etools.ui.widgets.shortcuts_dialog import ShortcutsDialog
+
+        ShortcutsDialog(self).exec()
+
+    def _install_command_palette(self) -> None:
+        """Ctrl+K opens a filterable command list (tools + frequent actions)."""
+        from PySide6.QtGui import QKeySequence, QShortcut
+
+        sc = QShortcut(QKeySequence("Ctrl+K"), self)
+        sc.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        sc.activated.connect(self._open_command_palette)
+
+    def _open_command_palette(self) -> None:
+        from etools.ui.widgets.command_palette import CommandPalette
+
+        def go_tool(key: str):
+            return lambda: self.shell.set_current_tool(key)
+
+        commands: list[tuple[str, str, object]] = [
+            ("tool.program", tr("tool.program"), go_tool("program")),
+            ("tool.serial", tr("tool.serial"), go_tool("serial")),
+            ("tool.ethernet", tr("tool.ethernet"), go_tool("ethernet")),
+            ("tool.terminal", tr("tool.terminal"), go_tool("terminal")),
+            ("tool.script", tr("tool.script"), go_tool("script")),
+            ("act.open", tr("act.open"), self._toolbar_open_firmware),
+            ("act.program", tr("act.program"), self._toolbar_program),
+            ("act.erase", tr("act.erase"), self._toolbar_erase),
+            ("act.verify", tr("act.verify"), self._toolbar_verify),
+            ("act.reset", tr("act.reset"), self._toolbar_reset),
+            ("act.hex", tr("act.hex"), lambda: self._goto_tab("Hex")),
+            ("act.settings", tr("act.settings"), self._show_settings),
+            ("act.shortcuts", tr("act.shortcuts"), self._show_shortcuts),
+            ("act.check_update", tr("act.check_update"), lambda: self._check_updates(False)),
+            ("act.about", tr("act.about"), self._show_about),
+            ("batch.title", tr("batch.title"), self._show_batch_program),
+            ("diag.title", tr("diag.title"), self._show_diag),
+        ]
+        CommandPalette(commands, self).exec()
+
+    def _show_diag(self) -> None:
+        from etools.ui.widgets.net_diag_dialog import NetDiagDialog
+
+        NetDiagDialog(self).exec()
+
+    def _show_batch_program(self) -> None:
+        from etools.ui.widgets.batch_program_dialog import BatchProgramDialog
+
+        def program_fn(path: str, ok, fail) -> None:
+            if not self.service.connected:
+                fail(tr("batch.need_connect"))
+                return
+
+            def work():
+                return self.service.program_file(
+                    path, verify=self.flash_panel.verify_check.isChecked()
+                )
+
+            def on_ok(result) -> None:
+                if getattr(result, "ok", False):
+                    self._log(result.message)
+                    ok(result)
+                else:
+                    fail(getattr(result, "message", "program failed"))
+
+            def on_err(msg: str) -> None:
+                fail(msg)
+
+            self._runner.start(work, on_ok, on_err)
+
+        BatchProgramDialog(program_fn, self).exec()
+
     def _toolbar_open_firmware(self) -> None:
         from PySide6.QtWidgets import QFileDialog
 
@@ -383,6 +538,7 @@ class MainWindow(QMainWindow):
         if not path:
             return
         self.flash_panel.fw_edit.setText(path)
+        self.flash_panel.remember_firmware(path)
         self.hex_preview.load_file(path)
         self._goto_tab("Hex")
         self._log(tr("log.firmware_opened", name=Path(path).name))
@@ -818,6 +974,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         try:
+            self._save_geometry()
             if hasattr(self, "shell"):
                 self.shell.shutdown()
             self.rtt_panel.shutdown()
@@ -827,3 +984,50 @@ class MainWindow(QMainWindow):
         except Exception:
             log.exception("shutdown error")
         super().closeEvent(event)
+
+    def _restore_window_geometry(self) -> None:
+        from PySide6.QtCore import QByteArray
+
+        extra = get_config().extra or {}
+        raw = extra.get("window_geometry")
+        if isinstance(raw, str) and raw:
+            try:
+                self.restoreGeometry(QByteArray.fromBase64(raw.encode("ascii")))
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _restore_tool_widths(self) -> None:
+        widths = (get_config().extra or {}).get("tool_left_widths") or {}
+        if not isinstance(widths, dict):
+            return
+        pages = {
+            "program": getattr(self, "program_page", None),
+            "serial": getattr(self, "serial_page", None),
+            "ethernet": getattr(self, "ethernet_page", None),
+            "terminal": getattr(self, "terminal_page", None),
+            "script": getattr(self, "script_page", None),
+        }
+        for key, page in pages.items():
+            w = widths.get(key)
+            if page is not None and isinstance(w, int) and w > 0:
+                page.set_left_width(w)
+
+    def _save_geometry(self) -> None:
+        import base64
+
+        cfg = get_config()
+        extra = dict(cfg.extra or {})
+        extra["window_geometry"] = base64.b64encode(bytes(self.saveGeometry())).decode("ascii")
+        widths = {}
+        for key, page in (
+            ("program", getattr(self, "program_page", None)),
+            ("serial", getattr(self, "serial_page", None)),
+            ("ethernet", getattr(self, "ethernet_page", None)),
+            ("terminal", getattr(self, "terminal_page", None)),
+            ("script", getattr(self, "script_page", None)),
+        ):
+            if page is not None and hasattr(page, "_left_width"):
+                widths[key] = int(page._left_width)
+        extra["tool_left_widths"] = widths
+        cfg.extra = extra
+        save_config()

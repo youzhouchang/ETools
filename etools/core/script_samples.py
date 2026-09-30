@@ -184,6 +184,26 @@ SAMPLES: dict[str, str] = {
         "\n"
         "etools.app.log('pipeline done')\n"
     ),
+    "8_Modbus读寄存器": (
+        "-- Modbus RTU 读保持寄存器教程\n"
+        "-- 场景：01 从站读 0x0000 起 2 个寄存器（CRC-16/MODBUS）。\n"
+        "-- 也可直接用串口工具栏「Modbus RTU 构造器」图形化生成。\n"
+        "\n"
+        "local body = etools.util.unhex('01 03 00 00 00 02')\n"
+        "local frame = etools.util.append_checksum(body, 'crc16_modbus')\n"
+        "etools.app.log('request ' .. etools.util.hex(frame))\n"
+        "etools.serial.send_hex(etools.util.hex(frame))\n"
+        "etools.app.sleep(200)\n"
+        "local resp = etools.serial.recv(64)\n"
+        "if resp ~= '' then\n"
+        "  etools.app.log('response ' .. etools.util.hex(resp))\n"
+        "  if etools.util.verify_checksum(resp, 'crc16_modbus') then\n"
+        "    etools.app.log('CRC OK')\n"
+        "  else\n"
+        "    etools.app.log('CRC FAIL')\n"
+        "  end\n"
+        "end\n"
+    ),
 }
 
 
