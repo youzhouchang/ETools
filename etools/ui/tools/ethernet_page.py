@@ -6,9 +6,8 @@ import threading
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
-    QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -26,6 +25,7 @@ from etools.ui.shell import ToolActionSpec
 from etools.ui.tool_prefs import load_tool_prefs, save_tool_prefs
 from etools.ui.tools.base import ToolPage
 from etools.ui.widgets.ip_edit import IPv4Edit
+from etools.ui.widgets.send_edit import SendEdit
 from etools.ui.widgets.traffic_view import ENCODINGS, TrafficView, parse_hex_input
 
 _ENDINGS = {
@@ -139,8 +139,7 @@ class EthernetPage(ToolPage):
         self.encoding.setFixedHeight(28)
         self.encoding.setFixedWidth(88)
         self.lbl_encoding = QLabel(tr("mon.encoding"))
-        self.send_edit = QLineEdit()
-        self.send_edit.setFixedHeight(30)
+        self.send_edit = SendEdit()
         self.send_edit.setPlaceholderText(tr("net.send_ph"))
         self.send_btn = QPushButton()
         self.send_btn.setObjectName("ghost")
@@ -148,37 +147,38 @@ class EthernetPage(ToolPage):
         self.history_btn = QPushButton(tr("serial.history"))
         self.history_btn.setObjectName("ghost")
         self.history_btn.setFixedHeight(28)
-        send_options = QGridLayout()
-        send_options.setHorizontalSpacing(10)
-        send_options.setVerticalSpacing(8)
+        send_options = QHBoxLayout()
+        send_options.setSpacing(12)
         pairs = (
             (self.lbl_mode, self.mode_combo),
             (self.lbl_rx_mode, self.rx_mode),
             (self.lbl_ending, self.ending),
             (self.lbl_encoding, self.encoding),
         )
-        for index, (lbl, field) in enumerate(pairs):
-            r, c = divmod(index, 2)
-            send_options.addWidget(lbl, r, c * 2)
-            send_options.addWidget(field, r, c * 2 + 1)
-        send_options.setColumnStretch(3, 1)
+        for lbl, field in pairs:
+            # Label glued to its combo; gap only between pairs.
+            field.setFixedWidth(136)
+            field.setFixedHeight(28)
+            pair = QHBoxLayout()
+            pair.setSpacing(4)
+            pair.addWidget(lbl)
+            pair.addWidget(field)
+            send_options.addLayout(pair)
+        send_options.addStretch(1)
         self.send_btn.setFixedHeight(30)
         send_row.setSpacing(8)
         send_row.addWidget(self.send_edit, 1)
         send_row.addWidget(self.history_btn)
         send_row.addWidget(self.send_btn)
 
-        preset_box = QGroupBox(tr("serial.presets"))
-        preset_box.setObjectName("mainGroup")
-        preset_box.setCheckable(True)
-        preset_box.setChecked(False)
-        preset_outer = QVBoxLayout(preset_box)
-        preset_content = QWidget()
-        preset_outer.addWidget(preset_content)
-        preset_content.setVisible(False)
-        preset_box.toggled.connect(preset_content.setVisible)
-        preset_lay = QVBoxLayout(preset_content)
-        preset_lay.setContentsMargins(8, 10, 8, 8)
+        self.preset_toggle = QCheckBox(tr("serial.presets"))
+        self.preset_toggle.setToolTip(tr("serial.presets_toggle_tip"))
+        self.preset_toggle.setChecked(False)
+        self.preset_content = QWidget()
+        self.preset_content.setVisible(False)
+        self.preset_toggle.toggled.connect(self.preset_content.setVisible)
+        preset_lay = QVBoxLayout(self.preset_content)
+        preset_lay.setContentsMargins(18, 4, 0, 0)
         preset_lay.setSpacing(4)
         self._preset_edits: list[QLineEdit] = []
         self._preset_btns: list[QPushButton] = []
@@ -200,14 +200,15 @@ class EthernetPage(ToolPage):
             self._preset_btns.append(btn)
             btn.clicked.connect(lambda _c=False, idx=i: self._on_preset_send(idx))
             edit.editingFinished.connect(self.persist_prefs)
-        sess_lay.addWidget(preset_box, 0)
+        sess_lay.addWidget(self.preset_toggle)
+        sess_lay.addWidget(self.preset_content)
         sess_lay.addLayout(send_options)
         sess_lay.addLayout(send_row)
         self.install_send_preview(sess_lay)
 
         self.conn_btn.clicked.connect(self._on_toggle)
         self.send_btn.clicked.connect(self._on_send)
-        self.send_edit.returnPressed.connect(self._on_send)
+        self.send_edit.submitted.connect(self._on_send)
         self.history_btn.clicked.connect(self._show_history)
         self.send_edit.installEventFilter(self)
         self.proto.currentIndexChanged.connect(self._on_proto_changed)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -34,6 +34,7 @@ from etools.i18n import tr
 from etools.ui.shell import ToolActionSpec
 from etools.ui.tool_prefs import load_tool_prefs, save_tool_prefs
 from etools.ui.tools.base import ToolPage
+from etools.ui.widgets.send_edit import SendEdit
 from etools.ui.widgets.terminal_view import TerminalView
 from etools.ui.widgets.traffic_view import ENCODINGS, TrafficView, decode_payload, parse_hex_input
 
@@ -211,26 +212,37 @@ class SerialPage(ToolPage):
         self.history_btn = QPushButton(tr("serial.history"))
         self.history_btn.setObjectName("ghost")
         self.history_btn.setFixedHeight(28)
-        self.send_file_btn = QPushButton(tr("serial.send_file"))
-        self.send_file_btn.setObjectName("ghost")
-        self.send_file_btn.setFixedHeight(28)
-        self.send_file_btn.setEnabled(False)
+        self.history_btn.setMinimumWidth(64)
+        self.xfer_proto = QComboBox()
+        self.xfer_proto.setFixedHeight(28)
+        self.xfer_proto.setFixedWidth(96)
+        for pid, label in (
+            ("ymodem", "YMODEM"),
+            ("xmodem", "XMODEM"),
+            ("zmodem", "ZMODEM"),
+            ("raw", "Raw"),
+        ):
+            self.xfer_proto.addItem(label, pid)
+        self.xfer_proto.setToolTip(tr("serial.xfer_proto_tip"))
+        self.xfer_proto.currentIndexChanged.connect(lambda _i: self._relabel_xfer_buttons())
+        self.xmode_combo = QComboBox()
+        self.xmode_combo.setFixedHeight(28)
+        self.xmode_combo.setFixedWidth(88)
+        self.xmode_combo.addItem(tr("serial.xmode_crc"), "crc")
+        self.xmode_combo.addItem(tr("serial.xmode_checksum"), "checksum")
+        self.xmode_combo.setToolTip(tr("serial.xmode_tip"))
         self.ymodem_btn = QPushButton(tr("serial.ymodem_send"))
         self.ymodem_btn.setObjectName("ghost")
         self.ymodem_btn.setFixedHeight(28)
+        self.ymodem_btn.setMinimumWidth(80)
         self.ymodem_btn.setEnabled(False)
         self.ymodem_btn.setToolTip(tr("serial.ymodem_tip"))
         self.ymodem_recv_btn = QPushButton(tr("serial.ymodem_recv"))
         self.ymodem_recv_btn.setObjectName("ghost")
         self.ymodem_recv_btn.setFixedHeight(28)
+        self.ymodem_recv_btn.setMinimumWidth(80)
         self.ymodem_recv_btn.setEnabled(False)
         self.ymodem_recv_btn.setToolTip(tr("serial.ymodem_recv_tip"))
-        self.xmode_combo = QComboBox()
-        self.xmode_combo.setFixedHeight(28)
-        self.xmode_combo.setFixedWidth(110)
-        self.xmode_combo.addItem(tr("serial.xmode_crc"), "crc")
-        self.xmode_combo.addItem(tr("serial.xmode_checksum"), "checksum")
-        self.xmode_combo.setToolTip(tr("serial.xmode_tip"))
         self.xfer_progress = QProgressBar()
         self.xfer_progress.setFixedHeight(18)
         self.xfer_progress.setRange(0, 100)
@@ -240,8 +252,7 @@ class SerialPage(ToolPage):
         self.xfer_cancel_btn.setObjectName("ghost")
         self.xfer_cancel_btn.setFixedHeight(18)
         self.xfer_cancel_btn.setVisible(False)
-        self.send_edit = QLineEdit()
-        self.send_edit.setFixedHeight(30)
+        self.send_edit = SendEdit()
         self.send_edit.setPlaceholderText(tr("serial.send_ph"))
         self.send_btn = QPushButton()
         self.send_btn.setObjectName("accent")
@@ -254,25 +265,15 @@ class SerialPage(ToolPage):
         self.preset_export_btn.setObjectName("ghost")
         self.preset_export_btn.setFixedHeight(26)
 
-        # Quick-send presets: editable command slots + optional cycle membership.
-        self.preset_box = QGroupBox(tr("serial.presets"))
-        self.preset_box.setObjectName("mainGroup")
-        self.preset_box.setCheckable(True)
-        self.preset_box.setChecked(False)
-        self.preset_box.setToolTip(tr("serial.presets_toggle_tip"))
-
-        def _toggle_presets(on: bool) -> None:
-            self.preset_box.setMaximumHeight(16777215 if on else 36)
-
-        self.preset_box.toggled.connect(_toggle_presets)
-        self.preset_box.setMaximumHeight(36)
-        preset_outer = QVBoxLayout(self.preset_box)
+        # Quick-send presets — disclosure row + content (no QGroupBox chrome).
+        self.preset_toggle = QCheckBox(tr("serial.presets"))
+        self.preset_toggle.setToolTip(tr("serial.presets_toggle_tip"))
+        self.preset_toggle.setChecked(False)
         self.preset_content = QWidget()
-        preset_outer.addWidget(self.preset_content)
         self.preset_content.setVisible(False)
-        self.preset_box.toggled.connect(self.preset_content.setVisible)
+        self.preset_toggle.toggled.connect(self.preset_content.setVisible)
         preset_lay = QVBoxLayout(self.preset_content)
-        preset_lay.setContentsMargins(8, 10, 8, 8)
+        preset_lay.setContentsMargins(18, 4, 0, 0)
         preset_lay.setSpacing(4)
         self._preset_checks: list[QCheckBox] = []
         self._preset_edits: list[QLineEdit] = []
@@ -314,64 +315,67 @@ class SerialPage(ToolPage):
         self.cyclic_interval.setSuffix(" ms")
         self.cyclic_interval.setFixedHeight(28)
         self.cyclic_interval.setFixedWidth(100)
-        cyclic_row.addWidget(self.cyclic_check)
-        cyclic_row.addWidget(self.lbl_interval)
-        cyclic_row.addWidget(self.cyclic_interval)
-        cyclic_row.addStretch(1)
         self.lbl_presets_io = QLabel(tr("serial.presets_io"))
         cyclic_row.addWidget(self.lbl_presets_io)
         cyclic_row.addWidget(self.preset_import_btn)
         cyclic_row.addWidget(self.preset_export_btn)
-        preset_lay.addLayout(cyclic_row)
+        cyclic_row.addStretch(1)
+        cyclic_row.addWidget(self.cyclic_check)
+        cyclic_row.addWidget(self.lbl_interval)
+        cyclic_row.addWidget(self.cyclic_interval)
+        # Lives with send options — never inside the preset list (avoids overlap).
         self._cyclic_timer = QTimer(self)
         self._cyclic_timer.timeout.connect(self._on_cyclic_tick)
         self._cyclic_index = 0
 
         # Format / send options — two calm rows instead of one packed grid.
         fmt_row1 = QHBoxLayout()
-        fmt_row1.setSpacing(10)
+        fmt_row1.setSpacing(6)
         for lbl_w, field in (
             (self.lbl_mode, self.mode_combo),
             (self.lbl_rx_mode, self.rx_mode),
             (self.lbl_ending, self.ending),
+            (self.lbl_checksum, self.checksum),
         ):
+            lbl_w.setFixedWidth(48)
+            field.setMinimumWidth(128)
+            field.setFixedHeight(28)
             fmt_row1.addWidget(lbl_w)
             fmt_row1.addWidget(field)
-        fmt_row1.addStretch(1)
+        fmt_row1.addWidget(self.rx_verify)
         fmt_row1.addWidget(self.checksum_preview)
-
-        fmt_row2 = QHBoxLayout()
-        fmt_row2.setSpacing(10)
-        fmt_row2.addWidget(self.lbl_checksum)
-        fmt_row2.addWidget(self.checksum)
-        fmt_row2.addWidget(self.rx_verify)
-        fmt_row2.addStretch(1)
+        fmt_row1.addStretch(1)
 
         act_row = QHBoxLayout()
         act_row.setSpacing(8)
+        self.xfer_proto.setFixedWidth(128)
+        self.xmode_combo.setFixedWidth(128)
         act_row.addWidget(self.history_btn)
-        act_row.addWidget(self.send_file_btn)
+        act_row.addWidget(self.xfer_proto)
+        act_row.addWidget(self.xmode_combo)
         act_row.addWidget(self.ymodem_btn)
         act_row.addWidget(self.ymodem_recv_btn)
-        act_row.addWidget(self.xmode_combo)
         act_row.addStretch(1)
 
+        send_row.setSpacing(6)
         send_row.addWidget(self.send_edit, 1)
-        send_row.addWidget(self.send_btn)
+        send_row.addWidget(self.send_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         xfer_row = QHBoxLayout()
         xfer_row.setSpacing(6)
         xfer_row.addWidget(self.xfer_progress, 1)
         xfer_row.addWidget(self.xfer_cancel_btn)
         meta_wrap = QVBoxLayout()
-        meta_wrap.setSpacing(8)
+        meta_wrap.setSpacing(4)
         meta_wrap.addLayout(fmt_row1)
-        meta_wrap.addLayout(fmt_row2)
+        meta_wrap.addLayout(cyclic_row)
         meta_wrap.addLayout(act_row)
         meta_wrap.addLayout(send_row)
         meta_wrap.addLayout(xfer_row)
         self.install_send_preview(meta_wrap)
         mon_lay.addWidget(self.traffic, 1)
-        mon_lay.addWidget(self.preset_box, 0)
+        mon_lay.addWidget(self.preset_toggle)
+        mon_lay.addWidget(self.preset_content)
+        mon_lay.addSpacing(4)
         mon_lay.addLayout(meta_wrap)
         self.work_tabs.addTab(mon_box, tr("serial.monitor"))
 
@@ -433,10 +437,9 @@ class SerialPage(ToolPage):
 
         self.open_btn.clicked.connect(self._on_toggle)
         self.send_btn.clicked.connect(self._on_send)
-        self.send_edit.returnPressed.connect(self._on_send)
+        self.send_edit.submitted.connect(self._on_send)
         self.send_edit.installEventFilter(self)
         self.history_btn.clicked.connect(self._show_history)
-        self.send_file_btn.clicked.connect(self._on_send_file)
         self.ymodem_btn.clicked.connect(self._on_ymodem_send)
         self.ymodem_recv_btn.clicked.connect(self._on_ymodem_recv)
         self.xfer_cancel_btn.clicked.connect(self._cancel_transfer)
@@ -582,17 +585,13 @@ class SerialPage(ToolPage):
         for i, algo in enumerate(ALGORITHMS):
             self.checksum.setItemText(i, tr(f"serial.checksum.{algo}"))
         self.history_btn.setText(tr("serial.history"))
-        self.send_file_btn.setText(tr("serial.send_file"))
-        self.ymodem_btn.setText(tr("serial.ymodem_send"))
-        self.ymodem_btn.setToolTip(tr("serial.ymodem_tip"))
-        self.ymodem_recv_btn.setText(tr("serial.ymodem_recv"))
-        self.ymodem_recv_btn.setToolTip(tr("serial.ymodem_recv_tip"))
+        self._relabel_xfer_buttons()
         self.xmode_combo.setItemText(0, tr("serial.xmode_crc"))
         self.xmode_combo.setItemText(1, tr("serial.xmode_checksum"))
         self.xmode_combo.setToolTip(tr("serial.xmode_tip"))
         self.xfer_cancel_btn.setText(tr("serial.xfer_cancel"))
-        self.preset_box.setTitle(tr("serial.presets"))
-        self.preset_box.setToolTip(tr("serial.presets_toggle_tip"))
+        self.preset_toggle.setText(tr("serial.presets"))
+        self.preset_toggle.setToolTip(tr("serial.presets_toggle_tip"))
         self.cyclic_check.setToolTip(tr("serial.cyclic_tip"))
         self.lbl_presets_io.setText(tr("serial.presets_io"))
         for i, edit in enumerate(self._preset_edits):
@@ -873,7 +872,6 @@ class SerialPage(ToolPage):
     def _set_send_enabled(self, enabled: bool) -> None:
         self.send_btn.setEnabled(enabled)
         self.terminal_break.setEnabled(enabled)
-        self.send_file_btn.setEnabled(enabled)
         self.ymodem_btn.setEnabled(enabled)
         self.ymodem_recv_btn.setEnabled(enabled)
         for btn in self._preset_btns:
@@ -995,6 +993,20 @@ class SerialPage(ToolPage):
     def _xfer_mode(self) -> str:
         return "checksum" if self.xmode_combo.currentData() == "checksum" else "crc"
 
+    def _relabel_xfer_buttons(self) -> None:
+        """Send/Recv labels follow the selected protocol."""
+        proto = str(self.xfer_proto.currentData() or "ymodem")
+        name = {
+            "ymodem": "YMODEM",
+            "xmodem": "XMODEM",
+            "zmodem": "ZMODEM",
+            "raw": "RAW",
+        }.get(proto, proto.upper())
+        self.ymodem_btn.setText(tr("serial.xfer_send", proto=name))
+        self.ymodem_btn.setToolTip(tr("serial.xfer_send_tip", proto=name))
+        self.ymodem_recv_btn.setText(tr("serial.xfer_recv", proto=name))
+        self.ymodem_recv_btn.setToolTip(tr("serial.xfer_recv_tip", proto=name))
+
     def _show_xfer_progress(self, on: bool) -> None:
         self.xfer_progress.setVisible(on)
         self.xfer_cancel_btn.setVisible(on)
@@ -1108,10 +1120,19 @@ class SerialPage(ToolPage):
         progress = self._on_xfer_progress
 
         def work():
-            from etools.core.ymodem import YmodemSender
+            from etools.core.file_xfer import send_file
 
-            sender = YmodemSender(write=link.write, read=link.transfer_read, mode=mode)
-            return sender.send(name, data, on_progress=progress, cancel=xfer_cancel)
+            proto = self.xfer_proto.currentData() or "ymodem"
+            return send_file(
+                link.write,
+                link.transfer_read,
+                name,
+                data,
+                protocol=proto,
+                mode=mode,
+                on_progress=progress,
+                cancel=xfer_cancel,
+            )
 
         self._run_transfer("start", work)
 
@@ -1126,11 +1147,17 @@ class SerialPage(ToolPage):
         progress = self._on_xfer_progress
 
         def work():
-            from etools.core.ymodem import YmodemReceiver
+            from etools.core.file_xfer import receive_file
 
-            receiver = YmodemReceiver(write=link.write, read=link.transfer_read, mode=mode)
-            return receiver.receive(
-                ymodem=True, timeout=90.0, on_progress=progress, cancel=xfer_cancel
+            proto = self.xfer_proto.currentData() or "ymodem"
+            return receive_file(
+                link.write,
+                link.transfer_read,
+                protocol=proto,
+                mode=mode,
+                timeout=90.0,
+                on_progress=progress,
+                cancel=xfer_cancel,
             )
 
         self._run_transfer("recv", work)

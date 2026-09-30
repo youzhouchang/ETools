@@ -728,7 +728,47 @@ QGroupBox#mainGroup::title {{
     left: 10px;
     top: 2px;
     padding: 0 4px;
-    color: {text_dim};
+}}
+QGroupBox#mainGroup:unchecked {{
+    border: none;
+    border-top: 1px solid {border};
+    border-radius: 0;
+    margin-top: 0;
+    padding: 2px 0 0 0;
+    background: transparent;
+}}
+QGroupBox#mainGroup:unchecked::title {{
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 0;
+    top: 0;
+    padding: 6px 2px 4px 0;
+    color: {text_muted};
+    font-weight: 500;
+}}
+QGroupBox#mainGroup::indicator {{
+    width: 14px;
+    height: 14px;
+}}
+QGroupBox#mainGroup:checked {{
+    background: {bg_panel};
+    border: 1px solid {border};
+    border-radius: 8px;
+    margin-top: 24px;
+    padding: 16px 8px 8px 8px;
+}}
+QGroupBox#mainGroup:checked::title {{
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 8px;
+    top: 4px;
+    padding: 0 6px;
+    background: transparent;
+}}
+QGroupBox#mainGroup::indicator:unchecked,
+QGroupBox#mainGroup::indicator:checked {{
+    width: 14px;
+    height: 14px;
 }}
 QLineEdit {{
     background: {bg_input};
