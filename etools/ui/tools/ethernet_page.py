@@ -149,19 +149,21 @@ class EthernetPage(ToolPage):
         self.history_btn.setObjectName("ghost")
         self.history_btn.setFixedHeight(28)
         send_options = QGridLayout()
-        for index, control in enumerate(
-            (
-                self.lbl_mode,
-                self.mode_combo,
-                self.lbl_rx_mode,
-                self.rx_mode,
-                self.lbl_ending,
-                self.ending,
-                self.lbl_encoding,
-                self.encoding,
-            )
-        ):
-            send_options.addWidget(control, index // 4, index % 4)
+        send_options.setHorizontalSpacing(10)
+        send_options.setVerticalSpacing(8)
+        pairs = (
+            (self.lbl_mode, self.mode_combo),
+            (self.lbl_rx_mode, self.rx_mode),
+            (self.lbl_ending, self.ending),
+            (self.lbl_encoding, self.encoding),
+        )
+        for index, (lbl, field) in enumerate(pairs):
+            r, c = divmod(index, 2)
+            send_options.addWidget(lbl, r, c * 2)
+            send_options.addWidget(field, r, c * 2 + 1)
+        send_options.setColumnStretch(3, 1)
+        self.send_btn.setFixedHeight(30)
+        send_row.setSpacing(8)
         send_row.addWidget(self.send_edit, 1)
         send_row.addWidget(self.history_btn)
         send_row.addWidget(self.send_btn)

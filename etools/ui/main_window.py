@@ -87,7 +87,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("MainWindow")
-        self.setWindowTitle(f"{__app_name__}  v{__version__}")
+        self.setWindowTitle(f"{__app_name__}")
 
         self.driver = PyOCDDriver()
         self.service = FlashService(self.driver)
@@ -222,9 +222,6 @@ class MainWindow(QMainWindow):
         self.task_badge = QLabel()
         self.task_badge.setObjectName("statusTask")
         self.statusBar().addPermanentWidget(self.task_badge)
-        self.version_badge = QLabel(f"v{__version__}")
-        self.version_badge.setObjectName("mutedLabel")
-        self.statusBar().addPermanentWidget(self.version_badge)
         self._refresh_task_summary()
         self.statusBar().setSizeGripEnabled(True)
         self._status_timer = QTimer(self)
@@ -307,8 +304,7 @@ class MainWindow(QMainWindow):
         key = f"tool.{tool_id}"
         label = tr(key) if key else tool_id
         self.tool_badge.setText(label)
-        self.version_badge.setText(f"v{__version__}")
-        self.setWindowTitle(f"{__app_name__}  v{__version__}  ·  {label}")
+        self.setWindowTitle(f"{__app_name__}  ·  {label}")
 
     def _build_menu(self) -> None:
         """Application menu bar only — tool actions live on each tool toolbar."""

@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLineEdit,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
     QToolButton,
 )
@@ -28,6 +27,7 @@ from etools.ui.tool_prefs import load_tool_prefs, save_tool_prefs
 from etools.ui.tools.base import ToolPage
 from etools.ui.tools.sftp_panel import SftpPanel
 from etools.ui.widgets.ip_edit import IPv4Edit
+from etools.ui.widgets.terminal_view import TerminalView
 
 _HISTORY_MAX = 30
 _SESSIONS_MAX = 20
@@ -60,27 +60,28 @@ class TerminalPage(ToolPage):
         self.session_combo = QComboBox()
         self.session_combo.setFixedHeight(28)
         self.session_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.lbl_session = self.form_row(tr("term.session"), self.session_combo)
+
         self.session_save_btn = QPushButton(tr("term.session_save"))
         self.session_save_btn.setObjectName("ghost")
         self.session_save_btn.setFixedHeight(28)
-        self.session_save_btn.setMinimumWidth(64)
+        self.session_save_btn.setMinimumWidth(72)
         self.session_del_btn = QPushButton(tr("term.session_delete"))
         self.session_del_btn.setObjectName("ghost")
         self.session_del_btn.setFixedHeight(28)
-        self.session_del_btn.setMinimumWidth(56)
-        # Session picker + actions share one form row so buttons are not
-        # crushed into a leftover empty-label strip below.
+        self.session_del_btn.setMinimumWidth(64)
+        # Actions on their own row — not squeezed beside the session combo.
         sess_row = QHBoxLayout()
         sess_row.setContentsMargins(0, 0, 0, 0)
-        sess_row.setSpacing(6)
-        sess_row.addWidget(self.session_combo, 1)
+        sess_row.setSpacing(8)
         sess_row.addWidget(self.session_save_btn)
         sess_row.addWidget(self.session_del_btn)
+        sess_row.addStretch(1)
         from PySide6.QtWidgets import QWidget as _QWidget
 
         sess_wrap = _QWidget()
         sess_wrap.setLayout(sess_row)
-        self.lbl_session = self.form_row(tr("term.session"), sess_wrap)
+        self.lbl_sess_actions = self.form_row(tr("term.session_actions"), sess_wrap)
 
         self.host = IPv4Edit(suggest_remote_ipv4())
         self.lbl_host = self.form_row(tr("term.host"), self.host)
@@ -126,9 +127,8 @@ class TerminalPage(ToolPage):
         term_box = self.main_group(tr("term.command_mode"))
         self.term_box = term_box
         term_lay = term_box.layout()
-        self.term = QPlainTextEdit()
+        self.term = TerminalView()
         self.term.setObjectName("logView")
-        self.term.setReadOnly(True)
         self.term.document().setMaximumBlockCount(10000)
         term_lay.addWidget(self.term, 3)
 
@@ -241,6 +241,7 @@ class TerminalPage(ToolPage):
         self.term_box.setTitle(tr("term.command_mode"))
         self.ctx_ssh.setTitle(tr("term.title"))
         self.lbl_session.setText(tr("term.session"))
+        self.lbl_sess_actions.setText(tr("term.session_actions"))
         self.session_save_btn.setText(tr("term.session_save"))
         self.session_del_btn.setText(tr("term.session_delete"))
         self.lbl_host.setText(tr("term.host"))
@@ -314,7 +315,7 @@ class TerminalPage(ToolPage):
             return False
 
     def _log(self, line: str) -> None:
-        self.term.appendPlainText(line)
+        self.term.append_text(line + "\n")
 
     def _repaint_btn(self) -> None:
         self.conn_btn.setObjectName("danger" if self._opened else "accent")

@@ -8,12 +8,12 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QSizePolicy,
     QSpinBox,
@@ -34,6 +34,7 @@ from etools.i18n import tr
 from etools.ui.shell import ToolActionSpec
 from etools.ui.tool_prefs import load_tool_prefs, save_tool_prefs
 from etools.ui.tools.base import ToolPage
+from etools.ui.widgets.terminal_view import TerminalView
 from etools.ui.widgets.traffic_view import ENCODINGS, TrafficView, decode_payload, parse_hex_input
 
 _BAUDS = [
@@ -83,53 +84,6 @@ class _PortCombo(QComboBox):
         super().showPopup()
 
 
-class _SerialTerminal(QPlainTextEdit):
-    """Raw serial console which forwards terminal key sequences immediately."""
-
-    send_bytes = Signal(bytes)
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setObjectName("logView")
-        self.setUndoRedoEnabled(False)
-        self.setPlaceholderText(tr("serial.terminal.placeholder"))
-        self.setStyleSheet("font-family: Consolas, 'Courier New', monospace;")
-
-    def keyPressEvent(self, event) -> None:  # noqa: N802
-        from PySide6.QtCore import Qt
-
-        key = event.key()
-        special = {
-            Qt.Key.Key_Return: b"\r",
-            Qt.Key.Key_Enter: b"\r",
-            Qt.Key.Key_Backspace: b"\x7f",
-            Qt.Key.Key_Tab: b"\t",
-            Qt.Key.Key_Escape: b"\x1b",
-            Qt.Key.Key_Up: b"\x1b[A",
-            Qt.Key.Key_Down: b"\x1b[B",
-            Qt.Key.Key_Right: b"\x1b[C",
-            Qt.Key.Key_Left: b"\x1b[D",
-            Qt.Key.Key_Home: b"\x1b[H",
-            Qt.Key.Key_End: b"\x1b[F",
-            Qt.Key.Key_Delete: b"\x1b[3~",
-        }
-        if key in special:
-            data = special[key]
-        elif event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            char = event.text().upper()
-            if len(char) == 1 and 1 <= ord(char) <= 26:
-                data = bytes([ord(char)])
-            else:
-                data = bytes([ord(char) - 64]) if len(char) == 1 and "@" <= char <= "_" else b""
-        else:
-            data = event.text().encode("utf-8", errors="replace")
-        if data:
-            self.send_bytes.emit(data)
-            event.accept()
-            return
-        super().keyPressEvent(event)
-
-
 class SerialPage(ToolPage):
     tool_id = "serial"
     tool_title_key = "tool.serial"
@@ -149,6 +103,7 @@ class SerialPage(ToolPage):
         self._history_idx = -1
         self._custom_bauds: list[str] = []
         self._only_free = True
+        self._xfer_cancel = False
 
         self.ctx_params = self.ctx_group(tr("serial.params"))
         self.port_combo = _PortCombo()
@@ -260,11 +215,37 @@ class SerialPage(ToolPage):
         self.send_file_btn.setObjectName("ghost")
         self.send_file_btn.setFixedHeight(28)
         self.send_file_btn.setEnabled(False)
+        self.ymodem_btn = QPushButton(tr("serial.ymodem_send"))
+        self.ymodem_btn.setObjectName("ghost")
+        self.ymodem_btn.setFixedHeight(28)
+        self.ymodem_btn.setEnabled(False)
+        self.ymodem_btn.setToolTip(tr("serial.ymodem_tip"))
+        self.ymodem_recv_btn = QPushButton(tr("serial.ymodem_recv"))
+        self.ymodem_recv_btn.setObjectName("ghost")
+        self.ymodem_recv_btn.setFixedHeight(28)
+        self.ymodem_recv_btn.setEnabled(False)
+        self.ymodem_recv_btn.setToolTip(tr("serial.ymodem_recv_tip"))
+        self.xmode_combo = QComboBox()
+        self.xmode_combo.setFixedHeight(28)
+        self.xmode_combo.setFixedWidth(110)
+        self.xmode_combo.addItem(tr("serial.xmode_crc"), "crc")
+        self.xmode_combo.addItem(tr("serial.xmode_checksum"), "checksum")
+        self.xmode_combo.setToolTip(tr("serial.xmode_tip"))
+        self.xfer_progress = QProgressBar()
+        self.xfer_progress.setFixedHeight(18)
+        self.xfer_progress.setRange(0, 100)
+        self.xfer_progress.setValue(0)
+        self.xfer_progress.setVisible(False)
+        self.xfer_cancel_btn = QPushButton(tr("serial.xfer_cancel"))
+        self.xfer_cancel_btn.setObjectName("ghost")
+        self.xfer_cancel_btn.setFixedHeight(18)
+        self.xfer_cancel_btn.setVisible(False)
         self.send_edit = QLineEdit()
         self.send_edit.setFixedHeight(30)
         self.send_edit.setPlaceholderText(tr("serial.send_ph"))
         self.send_btn = QPushButton()
         self.send_btn.setObjectName("accent")
+        self.send_btn.setFixedHeight(30)
         self.send_btn.setEnabled(False)
         self.preset_import_btn = QPushButton(tr("serial.presets_import"))
         self.preset_import_btn.setObjectName("ghost")
@@ -278,12 +259,13 @@ class SerialPage(ToolPage):
         self.preset_box.setObjectName("mainGroup")
         self.preset_box.setCheckable(True)
         self.preset_box.setChecked(False)
+        self.preset_box.setToolTip(tr("serial.presets_toggle_tip"))
 
         def _toggle_presets(on: bool) -> None:
-            self.preset_box.setMaximumHeight(16777215 if on else 40)
+            self.preset_box.setMaximumHeight(16777215 if on else 36)
 
         self.preset_box.toggled.connect(_toggle_presets)
-        self.preset_box.setMaximumHeight(40)
+        self.preset_box.setMaximumHeight(36)
         preset_outer = QVBoxLayout(self.preset_box)
         self.preset_content = QWidget()
         preset_outer.addWidget(self.preset_content)
@@ -321,8 +303,9 @@ class SerialPage(ToolPage):
             check.toggled.connect(lambda _c: self.persist_prefs())
 
         cyclic_row = QHBoxLayout()
-        cyclic_row.setSpacing(8)
+        cyclic_row.setSpacing(10)
         self.cyclic_check = QCheckBox(tr("serial.cyclic"))
+        self.cyclic_check.setToolTip(tr("serial.cyclic_tip"))
         self.lbl_interval = QLabel(tr("serial.cyclic_interval"))
         self.cyclic_interval = QSpinBox()
         self.cyclic_interval.setRange(1, 600_000)
@@ -335,6 +318,8 @@ class SerialPage(ToolPage):
         cyclic_row.addWidget(self.lbl_interval)
         cyclic_row.addWidget(self.cyclic_interval)
         cyclic_row.addStretch(1)
+        self.lbl_presets_io = QLabel(tr("serial.presets_io"))
+        cyclic_row.addWidget(self.lbl_presets_io)
         cyclic_row.addWidget(self.preset_import_btn)
         cyclic_row.addWidget(self.preset_export_btn)
         preset_lay.addLayout(cyclic_row)
@@ -342,31 +327,48 @@ class SerialPage(ToolPage):
         self._cyclic_timer.timeout.connect(self._on_cyclic_tick)
         self._cyclic_index = 0
 
-        top_meta = QGridLayout()
-        top_meta.setSpacing(8)
-        for index, control in enumerate(
-            (
-                self.lbl_mode,
-                self.mode_combo,
-                self.lbl_rx_mode,
-                self.rx_mode,
-                self.lbl_ending,
-                self.ending,
-                self.lbl_checksum,
-                self.checksum,
-                self.checksum_preview,
-                self.rx_verify,
-                self.history_btn,
-                self.send_file_btn,
-            )
+        # Format / send options — two calm rows instead of one packed grid.
+        fmt_row1 = QHBoxLayout()
+        fmt_row1.setSpacing(10)
+        for lbl_w, field in (
+            (self.lbl_mode, self.mode_combo),
+            (self.lbl_rx_mode, self.rx_mode),
+            (self.lbl_ending, self.ending),
         ):
-            top_meta.addWidget(control, index // 6, index % 6)
+            fmt_row1.addWidget(lbl_w)
+            fmt_row1.addWidget(field)
+        fmt_row1.addStretch(1)
+        fmt_row1.addWidget(self.checksum_preview)
+
+        fmt_row2 = QHBoxLayout()
+        fmt_row2.setSpacing(10)
+        fmt_row2.addWidget(self.lbl_checksum)
+        fmt_row2.addWidget(self.checksum)
+        fmt_row2.addWidget(self.rx_verify)
+        fmt_row2.addStretch(1)
+
+        act_row = QHBoxLayout()
+        act_row.setSpacing(8)
+        act_row.addWidget(self.history_btn)
+        act_row.addWidget(self.send_file_btn)
+        act_row.addWidget(self.ymodem_btn)
+        act_row.addWidget(self.ymodem_recv_btn)
+        act_row.addWidget(self.xmode_combo)
+        act_row.addStretch(1)
+
         send_row.addWidget(self.send_edit, 1)
         send_row.addWidget(self.send_btn)
+        xfer_row = QHBoxLayout()
+        xfer_row.setSpacing(6)
+        xfer_row.addWidget(self.xfer_progress, 1)
+        xfer_row.addWidget(self.xfer_cancel_btn)
         meta_wrap = QVBoxLayout()
-        meta_wrap.setSpacing(4)
-        meta_wrap.addLayout(top_meta)
+        meta_wrap.setSpacing(8)
+        meta_wrap.addLayout(fmt_row1)
+        meta_wrap.addLayout(fmt_row2)
+        meta_wrap.addLayout(act_row)
         meta_wrap.addLayout(send_row)
+        meta_wrap.addLayout(xfer_row)
         self.install_send_preview(meta_wrap)
         mon_lay.addWidget(self.traffic, 1)
         mon_lay.addWidget(self.preset_box, 0)
@@ -389,7 +391,8 @@ class SerialPage(ToolPage):
         terminal_bar.addStretch(1)
         terminal_bar.addWidget(self.terminal_break)
         terminal_bar.addWidget(self.terminal_clear)
-        self.terminal_view = _SerialTerminal()
+        self.terminal_view = TerminalView(interactive=True)
+        self.terminal_view.setPlaceholderText(tr("serial.terminal.placeholder"))
         self.terminal_view.document().setMaximumBlockCount(10000)
         terminal_lay.addLayout(terminal_bar)
         terminal_lay.addWidget(self.terminal_view, 1)
@@ -434,6 +437,9 @@ class SerialPage(ToolPage):
         self.send_edit.installEventFilter(self)
         self.history_btn.clicked.connect(self._show_history)
         self.send_file_btn.clicked.connect(self._on_send_file)
+        self.ymodem_btn.clicked.connect(self._on_ymodem_send)
+        self.ymodem_recv_btn.clicked.connect(self._on_ymodem_recv)
+        self.xfer_cancel_btn.clicked.connect(self._cancel_transfer)
         self.terminal_view.send_bytes.connect(self._terminal_send)
         self.terminal_break.clicked.connect(self._send_break)
         self.terminal_clear.clicked.connect(self.terminal_view.clear)
@@ -577,7 +583,18 @@ class SerialPage(ToolPage):
             self.checksum.setItemText(i, tr(f"serial.checksum.{algo}"))
         self.history_btn.setText(tr("serial.history"))
         self.send_file_btn.setText(tr("serial.send_file"))
+        self.ymodem_btn.setText(tr("serial.ymodem_send"))
+        self.ymodem_btn.setToolTip(tr("serial.ymodem_tip"))
+        self.ymodem_recv_btn.setText(tr("serial.ymodem_recv"))
+        self.ymodem_recv_btn.setToolTip(tr("serial.ymodem_recv_tip"))
+        self.xmode_combo.setItemText(0, tr("serial.xmode_crc"))
+        self.xmode_combo.setItemText(1, tr("serial.xmode_checksum"))
+        self.xmode_combo.setToolTip(tr("serial.xmode_tip"))
+        self.xfer_cancel_btn.setText(tr("serial.xfer_cancel"))
         self.preset_box.setTitle(tr("serial.presets"))
+        self.preset_box.setToolTip(tr("serial.presets_toggle_tip"))
+        self.cyclic_check.setToolTip(tr("serial.cyclic_tip"))
+        self.lbl_presets_io.setText(tr("serial.presets_io"))
         for i, edit in enumerate(self._preset_edits):
             edit.setPlaceholderText(tr("serial.presets_ph", n=i + 1))
         for check in self._preset_checks:
@@ -857,6 +874,8 @@ class SerialPage(ToolPage):
         self.send_btn.setEnabled(enabled)
         self.terminal_break.setEnabled(enabled)
         self.send_file_btn.setEnabled(enabled)
+        self.ymodem_btn.setEnabled(enabled)
+        self.ymodem_recv_btn.setEnabled(enabled)
         for btn in self._preset_btns:
             btn.setEnabled(enabled)
         self.send_btn.setObjectName("accent" if enabled else "ghost")
@@ -972,6 +991,149 @@ class SerialPage(ToolPage):
         self.traffic.append_status(
             tr("serial.send_file_done", name=Path(path).name, size=len(data))
         )
+
+    def _xfer_mode(self) -> str:
+        return "checksum" if self.xmode_combo.currentData() == "checksum" else "crc"
+
+    def _show_xfer_progress(self, on: bool) -> None:
+        self.xfer_progress.setVisible(on)
+        self.xfer_cancel_btn.setVisible(on)
+        if not on:
+            self.xfer_progress.setValue(0)
+        self._xfer_cancel = False
+
+    def _cancel_transfer(self) -> None:
+        self._xfer_cancel = True
+
+    def _on_xfer_progress(self, done: int, total: int) -> None:
+        # Called from a worker thread — only touch Qt via queued invoke-safe path.
+        def apply() -> None:
+            if total > 0:
+                self.xfer_progress.setMaximum(max(1, total))
+                self.xfer_progress.setValue(min(done, total))
+                self.xfer_progress.setFormat("%v / %m B")
+            else:
+                self.xfer_progress.setMaximum(0)  # busy indicator
+
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(0, apply)
+
+    def _run_transfer(self, label: str, work) -> None:
+        link = self._link
+        link.begin_transfer()
+        self._show_xfer_progress(True)
+        self._set_send_enabled(False)
+        self.ymodem_btn.setEnabled(False)
+        self.ymodem_recv_btn.setEnabled(False)
+
+        def on_ok(result) -> None:
+            link.end_transfer()
+            self._show_xfer_progress(False)
+            self._set_send_enabled(True)
+            if getattr(result, "ok", False):
+                extra = getattr(result, "filename", "") or ""
+                self.traffic.append_status(
+                    tr(
+                        "serial.ymodem_done",
+                        n=result.bytes_sent,
+                        p=result.packets,
+                    )
+                    + (f"  {extra}" if extra else "")
+                )
+                payload = getattr(result, "data", None)
+                if payload:
+                    self._save_received_file(extra or "ymodem.bin", bytes(payload))
+            else:
+                self.traffic.append_status(
+                    tr("serial.ymodem_err", err=getattr(result, "message", "failed"))
+                )
+
+        def on_err(msg: str) -> None:
+            link.end_transfer()
+            self._show_xfer_progress(False)
+            self._set_send_enabled(True)
+            self.traffic.append_status(tr("serial.ymodem_err", err=msg))
+
+        runner = getattr(self, "_runner", None)
+        if runner is None:
+            from etools.ui.runtime import OpRunner
+
+            self._runner = OpRunner(self)
+            runner = self._runner
+        if not runner.start(work, on_ok, on_err):
+            link.end_transfer()
+            self._show_xfer_progress(False)
+            self._set_send_enabled(True)
+            self.traffic.append_status(tr("serial.ymodem_err", err=label))
+
+    def _save_received_file(self, name: str, data: bytes) -> None:
+        from pathlib import Path
+
+        from PySide6.QtWidgets import QFileDialog
+
+        path, _ = QFileDialog.getSaveFileName(self, tr("serial.ymodem_save"), name)
+        if not path:
+            return
+        try:
+            Path(path).write_bytes(data)
+        except OSError as exc:
+            self.traffic.append_status(tr("serial.ymodem_err", err=str(exc)))
+            return
+        self.traffic.append_status(tr("serial.ymodem_saved", path=path, size=len(data)))
+
+    def _on_ymodem_send(self) -> None:
+        """YMODEM download to an IAP bootloader (runs in the background)."""
+        from pathlib import Path
+
+        from PySide6.QtWidgets import QFileDialog
+
+        if not self._opened:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("serial.ymodem_send"), "", "Firmware (*.bin *.hex *.elf *.dat);;All (*.*)"
+        )
+        if not path:
+            return
+        try:
+            data = Path(path).read_bytes()
+        except OSError as exc:
+            self.traffic.append_status(tr("serial.ymodem_err", err=str(exc)))
+            return
+        name = Path(path).name
+        self.traffic.append_status(tr("serial.ymodem_start", name=name, size=len(data)))
+        link = self._link
+        mode = self._xfer_mode()
+        xfer_cancel = lambda: self._xfer_cancel  # noqa: E731
+        progress = self._on_xfer_progress
+
+        def work():
+            from etools.core.ymodem import YmodemSender
+
+            sender = YmodemSender(write=link.write, read=link.transfer_read, mode=mode)
+            return sender.send(name, data, on_progress=progress, cancel=xfer_cancel)
+
+        self._run_transfer("start", work)
+
+    def _on_ymodem_recv(self) -> None:
+        """Receive a file pushed by a peer / bootloader (YMODEM or XMODEM)."""
+        if not self._opened:
+            return
+        self.traffic.append_status(tr("serial.ymodem_recv_start"))
+        link = self._link
+        mode = self._xfer_mode()
+        xfer_cancel = lambda: self._xfer_cancel  # noqa: E731
+        progress = self._on_xfer_progress
+
+        def work():
+            from etools.core.ymodem import YmodemReceiver
+
+            receiver = YmodemReceiver(write=link.write, read=link.transfer_read, mode=mode)
+            return receiver.receive(
+                ymodem=True, timeout=90.0, on_progress=progress, cancel=xfer_cancel
+            )
+
+        self._run_transfer("recv", work)
 
     def _import_presets(self) -> None:
         import json
@@ -1225,14 +1387,8 @@ class SerialPage(ToolPage):
 
     def _terminal_write(self, text: str) -> None:
         """Render serial stream without adding a newline per read chunk."""
-        from PySide6.QtGui import QTextCursor
-
         text = text.replace("\r\n", "\n").replace("\r", "\n")
-        cursor = self.terminal_view.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        cursor.insertText(text)
-        self.terminal_view.setTextCursor(cursor)
-        self.terminal_view.ensureCursorVisible()
+        self.terminal_view.append_text(text)
 
     def _terminal_send(self, data: bytes) -> None:
         if not self._opened:

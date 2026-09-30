@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPlainTextEdit,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -136,7 +137,7 @@ class TrafficView(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(6)
+        root.setSpacing(8)
 
         from etools.ui.kit import H_TOOL, ghost_button
 
@@ -163,10 +164,7 @@ class TrafficView(QWidget):
 
         bar.addStretch(1)
 
-        self.stats_label = QLabel("")
-        self.stats_label.setWordWrap(True)
-        self.stats_label.setObjectName("statsLabel")
-        bar.addWidget(self.stats_label)
+        # RX/TX counters live in the global status bar (one place, with Clear).
         self.clear_btn = ghost_button(tr("mon.clear"), height=H_TOOL)
         self.save_btn = ghost_button(tr("mon.save"), height=H_TOOL)
         bar.addWidget(self.save_btn)
@@ -197,7 +195,8 @@ class TrafficView(QWidget):
         self.advanced_host = QWidget()
         advanced_row = QGridLayout(self.advanced_host)
         advanced_row.setContentsMargins(0, 0, 0, 0)
-        advanced_row.setSpacing(6)
+        advanced_row.setHorizontalSpacing(10)
+        advanced_row.setVerticalSpacing(8)
         self.ts_combo = QComboBox()
         self.ts_combo.setFixedHeight(H_TOOL)
         self.ts_combo.addItem(tr("mon.ts.time_ms"), TS_TIME_MS)
@@ -219,7 +218,6 @@ class TrafficView(QWidget):
         self.eye_care_check.setToolTip(tr("mon.eye_care_tip"))
         self.export_csv_btn = ghost_button(tr("mon.export_csv"), height=H_TOOL)
         self.inspect_btn = ghost_button(tr("inspector.title"), height=H_TOOL)
-        self.stats_reset_btn = ghost_button(tr("mon.reset_stats"), height=H_TOOL)
         self.capture_btn = ghost_button(tr("mon.capture"), height=H_TOOL)
         self.replay_btn = ghost_button(tr("mon.replay"), height=H_TOOL)
         self.replay_stop_btn = ghost_button(tr("script.stop"), height=H_TOOL)
@@ -227,25 +225,51 @@ class TrafficView(QWidget):
         self.capture_btn.clicked.connect(self.export_capture)
         self.replay_btn.clicked.connect(self.replay_capture)
         self.replay_stop_btn.clicked.connect(self.stop_replay)
-        for index, control in enumerate(
-            (
-                self.ts_combo,
-                self.wrap_check,
-                self.lbl_merge,
-                self.merge_spin,
-                self.eye_care_check,
-                self.auto_log_check,
-                self.export_csv_btn,
-                self.inspect_btn,
-                self.stats_reset_btn,
-                self.capture_btn,
-                self.replay_btn,
-                self.replay_stop_btn,
-            )
+
+        # Compact left-aligned rows — buttons must not stretch across the pane.
+        for btn in (
+            self.export_csv_btn,
+            self.inspect_btn,
+            self.capture_btn,
+            self.replay_btn,
+            self.replay_stop_btn,
         ):
-            advanced_row.addWidget(control, index // 4, index % 4)
+            btn.setFixedHeight(H_TOOL)
+            btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+        # Two compact rows (not three): options, then actions.
+        row1 = QHBoxLayout()
+        row1.setSpacing(8)
+        row1.addWidget(self.ts_combo)
+        row1.addWidget(self.wrap_check)
+        row1.addWidget(self.lbl_merge)
+        row1.addWidget(self.merge_spin)
+        row1.addSpacing(12)
+        row1.addWidget(self.eye_care_check)
+        row1.addWidget(self.auto_log_check)
+        row1.addStretch(1)
+        advanced_row.addLayout(row1, 0, 0)
+
+        row2 = QHBoxLayout()
+        row2.setSpacing(8)
+        row2.addWidget(self.export_csv_btn)
+        row2.addWidget(self.inspect_btn)
+        row2.addSpacing(8)
+        row2.addWidget(self.capture_btn)
+        row2.addWidget(self.replay_btn)
+        row2.addWidget(self.replay_stop_btn)
+        row2.addStretch(1)
+        advanced_row.addLayout(row2, 1, 0)
+        advanced_row.setVerticalSpacing(6)
+        advanced_row.setColumnStretch(0, 1)
         self.replay_btn.setToolTip(tr("mon.replay_tip"))
-        root.addWidget(self.advanced_host)
+        # Fixed height so option buttons never paint over the log pane.
+        self.advanced_host.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.advanced_host.setContentsMargins(0, 0, 0, 2)
+        # Two tool-height rows + row gap — keep the log pane from sliding under.
+        self.advanced_host.setFixedHeight(H_TOOL * 2 + 6 + 4)
+        root.addWidget(self.advanced_host, 0)
+        root.addSpacing(6)
         self.eye_care_check.toggled.connect(self._on_eye_care_toggled)
 
         self.view = QPlainTextEdit()
@@ -253,6 +277,7 @@ class TrafficView(QWidget):
         self.view.setObjectName("logView")
         self.view.setReadOnly(True)
         self.view.setPlaceholderText(tr("serial.placeholder"))
+        self.view.setMinimumHeight(80)
         root.addWidget(self.view, 1)
         self._apply_eye_care(self._load_eye_care())
         # Ctrl+S saves the log; Ctrl+F focuses the filter box.
@@ -273,7 +298,7 @@ class TrafficView(QWidget):
         self.wrap_check.toggled.connect(self._on_wrap_toggled)
         self.merge_spin.valueChanged.connect(self._on_merge_changed)
         self.copy_btn.clicked.connect(self._copy_all)
-        self.stats_reset_btn.clicked.connect(self.reset_stats)
+        self.eye_care_check.toggled.connect(self._on_eye_care_toggled)
         self.auto_log_check.toggled.connect(self._on_auto_log_toggled)
         self.export_csv_btn.clicked.connect(self.export_csv)
         self.inspect_btn.clicked.connect(self._open_inspector)
@@ -308,7 +333,6 @@ class TrafficView(QWidget):
         self.lbl_merge.setText(tr("mon.merge"))
         self.merge_spin.setToolTip(tr("mon.merge_tip"))
         self.copy_btn.setText(tr("mon.copy"))
-        self.stats_reset_btn.setText(tr("mon.reset_stats"))
         self.auto_log_check.setText(tr("mon.auto_log"))
         self.auto_log_check.setToolTip(tr("mon.auto_log_tip"))
         self.export_csv_btn.setText(tr("mon.export_csv"))
@@ -338,16 +362,8 @@ class TrafficView(QWidget):
         self._refresh_stats()
 
     def _refresh_stats(self) -> None:
+        """Counters are shown in the global status bar (stats_changed)."""
         self._stats_dirty = False
-        self.stats_label.setText(
-            tr(
-                "mon.stats",
-                rx=self._rx_bytes,
-                tx=self._tx_bytes,
-                rxp=self._rx_pkts,
-                txp=self._tx_pkts,
-            )
-        )
         self.stats_changed.emit()
 
     def _on_mode_changed(self) -> None:

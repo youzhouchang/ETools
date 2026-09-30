@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import queue
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -27,6 +29,107 @@ class PortEntry:
     def label(self) -> str:
         """Display text without a status suffix."""
         return f"{self.device} — {self.description}" if self.description else self.device
+
+
+def _registry_serialcomm() -> dict[str, str]:
+    """Windows SERIALCOMM map: device name → friendly hint.
+
+    pySerial's SetupAPI walk misses some virtual pairs (e.g. VSPD ``VSerial``),
+    but the kernel still publishes them under ``HARDWARE\\DEVICEMAP\\SERIALCOMM``.
+    """
+    if os.name != "nt":
+        return {}
+    try:
+        import winreg
+    except ImportError:
+        return {}
+    out: dict[str, str] = {}
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DEVICEMAP\SERIALCOMM", 0, winreg.KEY_READ
+        )
+    except OSError:
+        return {}
+    try:
+        index = 0
+        while True:
+            try:
+                _name, value, _kind = winreg.EnumValue(key, index)
+            except OSError:
+                break
+            index += 1
+            port = str(value).strip()
+            if not port:
+                continue
+            # Map VSerial / named pairs to a readable description.
+            hint = "virtual"
+            raw = str(_name).rsplit("\\", 1)[-1].lower()
+            if raw.startswith("vserial"):
+                hint = "virtual (VSPD/VSerial)"
+            elif raw.startswith("usbdser") or raw.startswith("usbser"):
+                hint = "USB serial"
+            out[port] = hint
+    finally:
+        winreg.CloseKey(key)
+    return out
+
+
+def _friendly_description(device: str, desc: str, hwid: str = "") -> str:
+    """Enrich sparse descriptions so DAPLink / virtual pairs are obvious."""
+    blob = f"{desc} {hwid} {device}".upper()
+    text = (desc or "").strip()
+    # pyserial sometimes returns just the device name as description.
+    if not text or text.upper() == device.upper():
+        reg = _registry_serialcomm().get(device, "")
+        text = reg or "serial"
+    if "0D28" in blob or "CMSIS" in blob or "DAPLINK" in blob or "DAP-LINK" in blob:
+        if "DAP" not in text.upper():
+            return f"{text} · DAPLink/CMSIS-DAP"
+    if "VSERIAL" in blob or "VSPD" in blob:
+        return f"{text} · Virtual"
+    return text
+
+
+def list_serial_ports(*, probe: bool = False) -> list[PortEntry]:
+    """Return serial ports as :class:`PortEntry` rows.
+
+    Combines pySerial enumeration with a Windows SERIALCOMM fallback so
+    virtual pairs (VSPD etc.) are not silently dropped. When *probe* is true
+    each port is briefly opened to classify availability (``ok`` / ``busy``).
+    """
+    found: dict[str, PortEntry] = {}
+    try:
+        from serial.tools import list_ports
+
+        for p in list_ports.comports():
+            device = str(p.device or "")
+            if not device:
+                continue
+            desc = p.description or p.hwid or ""
+            desc = _friendly_description(device, desc, getattr(p, "hwid", "") or "")
+            status, detail = PORT_UNKNOWN, ""
+            if probe:
+                status, detail = probe_port(device)
+            found[device] = PortEntry(device, desc, status, detail)
+    except ImportError:
+        pass
+
+    # Fallback: ports the SetupAPI walk missed (common with VSPD virtual pairs).
+    for device, hint in _registry_serialcomm().items():
+        if device in found:
+            continue
+        status, detail = PORT_UNKNOWN, ""
+        if probe:
+            status, detail = probe_port(device)
+        found[device] = PortEntry(device, hint, status, detail)
+
+    def _sort_key(entry: PortEntry) -> tuple[int, str]:
+        name = entry.device.upper()
+        if name.startswith("COM") and name[3:].isdigit():
+            return (0, f"{int(name[3:]):05d}")
+        return (1, name)
+
+    return sorted(found.values(), key=_sort_key)
 
 
 def probe_port(device: str) -> tuple[str, str]:
@@ -81,26 +184,6 @@ def probe_port(device: str) -> tuple[str, str]:
                 pass
 
 
-def list_serial_ports(*, probe: bool = False) -> list[PortEntry]:
-    """Return serial ports as :class:`PortEntry` rows.
-
-    When *probe* is true each port is briefly opened to classify availability
-    (``ok`` / ``busy`` / ``error``). Keep probe off for hotplug polling.
-    """
-    try:
-        from serial.tools import list_ports
-    except ImportError:
-        return []
-    out: list[PortEntry] = []
-    for p in list_ports.comports():
-        desc = p.description or p.hwid or ""
-        status, detail = PORT_UNKNOWN, ""
-        if probe:
-            status, detail = probe_port(p.device)
-        out.append(PortEntry(p.device, desc, status, detail))
-    return out
-
-
 class SerialLink:
     """Open/close a serial port and pump bytes to a callback."""
 
@@ -110,6 +193,7 @@ class SerialLink:
         self._stop = threading.Event()
         self._on_rx: Callable[[bytes], None] | None = None
         self._on_error: Callable[[str], None] | None = None
+        self._transfer_q: queue.Queue[bytes] | None = None
 
     @property
     def is_open(self) -> bool:
@@ -122,6 +206,29 @@ class SerialLink:
     ) -> None:
         self._on_rx = on_rx
         self._on_error = on_error
+
+    def begin_transfer(self) -> None:
+        """Route RX into a private queue for protocol sessions (YMODEM…)."""
+        self._transfer_q = queue.Queue()
+
+    def transfer_read(self, timeout: float = 1.0) -> bytes:
+        q = self._transfer_q
+        if q is None:
+            return b""
+        try:
+            chunk = q.get(timeout=max(0.01, float(timeout)))
+        except queue.Empty:
+            return b""
+        # Drain anything already queued without blocking.
+        while True:
+            try:
+                chunk += q.get_nowait()
+            except queue.Empty:
+                break
+        return bytes(chunk)
+
+    def end_transfer(self) -> None:
+        self._transfer_q = None
 
     def open(
         self,
@@ -199,12 +306,16 @@ class SerialLink:
             try:
                 if ser.in_waiting:
                     data = ser.read(ser.in_waiting)
-                    if data and self._on_rx:
-                        self._on_rx(data)
                 else:
                     data = ser.read(1)
-                    if data and self._on_rx:
-                        self._on_rx(data)
+                if not data:
+                    continue
+                q = self._transfer_q
+                if q is not None:
+                    q.put(data)
+                    continue
+                if self._on_rx:
+                    self._on_rx(data)
             except Exception as exc:  # noqa: BLE001
                 if not self._stop.is_set() and self._on_error:
                     self._on_error(str(exc))

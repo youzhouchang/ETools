@@ -145,6 +145,9 @@ class ToolPage(QWidget):
         self.send_preview = QLabel()
         self.send_preview.setObjectName("mutedLabel")
         self.send_preview.setWordWrap(True)
+        self.send_preview.setMinimumHeight(18)
+        self.send_preview.setContentsMargins(0, 2, 0, 0)
+        layout.addSpacing(4)
         layout.addWidget(self.send_preview)
         self.send_edit.textChanged.connect(self._update_send_preview)
         for name in ("mode_combo", "ending", "encoding", "checksum", "peer_combo"):
