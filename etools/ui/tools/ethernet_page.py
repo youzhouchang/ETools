@@ -317,6 +317,17 @@ class EthernetPage(ToolPage):
 
         exec_script_menu(self)
 
+    @property
+    def is_open(self) -> bool:
+        return self._opened
+
+    def link_status(self) -> tuple[str, str]:
+        if not self._opened:
+            return tr("status.link_idle"), "warn"
+        host = self.host.text().strip() or "0.0.0.0"
+        port = self.port.text().strip() or "?"
+        return tr("status.link_net", host=host, port=port), "ok"
+
     def toggle_connection(self) -> None:
         self._on_toggle()
 

@@ -129,6 +129,15 @@ class ToolPage(QWidget):
     def clear_view(self) -> None:
         """Clear the tool's monitor / log view."""
 
+    @property
+    def is_open(self) -> bool:
+        """True when the tool's primary connection is active."""
+        return False
+
+    def link_status(self) -> tuple[str, str]:
+        """Return ``(text, kind)`` for the global status bar link badge."""
+        return "", "warn"
+
     def ctx_group(self, title: str) -> QGroupBox:
         """Framed group on the left; stretches so its bottom matches the main group."""
         box = QGroupBox(title)

@@ -278,14 +278,14 @@ class ProbePanel(QFrame):
         self._repolish(self.status_label)
 
     def set_scanning_hint(self, scanning: bool) -> None:
-        if not self._probes and scanning:
-            if self.probe_combo.count() == 0 or self.probe_combo.itemText(0).startswith(
-                "检测"
-            ):
-                self.probe_combo.blockSignals(True)
-                self.probe_combo.clear()
-                self.probe_combo.addItem(tr("probe.detecting"))
-                self.probe_combo.blockSignals(False)
+        """Show a scanning placeholder when no probes are known yet."""
+        if not scanning or self._probes:
+            return
+        self.probe_combo.blockSignals(True)
+        self.probe_combo.clear()
+        self.probe_combo.addItem(tr("probe.detecting"))
+        self.probe_combo.setEnabled(False)
+        self.probe_combo.blockSignals(False)
 
     @staticmethod
     def _repolish(w: QWidget) -> None:

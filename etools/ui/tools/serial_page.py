@@ -22,7 +22,13 @@ from PySide6.QtWidgets import (
 )
 
 from etools.core.checksum import ALGORITHMS, append_checksum, compute_checksum
-from etools.core.serial_link import SerialLink, list_serial_ports
+from etools.core.serial_link import (
+    PORT_BUSY,
+    PORT_ERROR,
+    PORT_OK,
+    SerialLink,
+    list_serial_ports,
+)
 from etools.i18n import tr
 from etools.ui.shell import ToolActionSpec
 from etools.ui.tool_prefs import load_tool_prefs, save_tool_prefs
@@ -41,7 +47,14 @@ _BAUDS = [
     "230400",
     "460800",
     "921600",
+    "1000000",
+    "1500000",
+    "2000000",
+    "3000000",
 ]
+
+#: How many ad-hoc baud rates to remember beyond the fixed presets.
+_CUSTOM_BAUD_MAX = 8
 
 _ENDINGS = {
     "none": b"",
@@ -127,6 +140,8 @@ class SerialPage(ToolPage):
         self._known_ports: tuple[str, ...] = ()
         self._history: list[str] = []
         self._history_idx = -1
+        self._custom_bauds: list[str] = []
+        self._only_free = True
 
         self.ctx_params = self.ctx_group(tr("serial.params"))
         self.port_combo = _PortCombo()
@@ -405,7 +420,7 @@ class SerialPage(ToolPage):
         self.terminal_view.send_bytes.connect(self._terminal_send)
         self.terminal_break.clicked.connect(self._send_break)
         self.terminal_clear.clicked.connect(self.terminal_view.clear)
-        self.port_combo.about_to_show.connect(self._refresh_ports)
+        self.port_combo.about_to_show.connect(lambda: self._refresh_ports(probe=True))
         self.cyclic_check.toggled.connect(self._on_cyclic_toggled)
         self.cyclic_interval.valueChanged.connect(self._on_interval_changed)
         self.script_run.clicked.connect(self._on_script_run)
@@ -589,19 +604,31 @@ class SerialPage(ToolPage):
 
         exec_script_menu(self)
 
+    @property
+    def is_open(self) -> bool:
+        return self._opened
+
+    def link_status(self) -> tuple[str, str]:
+        if not self._opened:
+            return tr("status.link_idle"), "warn"
+        return tr("status.link_serial", port=self._selected_port() or "?"), "ok"
+
     def toggle_connection(self) -> None:
         self._on_toggle()
-
-    def send(self) -> None:
-        self._on_send()
 
     def clear_view(self) -> None:
         self.traffic.clear()
 
     def _load_prefs(self) -> None:
         prefs = load_tool_prefs(self.tool_id)
+        custom = prefs.get("custom_bauds")
+        if isinstance(custom, list):
+            self._custom_bauds = [str(x) for x in custom if str(x).strip()][:_CUSTOM_BAUD_MAX]
+            self._apply_baud_presets()
         if prefs.get("baud"):
             self.baud.setCurrentText(str(prefs["baud"]))
+        if prefs.get("only_free") is not None:
+            self._only_free = bool(prefs["only_free"])
         if prefs.get("databits"):
             self.data.setCurrentText(str(prefs["databits"]))
         if prefs.get("parity"):
@@ -666,6 +693,8 @@ class SerialPage(ToolPage):
             {
                 "port": self._selected_port(),
                 "baud": self.baud.currentText(),
+                "custom_bauds": list(self._custom_bauds),
+                "only_free": self._only_free,
                 "databits": self.data.currentText(),
                 "parity": self.parity.currentText(),
                 "stopbits": self.stop.currentText(),
@@ -684,26 +713,95 @@ class SerialPage(ToolPage):
         )
 
     def _hotplug_tick(self) -> None:
-        devices = tuple(d for d, _ in list_serial_ports())
+        devices = tuple(e.device for e in list_serial_ports())
         if devices != self._known_ports:
             vanished = self._opened and self._selected_port() not in devices
             self._known_ports = devices
-            self._refresh_ports()
+            self._refresh_ports(probe=True)
             if vanished:
                 self._on_toggle()
                 self.traffic.append_status(tr("serial.port_lost"))
 
-    def _refresh_ports(self) -> None:
-        ports = list_serial_ports()
-        self._known_ports = tuple(d for d, _ in ports)
+    @property
+    def only_free(self) -> bool:
+        return self._only_free
+
+    def set_only_free(self, on: bool) -> None:
+        """Toggle 「仅显示可用串口」 from the View menu (not the param form)."""
+        if self._only_free == bool(on):
+            return
+        self._only_free = bool(on)
+        self._persist_prefs()
+        self._refresh_ports(probe=True)
+
+    def _remember_baud(self, text: str) -> None:
+        """Keep ad-hoc baud rates in the preset list across sessions."""
+        value = (text or "").strip()
+        if not value or value in _BAUDS:
+            return
+        if value in self._custom_bauds:
+            return
+        self._custom_bauds.insert(0, value)
+        del self._custom_bauds[_CUSTOM_BAUD_MAX:]
+        self.baud.blockSignals(True)
+        if self.baud.findText(value) < 0:
+            self.baud.addItem(value)
+        self.baud.blockSignals(False)
+
+    def _apply_baud_presets(self) -> None:
+        """Rebuild the baud combo: fixed presets + remembered custom values."""
+        current = self.baud.currentText()
+        self.baud.blockSignals(True)
+        self.baud.clear()
+        self.baud.addItems(_BAUDS)
+        for value in self._custom_bauds:
+            if value not in _BAUDS and self.baud.findText(value) < 0:
+                self.baud.addItem(value)
+        if current:
+            self.baud.setCurrentText(current)
+        self.baud.blockSignals(False)
+
+    def _set_params_enabled(self, enabled: bool) -> None:
+        """Lock port/line parameters while a connection is open (qtSerial-style)."""
+        for w in (
+            self.port_combo,
+            self.baud,
+            self.data,
+            self.parity,
+            self.stop,
+            self.flow,
+        ):
+            w.setEnabled(enabled)
+
+    def _refresh_ports(self, *, probe: bool = True) -> None:
+        only_free = self._only_free
+        ports = list_serial_ports(probe=probe or only_free)
+        self._known_ports = tuple(e.device for e in ports)
         current_data = self.port_combo.currentData()
         current_text = self.port_combo.currentText()
         self.port_combo.blockSignals(True)
         self.port_combo.clear()
-        if not ports:
+        active = self._selected_port() if self._opened else ""
+        rows: list[tuple[str, str]] = []
+        for entry in ports:
+            if entry.device == active:
+                status = tr("serial.port_self")
+            elif entry.status == PORT_OK:
+                status = tr("serial.port_ok")
+            elif entry.status == PORT_BUSY:
+                status = tr("serial.port_busy")
+            elif entry.status == PORT_ERROR:
+                status = tr("serial.port_error")
+            else:
+                status = ""
+            if only_free and entry.device != active and entry.status != PORT_OK:
+                continue
+            label = entry.label if not status else f"{entry.label}  [{status}]"
+            rows.append((label, entry.device))
+        if not rows:
             self.port_combo.addItem("—")
         else:
-            for device, label in ports:
+            for label, device in rows:
                 self.port_combo.addItem(label, device)
         if current_data:
             idx = self.port_combo.findData(current_data)
@@ -753,6 +851,7 @@ class SerialPage(ToolPage):
             self._link.close()
             self._opened = False
             self._set_send_enabled(False)
+            self._set_params_enabled(True)
             self.open_btn.setText(tr("serial.open"))
             self._repaint_btn()
             self.traffic.append_status(tr("serial.closed"))
@@ -777,6 +876,8 @@ class SerialPage(ToolPage):
             return
         self._opened = True
         self._set_send_enabled(True)
+        self._set_params_enabled(False)
+        self._remember_baud(self.baud.currentText())
         self.open_btn.setText(tr("serial.close"))
         self._repaint_btn()
         self.traffic.append_status(tr("serial.opened", port=port))
@@ -1140,6 +1241,7 @@ class SerialPage(ToolPage):
         if self._script_running:
             self._on_script_stop()
         self._set_send_enabled(False)
+        self._set_params_enabled(True)
         self.open_btn.setText(tr("serial.open"))
         self._repaint_btn()
 

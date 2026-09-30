@@ -7,9 +7,12 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
+    QPushButton,
+    QWidget,
 )
 
 from etools import __app_name__, __version__
@@ -32,6 +35,36 @@ from etools.ui.tools import (
 )
 
 log = get_logger("ui.main")
+
+
+class _TrafficBadge(QWidget):
+    """Status-bar RX/TX counter with an inline clear — one visual unit."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("trafficBadge")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self.stats = QLabel("")
+        self.stats.setObjectName("trafficBadgeText")
+        self.clear_btn = QPushButton("")
+        self.clear_btn.setObjectName("trafficBadgeClear")
+        self.clear_btn.setFlat(True)
+        self.clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        lay.addWidget(self.stats)
+        lay.addWidget(self.clear_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    def set_stats_text(self, text: str) -> None:
+        self.stats.setText(text)
+
+    def set_clear_text(self, text: str) -> None:
+        self.clear_btn.setText(text)
+
+    def set_tip(self, text: str) -> None:
+        self.setToolTip(text)
+        self.stats.setToolTip(text)
+        self.clear_btn.setToolTip(text)
 
 
 class _UpdateChecker(QObject):
@@ -174,6 +207,15 @@ class MainWindow(QMainWindow):
         self.tool_badge = QLabel(tr("tool.program"))
         self.tool_badge.setObjectName("toolBadge")
         self.statusBar().addWidget(self.tool_badge)
+        self.link_badge = QLabel(tr("status.link_idle"))
+        self.link_badge.setObjectName("statusWarn")
+        self.statusBar().addPermanentWidget(self.link_badge)
+        self.traffic_badge = _TrafficBadge()
+        self.traffic_badge.set_stats_text(tr("status.traffic_idle"))
+        self.traffic_badge.set_clear_text(tr("status.clear_stats"))
+        self.traffic_badge.set_tip(tr("status.stats_tip"))
+        self.traffic_badge.clear_btn.clicked.connect(self._clear_traffic_stats)
+        self.statusBar().addPermanentWidget(self.traffic_badge)
         self.task_badge = QLabel()
         self.task_badge.setObjectName("statusTask")
         self.statusBar().addPermanentWidget(self.task_badge)
@@ -182,10 +224,74 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.version_badge)
         self._refresh_task_summary()
         self.statusBar().setSizeGripEnabled(True)
+        self._status_timer = QTimer(self)
+        self._status_timer.setInterval(400)
+        self._status_timer.timeout.connect(self._refresh_status_bar)
+        self._status_timer.start()
+        self._refresh_status_bar()
         if hasattr(self.shell, "tool_changed"):
             self.shell.tool_changed.connect(self._on_tool_changed)
 
         self.apply_theme(get_config().theme or "dark")
+
+    def _active_page(self):
+        tool = self.shell.current_tool
+        return {
+            "serial": self.serial_page,
+            "ethernet": self.ethernet_page,
+            "terminal": self.terminal_page,
+        }.get(tool)
+
+    @staticmethod
+    def _fmt_bytes(n: int) -> str:
+        if n >= 1_048_576:
+            return f"{n / 1_048_576:.1f} MB"
+        if n >= 1024:
+            return f"{n / 1024:.1f} KB"
+        return f"{n} B"
+
+    def _refresh_status_bar(self) -> None:
+        page = self._active_page()
+        text, kind = tr("status.link_idle"), "warn"
+        if page is not None:
+            try:
+                text, kind = page.link_status()
+            except Exception:  # noqa: BLE001 — status bar must never crash
+                pass
+        self._set_link_badge(text, kind)
+        tv = getattr(page, "traffic", None) if page is not None else None
+        if tv is not None:
+            rx, tx, rxp, txp = tv.stats()
+            self.traffic_badge.set_stats_text(
+                tr(
+                    "status.traffic",
+                    rx=self._fmt_bytes(rx),
+                    tx=self._fmt_bytes(tx),
+                    rxp=rxp,
+                    txp=txp,
+                )
+            )
+        else:
+            self.traffic_badge.set_stats_text(tr("status.traffic_idle"))
+
+    def _set_link_badge(self, text: str, kind: str = "warn") -> None:
+        obj = {"ok": "statusOk", "err": "statusErr", "warn": "statusWarn"}.get(
+            kind, "statusWarn"
+        )
+        if self.link_badge.text() == text and self.link_badge.objectName() == obj:
+            return
+        self.link_badge.setText(text)
+        self.link_badge.setObjectName(obj)
+        st = self.link_badge.style()
+        st.unpolish(self.link_badge)
+        st.polish(self.link_badge)
+
+    def _clear_traffic_stats(self) -> None:
+        page = self._active_page()
+        tv = getattr(page, "traffic", None) if page is not None else None
+        if tv is not None:
+            tv.reset_stats()
+        self._refresh_status_bar()
 
     def _refresh_task_summary(self, *_args) -> None:
         running = sum(1 for info in self.task_manager._tasks.values() if info.runner.busy)
@@ -256,6 +362,14 @@ class MainWindow(QMainWindow):
         m_theme.addAction(a_theme_light)
         m_theme.addAction(a_theme_system)
         m_view.addSeparator()
+        a_only_free = act(tr("serial.only_free"), "", "")
+        a_only_free.setCheckable(True)
+        serial_page = getattr(self, "serial_page", None)
+        a_only_free.setChecked(bool(getattr(serial_page, "only_free", True)))
+        a_only_free.setToolTip(tr("serial.only_free_tip"))
+        m_view.addAction(a_only_free)
+        self._a_only_free = a_only_free
+        a_only_free.toggled.connect(self._on_only_free_toggled)
         a_hex = act(tr("act.hex"), "hex", "Ctrl+H")
         m_view.addAction(a_hex)
         m_view.addSeparator()
@@ -383,8 +497,19 @@ class MainWindow(QMainWindow):
         self.conn_badge.setText(
             tr("status.connected") if connected else tr("status.disconnected")
         )
+        self.traffic_badge.set_clear_text(tr("status.clear_stats"))
+        self.traffic_badge.set_tip(tr("status.stats_tip"))
+        if hasattr(self, "_a_only_free"):
+            self._a_only_free.setText(tr("serial.only_free"))
+            self._a_only_free.setToolTip(tr("serial.only_free_tip"))
+        self._refresh_status_bar()
         self._refresh_task_summary()
         self._log(tr("log.lang_switched"))
+
+    def _on_only_free_toggled(self, on: bool) -> None:
+        page = getattr(self, "serial_page", None)
+        if page is not None:
+            page.set_only_free(on)
 
     def _set_theme(self, name: str) -> None:
         self.apply_theme(name)
@@ -726,8 +851,10 @@ class MainWindow(QMainWindow):
                         self._log(tr("log.probe_none"), True)
             self.probe_panel.set_probes(probes)
 
-        def on_err(_msg: str) -> None:
+        def on_err(msg: str) -> None:
             self.probe_panel.set_probes([])
+            if not silent:
+                self._log(tr("log.probe_scan_err", err=msg), True)
 
         self._run_async(self.service.scan_probes, on_ok, on_err, quiet_busy=silent)
 

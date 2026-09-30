@@ -274,6 +274,17 @@ class TerminalPage(ToolPage):
 
         exec_script_menu(self)
 
+    @property
+    def is_open(self) -> bool:
+        return self._opened
+
+    def link_status(self) -> tuple[str, str]:
+        if not self._opened:
+            return tr("status.link_idle"), "warn"
+        host = getattr(self, "host", None)
+        host_text = host.text().strip() if host is not None else ""
+        return tr("status.link_ssh", host=host_text or "?"), "ok"
+
     def toggle_connection(self) -> None:
         self._on_toggle()
 

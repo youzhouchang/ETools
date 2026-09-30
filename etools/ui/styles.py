@@ -766,6 +766,32 @@ QLabel#statsLabel {{
     font-size: 11px;
     font-family: "Cascadia Mono", "Consolas", monospace;
 }}
+QWidget#trafficBadge {{
+    background: transparent;
+}}
+QLabel#trafficBadgeText {{
+    background: transparent;
+    color: {text_dim};
+    font-size: 11px;
+    font-family: "Cascadia Mono", "Consolas", monospace;
+    padding: 0 2px 0 4px;
+}}
+QPushButton#trafficBadgeClear {{
+    background: transparent;
+    border: none;
+    border-radius: 3px;
+    color: {text_muted};
+    font-size: 11px;
+    padding: 0 6px 0 2px;
+}}
+QPushButton#trafficBadgeClear:hover {{
+    color: {accent};
+    background: {bg_hover};
+}}
+QPushButton#trafficBadgeClear:pressed {{
+    color: {on_accent};
+    background: {accent};
+}}
 QLabel#mutedLabel {{
     color: {text_muted};
     font-size: 11px;

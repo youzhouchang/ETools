@@ -4,19 +4,100 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
+#: Port availability classes returned by :func:`probe_port`.
+PORT_OK = "ok"
+PORT_BUSY = "busy"
+PORT_ERROR = "error"
+PORT_UNKNOWN = "unknown"
 
-def list_serial_ports() -> list[tuple[str, str]]:
-    """Return [(device, description), ...]. Uses pyserial if installed."""
+
+@dataclass(frozen=True)
+class PortEntry:
+    """A serial port candidate with optional availability status."""
+
+    device: str
+    description: str = ""
+    status: str = PORT_UNKNOWN
+    detail: str = ""
+
+    @property
+    def label(self) -> str:
+        """Display text without a status suffix."""
+        return f"{self.device} — {self.description}" if self.description else self.device
+
+
+def probe_port(device: str) -> tuple[str, str]:
+    """Classify *device* with a brief exclusive open. Returns ``(status, detail)``.
+
+    DTR/RTS are forced low before close to limit reset side-effects on
+    Arduino-like boards. Callers should not probe on a tight poll loop.
+    """
+    try:
+        import serial
+    except ImportError:
+        return PORT_UNKNOWN, ""
+    ser: Any = None
+    try:
+        ser = serial.Serial()
+        ser.port = device
+        ser.baudrate = 9600
+        ser.timeout = 0
+        ser.write_timeout = 0
+        ser.dsrdtr = False
+        ser.rtscts = False
+        ser.xonxoff = False
+        try:
+            ser.exclusive = True
+        except Exception:  # noqa: BLE001 — not supported on all backends
+            pass
+        ser.open()
+        try:
+            ser.dtr = False
+            ser.rts = False
+        except Exception:  # noqa: BLE001
+            pass
+        return PORT_OK, ""
+    except Exception as exc:  # noqa: BLE001
+        msg = str(exc)
+        low = msg.lower()
+        busy_markers = (
+            "access is denied",
+            "permission",
+            "busy",
+            "in use",
+            "being used",
+        )
+        if any(k in low for k in busy_markers):
+            return PORT_BUSY, msg
+        return PORT_ERROR, msg
+    finally:
+        if ser is not None:
+            try:
+                ser.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def list_serial_ports(*, probe: bool = False) -> list[PortEntry]:
+    """Return serial ports as :class:`PortEntry` rows.
+
+    When *probe* is true each port is briefly opened to classify availability
+    (``ok`` / ``busy`` / ``error``). Keep probe off for hotplug polling.
+    """
     try:
         from serial.tools import list_ports
     except ImportError:
         return []
-    out: list[tuple[str, str]] = []
+    out: list[PortEntry] = []
     for p in list_ports.comports():
         desc = p.description or p.hwid or ""
-        out.append((p.device, f"{p.device} — {desc}" if desc else p.device))
+        status, detail = PORT_UNKNOWN, ""
+        if probe:
+            status, detail = probe_port(p.device)
+        out.append(PortEntry(p.device, desc, status, detail))
     return out
 
 
