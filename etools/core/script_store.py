@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 
 from etools import config as config_mod
@@ -55,9 +56,24 @@ def save_script(name: str, source: str) -> Path:
 def delete_script(name: str) -> bool:
     path = script_path(name)
     if path.is_file():
-        path.unlink()
+        trash = scripts_dir() / "trash"
+        trash.mkdir(exist_ok=True)
+        path.rename(trash / f"{time.time_ns()}-{path.name}")
         return True
     return False
+
+
+def restore_last_script() -> Path | None:
+    trash = scripts_dir() / "trash"
+    entries = sorted(trash.glob("*.lua")) if trash.exists() else []
+    if not entries:
+        return None
+    source = entries[-1]
+    dest = script_path(source.name.split("-", 1)[1])
+    if dest.exists():
+        raise FileExistsError(dest.name)
+    source.rename(dest)
+    return dest
 
 
 def rename_script(old: str, new: str) -> Path:

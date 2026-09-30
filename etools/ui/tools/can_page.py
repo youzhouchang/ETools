@@ -679,7 +679,7 @@ class CanPage(ToolPage):
         if prefs.get("ext_id") is not None:
             self.ext_check.setChecked(bool(prefs["ext_id"]))
 
-    def _persist_prefs(self) -> None:
+    def persist_prefs(self) -> None:
         data = self.iface.currentData()
         save_tool_prefs(
             self.tool_id,
@@ -702,7 +702,7 @@ class CanPage(ToolPage):
         data = self.iface.currentData()
         if isinstance(data, tuple) and len(data) == 2:
             self.channel.setText(str(data[1]))
-        self._persist_prefs()
+        self.persist_prefs()
 
     def _repaint_btn(self) -> None:
         self.conn_btn.setObjectName("danger" if self._opened else "accent")
@@ -735,7 +735,7 @@ class CanPage(ToolPage):
             self._opened = False
             self._set_connected_ui(False)
             self.traffic.append_status(tr("can.closed"))
-            self._persist_prefs()
+            self.persist_prefs()
             return
         if not python_can_available():
             self.traffic.append_status(tr("can.need_dep"))
@@ -768,7 +768,7 @@ class CanPage(ToolPage):
         self.traffic.append_status(
             tr("can.opened", iface=interface, channel=channel, bitrate=bitrate)
         )
-        self._persist_prefs()
+        self.persist_prefs()
 
     # -- send ----------------------------------------------------------
 

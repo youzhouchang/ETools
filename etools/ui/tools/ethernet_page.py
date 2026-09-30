@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import socket
+import threading
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
     QComboBox,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -14,11 +15,13 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QVBoxLayout,
+    QWidget,
 )
 
 from etools.core.net_addr import local_ipv4, suggest_remote_ipv4
 from etools.core.net_link import NetLink
 from etools.i18n import tr
+from etools.ui.runtime import OpRunner
 from etools.ui.shell import ToolActionSpec
 from etools.ui.tool_prefs import load_tool_prefs, save_tool_prefs
 from etools.ui.tools.base import ToolPage
@@ -57,6 +60,8 @@ class EthernetPage(ToolPage):
 
     def _build(self) -> None:
         self._link = NetLink()
+        self._runner = OpRunner(self)
+        self._connect_cancel = threading.Event()
         self._relay = _RxRelay(self)
         self._relay.received.connect(self._on_rx)
         self._relay.failed.connect(self._on_error)
@@ -143,21 +148,34 @@ class EthernetPage(ToolPage):
         self.history_btn = QPushButton(tr("serial.history"))
         self.history_btn.setObjectName("ghost")
         self.history_btn.setFixedHeight(28)
-        send_row.addWidget(self.lbl_mode)
-        send_row.addWidget(self.mode_combo)
-        send_row.addWidget(self.lbl_rx_mode)
-        send_row.addWidget(self.rx_mode)
-        send_row.addWidget(self.lbl_ending)
-        send_row.addWidget(self.ending)
-        send_row.addWidget(self.lbl_encoding)
-        send_row.addWidget(self.encoding)
+        send_options = QGridLayout()
+        for index, control in enumerate(
+            (
+                self.lbl_mode,
+                self.mode_combo,
+                self.lbl_rx_mode,
+                self.rx_mode,
+                self.lbl_ending,
+                self.ending,
+                self.lbl_encoding,
+                self.encoding,
+            )
+        ):
+            send_options.addWidget(control, index // 4, index % 4)
         send_row.addWidget(self.send_edit, 1)
         send_row.addWidget(self.history_btn)
         send_row.addWidget(self.send_btn)
 
         preset_box = QGroupBox(tr("serial.presets"))
         preset_box.setObjectName("mainGroup")
-        preset_lay = QVBoxLayout(preset_box)
+        preset_box.setCheckable(True)
+        preset_box.setChecked(False)
+        preset_outer = QVBoxLayout(preset_box)
+        preset_content = QWidget()
+        preset_outer.addWidget(preset_content)
+        preset_content.setVisible(False)
+        preset_box.toggled.connect(preset_content.setVisible)
+        preset_lay = QVBoxLayout(preset_content)
         preset_lay.setContentsMargins(8, 10, 8, 8)
         preset_lay.setSpacing(4)
         self._preset_edits: list[QLineEdit] = []
@@ -179,9 +197,11 @@ class EthernetPage(ToolPage):
             self._preset_edits.append(edit)
             self._preset_btns.append(btn)
             btn.clicked.connect(lambda _c=False, idx=i: self._on_preset_send(idx))
-            edit.editingFinished.connect(self._persist_prefs)
+            edit.editingFinished.connect(self.persist_prefs)
         sess_lay.addWidget(preset_box, 0)
+        sess_lay.addLayout(send_options)
         sess_lay.addLayout(send_row)
+        self.install_send_preview(sess_lay)
 
         self.conn_btn.clicked.connect(self._on_toggle)
         self.send_btn.clicked.connect(self._on_send)
@@ -192,15 +212,15 @@ class EthernetPage(ToolPage):
         self.retranslate()
         self._load_prefs()
         self._on_proto_changed()
-        self.proto.currentIndexChanged.connect(lambda _i: self._persist_prefs())
-        self.port.editingFinished.connect(self._persist_prefs)
-        self.local_port.editingFinished.connect(self._persist_prefs)
-        self.host.editingFinished.connect(self._persist_prefs)
-        self.ending.currentIndexChanged.connect(lambda _i: self._persist_prefs())
-        self.mode_combo.currentIndexChanged.connect(lambda _i: self._persist_prefs())
+        self.proto.currentIndexChanged.connect(lambda _i: self.persist_prefs())
+        self.port.editingFinished.connect(self.persist_prefs)
+        self.local_port.editingFinished.connect(self.persist_prefs)
+        self.host.editingFinished.connect(self.persist_prefs)
+        self.ending.currentIndexChanged.connect(lambda _i: self.persist_prefs())
+        self.mode_combo.currentIndexChanged.connect(lambda _i: self.persist_prefs())
         self.encoding.currentIndexChanged.connect(self._on_encoding_changed)
         self.rx_mode.currentIndexChanged.connect(self._on_rx_mode_changed)
-        self.rx_mode.currentIndexChanged.connect(lambda _i: self._persist_prefs())
+        self.rx_mode.currentIndexChanged.connect(lambda _i: self.persist_prefs())
 
     def _on_proto_changed(self) -> None:
         mode = self.proto.currentIndex()
@@ -270,14 +290,10 @@ class EthernetPage(ToolPage):
         return [
             ToolActionSpec("toggle", "net.connect", "connect", self.toggle_connection),
             ToolActionSpec("send", "net.send", "program", self.send),
-            ToolActionSpec(
-                "run_script", "script.run_menu", "hex", self._run_script_menu
-            ),
+            ToolActionSpec("run_script", "script.run_menu", "hex", self._run_script_menu),
             ToolActionSpec("diag", "diag.title", "compare", self._open_diag),
             ToolActionSpec("modbus", "modbus.title", "hex", self._open_modbus),
-            ToolActionSpec(
-                "clear", "mon.clear", "clear", self.clear_view, separator_before=True
-            ),
+            ToolActionSpec("clear", "mon.clear", "clear", self.clear_view, separator_before=True),
         ]
 
     def _open_diag(self) -> None:
@@ -341,7 +357,7 @@ class EthernetPage(ToolPage):
             if self.mode_combo.currentData() == "hex":
                 data = parse_hex_input(text) + ending_bytes
             else:
-                data = text.encode(self._encoding_name(), errors="replace") + ending_bytes
+                data = text.encode(self._encoding_name()) + ending_bytes
         except ValueError:
             self.traffic.append_status(tr("net.err", err="bad hex"))
             return False
@@ -418,7 +434,7 @@ class EthernetPage(ToolPage):
                 if i < len(presets) and isinstance(presets[i], str):
                     edit.setText(presets[i])
 
-    def _persist_prefs(self) -> None:
+    def persist_prefs(self) -> None:
         host = self.host.text().strip()
         by_mode = self._host_by_mode()
         if host:
@@ -446,6 +462,10 @@ class EthernetPage(ToolPage):
         st.polish(self.conn_btn)
 
     def _on_toggle(self) -> None:
+        if self._runner.busy:
+            self._connect_cancel.set()
+            self.conn_btn.setEnabled(False)
+            return
         if self._opened:
             self._link.close()
             self._opened = False
@@ -463,10 +483,41 @@ class EthernetPage(ToolPage):
             self.traffic.append_status(tr("net.err", err="bad port"))
             return
         mode = self.proto.currentIndex()
+        if not 0 <= port <= 65535 or (mode == _PROTO_CLIENT and port == 0):
+            self.port.setToolTip(tr("connection.bad_port"))
+            self.port.setFocus()
+            self.traffic.append_status(tr("connection.bad_port"))
+            return
         try:
             if mode == _PROTO_CLIENT:
-                self._link.connect_tcp_client(host, port)
                 opened = tr("net.opened", host=host, port=port)
+                self._connect_cancel = threading.Event()
+                self.conn_btn.setText(tr("connection.cancel"))
+                self.proto.setEnabled(False)
+                self.host.setEnabled(False)
+                self.port.setEnabled(False)
+
+                def work():
+                    self._link.connect_tcp_client(host, port)
+
+                def done(_result=None):
+                    if self._connect_cancel.is_set():
+                        self._link.close()
+                        self._connect_finished()
+                        return
+                    self._opened = True
+                    self._peer_connected = True
+                    self._set_send_enabled(True)
+                    self._connect_finished()
+                    self.traffic.append_status(opened)
+                    self.persist_prefs()
+
+                def fail(message):
+                    self._connect_finished()
+                    self.traffic.append_status(tr("net.err", err=message))
+
+                self._runner.start(work, done, fail)
+                return
             elif mode == _PROTO_SERVER:
                 self._link.listen_tcp_server(host, port)
                 opened = tr("net.listening", host=host, port=port)
@@ -488,7 +539,16 @@ class EthernetPage(ToolPage):
         self._repaint_btn()
         self._refresh_peers()
         self.traffic.append_status(opened)
-        self._persist_prefs()
+        self.persist_prefs()
+
+    def _connect_finished(self) -> None:
+        self.conn_btn.setEnabled(True)
+        self.proto.setEnabled(not self._opened)
+        self.host.setEnabled(not self._opened)
+        self.port.setEnabled(not self._opened)
+        self.conn_btn.setText(tr("net.disconnect") if self._opened else tr("net.connect"))
+        self._repaint_btn()
+        self._refresh_peers()
 
     def _set_send_enabled(self, enabled: bool) -> None:
         self.send_btn.setEnabled(enabled)
@@ -519,6 +579,8 @@ class EthernetPage(ToolPage):
         self.peer_combo.blockSignals(False)
 
     def _on_send(self) -> None:
+        if not self._opened or not self._peer_connected:
+            return
         text = self.send_edit.text()
         if not text:
             return
@@ -527,7 +589,7 @@ class EthernetPage(ToolPage):
             if self.mode_combo.currentData() == "hex":
                 data = parse_hex_input(text) + ending
             else:
-                data = text.encode(self._encoding_name(), errors="replace") + ending
+                data = text.encode(self._encoding_name()) + ending
         except ValueError:
             self.traffic.append_status(tr("net.err", err="bad hex"))
             return
@@ -536,7 +598,7 @@ class EthernetPage(ToolPage):
         except Exception as exc:  # noqa: BLE001
             self.traffic.append_status(tr("net.err", err=str(exc)))
             return
-        self.traffic.append_tx(data)
+        self.traffic.append_tx(data, peer=self._selected_peer() or tr("net.peer_all"))
         if text not in self._history:
             self._history.append(text)
             del self._history[:-_HISTORY_MAX]
@@ -554,7 +616,7 @@ class EthernetPage(ToolPage):
             if self.mode_combo.currentData() == "hex":
                 data = parse_hex_input(text) + ending
             else:
-                data = text.encode(self._encoding_name(), errors="replace") + ending
+                data = text.encode(self._encoding_name()) + ending
         except ValueError:
             self.traffic.append_status(tr("net.err", err="bad hex"))
             return
@@ -563,7 +625,7 @@ class EthernetPage(ToolPage):
         except Exception as exc:  # noqa: BLE001
             self.traffic.append_status(tr("net.err", err=str(exc)))
             return
-        self.traffic.append_tx(data)
+        self.traffic.append_tx(data, peer=self._selected_peer() or tr("net.peer_all"))
 
     def eventFilter(self, obj, event):  # noqa: N802
         from PySide6.QtCore import QEvent, Qt
@@ -613,7 +675,7 @@ class EthernetPage(ToolPage):
 
     def _on_encoding_changed(self) -> None:
         self.traffic.set_encoding(self._encoding_name())
-        self._persist_prefs()
+        self.persist_prefs()
 
     def _on_peer(self, kind: str, peer: str) -> None:
         if kind == "on":
@@ -649,5 +711,9 @@ class EthernetPage(ToolPage):
         self._repaint_btn()
 
     def shutdown(self) -> None:
-        self._persist_prefs()
+        self.persist_prefs()
+        self._connect_cancel.set()
+        self._runner.shutdown()
+        self.traffic.stop_replay()
+        self.traffic._close_auto_log()
         self._link.close()

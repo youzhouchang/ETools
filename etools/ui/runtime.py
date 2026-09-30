@@ -123,12 +123,14 @@ class OpRunner(QObject):
     def _slot_finished(self, result) -> None:
         self._teardown()
         cb, self._on_ok, self._on_err = self._on_ok, None, None
+        self._on_cancel = None
         if cb is not None:
             cb(result)
 
     def _slot_failed(self, message: str) -> None:
         self._teardown()
         cb, self._on_err, self._on_ok = self._on_err, None, None
+        self._on_cancel = None
         if cb is not None:
             cb(message)
 
@@ -138,6 +140,10 @@ class OpRunner(QObject):
         self._on_ok = self._on_err = None
         if cb is not None:
             cb()
+
+    def cancel(self) -> None:
+        if self._worker is not None:
+            self._worker.cancel_event.set()
 
     def _teardown(self) -> None:
         thread, self._thread = self._thread, None
@@ -150,25 +156,23 @@ class OpRunner(QObject):
         if worker is not None:
             worker.deleteLater()
 
-    def shutdown(self) -> None:
+    def shutdown(self) -> bool:
         thread = self._thread
         worker = self._worker
-        self._thread = self._worker = None
         self._on_ok = self._on_err = self._on_cancel = None
         if worker is not None:
             worker.cancel_event.set()
-            for signal in (worker.finished, worker.failed):
-                try:
-                    signal.disconnect()
-                except (RuntimeError, TypeError):
-                    pass
         if thread is not None:
             if thread.isRunning():
                 thread.quit()
-                thread.wait(3000)
+                if not thread.wait(3000):
+                    # Keep the running thread owned until its completion signal is handled.
+                    return False
             thread.deleteLater()
         if worker is not None:
             worker.deleteLater()
+        self._thread = self._worker = None
+        return True
 
 
 @dataclass

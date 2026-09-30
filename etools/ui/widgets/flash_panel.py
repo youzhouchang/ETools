@@ -190,6 +190,10 @@ class FlashPanel(QFrame):
         self._busy = busy
         self._apply_enabled()
 
+    @property
+    def is_busy(self) -> bool:
+        return bool(self._busy)
+
     def _apply_enabled(self) -> None:
         enabled = self._ops_connected and not self._busy
         for w in (

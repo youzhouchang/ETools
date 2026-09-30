@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from datetime import datetime
 from typing import IO
 
@@ -10,6 +11,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -22,6 +24,8 @@ from PySide6.QtWidgets import (
 from etools.i18n import tr
 
 MAX_VIEW_CHARS = 400_000
+MAX_RECORD_BYTES = 64 * 1024
+MAX_BUFFER_BYTES = 4 * 1024 * 1024
 #: Coalesce UI text updates so high-baud streams do not freeze the view.
 FLUSH_INTERVAL_MS = 40
 
@@ -95,7 +99,7 @@ class TrafficView(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._hex_mode = False
-        self._records: list[tuple[str, bytes, str, str]] = []
+        self._records: deque[tuple[str, bytes, str, str]] = deque()
         self._ascii_carry = bytearray()
         self._show_ts = True
         self._ts_mode = TS_TIME_MS
@@ -112,12 +116,19 @@ class TrafficView(QWidget):
         self._last_stream_at = 0.0
         self._auto_log_path: str | None = None
         self._auto_log_fh: IO[str] | None = None
+        self._auto_log_dirty = False
         self._rx_bytes = 0
         self._tx_bytes = 0
         self._rx_pkts = 0
         self._tx_pkts = 0
         self._stats_dirty = False
         self._needs_render = False
+        self._buffer_bytes = 0
+        self._replay_records = []
+        self._replay_index = 0
+        self._replay_timer = QTimer(self)
+        self._replay_timer.setSingleShot(True)
+        self._replay_timer.timeout.connect(self._replay_next)
         self._flush_timer = QTimer(self)
         self._flush_timer.setSingleShot(True)
         self._flush_timer.setInterval(FLUSH_INTERVAL_MS)
@@ -136,7 +147,7 @@ class TrafficView(QWidget):
         self.mode_combo.setFixedHeight(H_TOOL)
         self.mode_combo.addItem(tr("mon.ascii"), "ascii")
         self.mode_combo.addItem(tr("mon.hex"), "hex")
-        bar.addWidget(QLabel(tr("mon.ascii")))
+        bar.addWidget(QLabel(tr("mon.display")))
         self._lbl_mode = bar.itemAt(bar.count() - 1).widget()
         bar.addWidget(self.mode_combo)
 
@@ -145,16 +156,15 @@ class TrafficView(QWidget):
         self.scroll_check = QCheckBox(tr("mon.autoscroll"))
         self.scroll_check.setChecked(True)
         self.pause_check = QCheckBox(tr("mon.pause"))
+        self.pause_check.setToolTip(tr("mon.pause_tip"))
         bar.addWidget(self.ts_check)
         bar.addWidget(self.scroll_check)
         bar.addWidget(self.pause_check)
 
-        self.more_check = QCheckBox(tr("mon.more"))
-        self.more_check.setToolTip(tr("mon.more_tip"))
-        bar.addWidget(self.more_check)
         bar.addStretch(1)
 
         self.stats_label = QLabel("")
+        self.stats_label.setWordWrap(True)
         self.stats_label.setObjectName("statsLabel")
         bar.addWidget(self.stats_label)
         self.clear_btn = ghost_button(tr("mon.clear"), height=H_TOOL)
@@ -183,9 +193,9 @@ class TrafficView(QWidget):
         filter_row.addWidget(self.copy_btn)
         root.addLayout(filter_row)
 
-        # Row 3 — advanced options, collapsed by default (less chrome)
+        # Additional monitor controls remain directly accessible.
         self.advanced_host = QWidget()
-        advanced_row = QHBoxLayout(self.advanced_host)
+        advanced_row = QGridLayout(self.advanced_host)
         advanced_row.setContentsMargins(0, 0, 0, 0)
         advanced_row.setSpacing(6)
         self.ts_combo = QComboBox()
@@ -210,19 +220,32 @@ class TrafficView(QWidget):
         self.export_csv_btn = ghost_button(tr("mon.export_csv"), height=H_TOOL)
         self.inspect_btn = ghost_button(tr("inspector.title"), height=H_TOOL)
         self.stats_reset_btn = ghost_button(tr("mon.reset_stats"), height=H_TOOL)
-        advanced_row.addWidget(self.ts_combo)
-        advanced_row.addWidget(self.wrap_check)
-        advanced_row.addWidget(self.lbl_merge)
-        advanced_row.addWidget(self.merge_spin)
-        advanced_row.addWidget(self.eye_care_check)
-        advanced_row.addWidget(self.auto_log_check)
-        advanced_row.addWidget(self.export_csv_btn)
-        advanced_row.addWidget(self.inspect_btn)
-        advanced_row.addWidget(self.stats_reset_btn)
-        advanced_row.addStretch(1)
-        self.advanced_host.setVisible(False)
+        self.capture_btn = ghost_button(tr("mon.capture"), height=H_TOOL)
+        self.replay_btn = ghost_button(tr("mon.replay"), height=H_TOOL)
+        self.replay_stop_btn = ghost_button(tr("script.stop"), height=H_TOOL)
+        self.replay_stop_btn.setEnabled(False)
+        self.capture_btn.clicked.connect(self.export_capture)
+        self.replay_btn.clicked.connect(self.replay_capture)
+        self.replay_stop_btn.clicked.connect(self.stop_replay)
+        for index, control in enumerate(
+            (
+                self.ts_combo,
+                self.wrap_check,
+                self.lbl_merge,
+                self.merge_spin,
+                self.eye_care_check,
+                self.auto_log_check,
+                self.export_csv_btn,
+                self.inspect_btn,
+                self.stats_reset_btn,
+                self.capture_btn,
+                self.replay_btn,
+                self.replay_stop_btn,
+            )
+        ):
+            advanced_row.addWidget(control, index // 4, index % 4)
+        self.replay_btn.setToolTip(tr("mon.replay_tip"))
         root.addWidget(self.advanced_host)
-        self.more_check.toggled.connect(self.advanced_host.setVisible)
         self.eye_care_check.toggled.connect(self._on_eye_care_toggled)
 
         self.view = QPlainTextEdit()
@@ -260,7 +283,11 @@ class TrafficView(QWidget):
         self._refresh_stats()
 
     def retranslate(self) -> None:
-        self._lbl_mode.setText(tr("mon.ascii"))
+        self.capture_btn.setText(tr("mon.capture"))
+        self.replay_btn.setText(tr("mon.replay"))
+        self.replay_stop_btn.setText(tr("script.stop"))
+        self.pause_check.setToolTip(tr("mon.pause_tip"))
+        self._lbl_mode.setText(tr("mon.display"))
         self.mode_combo.setItemText(0, tr("mon.ascii"))
         self.mode_combo.setItemText(1, tr("mon.hex"))
         self.ts_check.setText(tr("mon.ts"))
@@ -270,8 +297,6 @@ class TrafficView(QWidget):
         self.ts_combo.setItemText(3, tr("mon.ts.off"))
         self.scroll_check.setText(tr("mon.autoscroll"))
         self.pause_check.setText(tr("mon.pause"))
-        self.more_check.setText(tr("mon.more"))
-        self.more_check.setToolTip(tr("mon.more_tip"))
         self.eye_care_check.setText(tr("mon.eye_care"))
         self.eye_care_check.setToolTip(tr("mon.eye_care_tip"))
         self.filter_hint.setText(tr("mon.filter"))
@@ -343,6 +368,8 @@ class TrafficView(QWidget):
 
     def _on_pause(self) -> None:
         self._paused = self.pause_check.isChecked()
+        if not self._paused:
+            self._render_records()
 
     def _on_filter_changed(self, *_args) -> None:
         self._filter = (self.filter_edit.text() or "").strip()
@@ -350,11 +377,7 @@ class TrafficView(QWidget):
         self._render_records()
 
     def _on_wrap_toggled(self, on: bool) -> None:
-        mode = (
-            self.view.LineWrapMode.WidgetWidth
-            if on
-            else self.view.LineWrapMode.NoWrap
-        )
+        mode = self.view.LineWrapMode.WidgetWidth if on else self.view.LineWrapMode.NoWrap
         self.view.setLineWrapMode(mode)
 
     def _on_merge_changed(self, value: int) -> None:
@@ -395,7 +418,7 @@ class TrafficView(QWidget):
                 " color: #1F3D24;"
                 " border: 1px solid #9BBF9F;"
                 " border-radius: 6px;"
-                " font-family: \"Cascadia Code\", \"Consolas\", \"JetBrains Mono\", monospace;"
+                ' font-family: "Cascadia Code", "Consolas", "JetBrains Mono", monospace;'
                 " font-size: 11px;"
                 " padding: 6px;"
                 " selection-background-color: #3B9EFF;"
@@ -423,11 +446,12 @@ class TrafficView(QWidget):
             self._auto_log_fh = open(  # noqa: SIM115 — kept open for the session
                 path, "a", encoding="utf-8", errors="replace"
             )
-        except OSError:
+        except OSError as exc:
             self._auto_log_path = None
             self.auto_log_check.blockSignals(True)
             self.auto_log_check.setChecked(False)
             self.auto_log_check.blockSignals(False)
+            self.append_status(str(exc))
             return
         self.append_status(path)
 
@@ -444,7 +468,8 @@ class TrafficView(QWidget):
             return
         try:
             self._auto_log_fh.write(line + "\n")
-            self._auto_log_fh.flush()
+            self._auto_log_dirty = True
+            self._schedule_flush()
         except OSError:
             self._close_auto_log()
             self._auto_log_path = None
@@ -476,8 +501,8 @@ class TrafficView(QWidget):
             self._rx_bytes += len(data)
             self._rx_pkts += 1
             self._stats_dirty = True
-            self._auto_log_line(f"{self._stamp()}{tr('mon.rx')} {data.hex(' ').upper()}")
-        self._append_stream(tr("mon.rx"), data, peer)
+            self._auto_log_line(f"{datetime.now().isoformat()} RX [{peer}] {data.hex(' ').upper()}")
+        self._append_stream("rx", data, peer)
 
     def append_tx(self, data: bytes | str, peer: str = "") -> None:
         if isinstance(data, str):
@@ -488,11 +513,14 @@ class TrafficView(QWidget):
             self._tx_bytes += len(raw)
             self._tx_pkts += 1
             self._stats_dirty = True
-            self._auto_log_line(f"{self._stamp()}{tr('mon.tx')} {raw.hex(' ').upper()}")
-        self._append_stream(tr("mon.tx"), raw, peer)
+            self._auto_log_line(f"{datetime.now().isoformat()} TX [{peer}] {raw.hex(' ').upper()}")
+        self._append_stream("tx", raw, peer)
 
     def _format_record(self, tag: str, data: bytes, peer: str, stamp: str) -> str:
-        prefix = f"{stamp}{tag}"
+        shown_stamp = ""
+        if self._show_ts:
+            shown_stamp = format_timestamp(self._ts_mode, datetime.fromisoformat(stamp))
+        prefix = f"{shown_stamp}{tr('mon.' + tag)}"
         if peer:
             prefix += f" [{peer}]"
         if self._hex_mode:
@@ -500,8 +528,14 @@ class TrafficView(QWidget):
         return f"{prefix}  {decode_payload(data, self._encoding)}"
 
     def _append_stream(self, tag: str, data: bytes, peer: str = "") -> None:
-        if self._paused or not data:
+        if not data:
             return
+        for start in range(0, len(data), MAX_RECORD_BYTES):
+            self._append_chunk(tag, data[start : start + MAX_RECORD_BYTES], peer)
+
+    def _append_chunk(
+        self, tag: str, data: bytes, peer: str = "", timestamp: str | None = None
+    ) -> None:
         import time
 
         now = time.monotonic()
@@ -511,6 +545,8 @@ class TrafficView(QWidget):
             and self._records
             and self._last_stream_key == key
             and (now - self._last_stream_at) * 1000.0 <= self._merge_ms
+            and len(self._records[-1][1]) + len(data) <= MAX_RECORD_BYTES
+            and timestamp is None
         ):
             # Coalesce consecutive chunks of the same direction/peer into one record.
             old_tag, old_data, old_peer, stamp = self._records[-1]
@@ -519,15 +555,16 @@ class TrafficView(QWidget):
             # Merged line rewrites the previous display row — rebuild on flush.
             self._needs_render = True
         else:
-            record = (tag, bytes(data), peer, self._stamp())
+            record = (tag, bytes(data), peer, timestamp or datetime.now().isoformat())
             self._records.append(record)
-            if self._matches_filter(tag, peer, record[1]):
+            if not self._paused and self._matches_filter(tag, peer, record[1]):
                 self._pending.append(self._format_record(tag, record[1], peer, record[3]))
             self._offset += len(record[1])
         self._last_stream_key = key
         self._last_stream_at = now
-        if len(self._records) > 5000:
-            del self._records[: len(self._records) - 5000]
+        self._buffer_bytes += len(data)
+        while len(self._records) > 5000 or self._buffer_bytes > MAX_BUFFER_BYTES:
+            self._buffer_bytes -= len(self._records.popleft()[1])
             self._needs_render = True
         self._schedule_flush()
 
@@ -537,8 +574,8 @@ class TrafficView(QWidget):
             self.mode_combo.setCurrentIndex(idx)
 
     def _matches_filter(self, tag: str, peer: str, data: bytes) -> bool:
-        rx_tag = tr("mon.rx")
-        tx_tag = tr("mon.tx")
+        rx_tag = "rx"
+        tx_tag = "tx"
         if self._dir_filter == "rx" and tag != rx_tag:
             return False
         if self._dir_filter == "tx" and tag != tx_tag:
@@ -555,17 +592,27 @@ class TrafficView(QWidget):
         return needle in body
 
     def _render_records(self) -> None:
+        if self._paused:
+            self._needs_render = True
+            return
         self._pending.clear()
         self._needs_render = False
-        self._offset = 0
+        self._offset = self._buffer_bytes
         self.view.setUpdatesEnabled(False)
         self.view.clear()
-        for tag, data, peer, stamp in self._records:
+        rendered = []
+        chars = 0
+        for tag, data, peer, stamp in reversed(self._records):
+            self._offset -= len(data)
             if not self._matches_filter(tag, peer, data):
-                self._offset += len(data)
                 continue
-            self._pending.append(self._format_record(tag, data, peer, stamp))
-            self._offset += len(data)
+            line = self._format_record(tag, data, peer, stamp)
+            rendered.append(line)
+            chars += len(line)
+            if chars >= MAX_VIEW_CHARS:
+                break
+        self._pending.extend(reversed(rendered))
+        self._offset = self._buffer_bytes
         self._paint_pending()
         self.view.setUpdatesEnabled(True)
 
@@ -585,11 +632,7 @@ class TrafficView(QWidget):
         if doc.characterCount() > MAX_VIEW_CHARS:
             cursor = self.view.textCursor()
             cursor.movePosition(cursor.MoveOperation.Start)
-            cursor.movePosition(
-                cursor.MoveOperation.Down,
-                cursor.MoveMode.KeepAnchor,
-                200,
-            )
+            cursor.setPosition(doc.characterCount() - MAX_VIEW_CHARS, cursor.MoveMode.KeepAnchor)
             cursor.removeSelectedText()
         if self._filter:
             self._highlight_filter()
@@ -599,12 +642,39 @@ class TrafficView(QWidget):
 
     def _flush(self) -> None:
         self._flush_timer.stop()
+        if self._auto_log_fh is not None and self._auto_log_dirty:
+            try:
+                self._auto_log_fh.flush()
+                self._auto_log_dirty = False
+            except OSError as exc:
+                self._close_auto_log()
+                self._auto_log_path = None
+                self.auto_log_check.blockSignals(True)
+                self.auto_log_check.setChecked(False)
+                self.auto_log_check.blockSignals(False)
+                self.append_status(str(exc))
+        if self._paused:
+            # Keep status/error notes visible while the stream pane is frozen.
+            self._paint_notes()
+            if self._stats_dirty:
+                self._refresh_stats()
+            return
         if self._needs_render:
             self._render_records()
         else:
             self._paint_pending()
         if self._stats_dirty:
             self._refresh_stats()
+
+    def _paint_notes(self) -> None:
+        if not self._notes:
+            return
+        chunk = "\n".join(self._notes)
+        self._notes.clear()
+        self.view.appendPlainText(chunk)
+        if self._autoscroll:
+            sb = self.view.verticalScrollBar()
+            sb.setValue(sb.maximum())
 
     def _highlight_filter(self) -> None:
         """Highlight keyword matches using ExtraSelections (non-destructive)."""
@@ -643,9 +713,71 @@ class TrafficView(QWidget):
         self._records.clear()
         self._ascii_carry.clear()
         self._offset = 0
+        self._buffer_bytes = 0
+        self._last_stream_key = None
         self._needs_render = False
         self.view.setExtraSelections([])
         self.view.clear()
+
+    def export_capture(self) -> None:
+        from etools.core.capture import CaptureRecord, save_capture
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, tr("mon.capture"), "traffic.json", "JSON (*.json)"
+        )
+        if not path:
+            return
+        try:
+            save_capture(
+                path,
+                [
+                    CaptureRecord(stamp, tag, peer, data.hex())
+                    for tag, data, peer, stamp in self._records
+                ],
+            )
+        except (OSError, ValueError) as exc:
+            self.append_status(str(exc))
+
+    def replay_capture(self) -> None:
+        from etools.core.capture import load_capture
+
+        path, _ = QFileDialog.getOpenFileName(self, tr("mon.replay"), "", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            records = load_capture(path)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            self.append_status(str(exc))
+            return
+        self.stop_replay()
+        self.clear()
+        self.pause_check.setChecked(False)
+        self._replay_records = records
+        self._replay_index = 0
+        self.replay_stop_btn.setEnabled(bool(records))
+        self._replay_next()
+
+    def _replay_next(self) -> None:
+        if self._replay_index >= len(self._replay_records):
+            self.stop_replay()
+            return
+        record = self._replay_records[self._replay_index]
+        self._append_chunk(record.direction, record.data, record.peer, record.timestamp)
+        self._replay_index += 1
+        if self._replay_index < len(self._replay_records):
+            next_record = self._replay_records[self._replay_index]
+            delta = (
+                datetime.fromisoformat(next_record.timestamp)
+                - datetime.fromisoformat(record.timestamp)
+            ).total_seconds()
+            self._replay_timer.start(max(1, min(2_000_000_000, int(delta * 1000))))
+        else:
+            self.stop_replay()
+
+    def stop_replay(self) -> None:
+        self._replay_timer.stop()
+        self._replay_records = []
+        self.replay_stop_btn.setEnabled(False)
 
     def to_plain_text(self) -> str:
         self._flush()
@@ -672,19 +804,23 @@ class TrafficView(QWidget):
             return
         import csv
 
-        with open(path, "w", encoding="utf-8", newline="") as fh:
-            writer = csv.writer(fh)
-            writer.writerow(["stamp", "direction", "peer", "hex", "text"])
-            for tag, data, peer, stamp in self._records:
-                writer.writerow(
-                    [
-                        stamp.strip(),
-                        tag,
-                        peer,
-                        data.hex(" ").upper(),
-                        decode_payload(data, self._encoding),
-                    ]
-                )
+        try:
+            with open(path, "w", encoding="utf-8", newline="") as fh:
+                writer = csv.writer(fh)
+                writer.writerow(["stamp", "direction", "peer", "hex", "text"])
+                for tag, data, peer, stamp in self._records:
+                    writer.writerow(
+                        [
+                            stamp,
+                            tag,
+                            peer,
+                            data.hex(" ").upper(),
+                            decode_payload(data, self._encoding),
+                        ]
+                    )
+        except OSError as exc:
+            self.append_status(str(exc))
+            return
         self.append_status(path)
 
     def save_as(self) -> None:
@@ -693,6 +829,10 @@ class TrafficView(QWidget):
         )
         if not path:
             return
-        with open(path, "w", encoding="utf-8", errors="replace") as fh:
-            fh.write(self.to_plain_text())
+        try:
+            with open(path, "w", encoding="utf-8", errors="replace") as fh:
+                fh.write(self.to_plain_text())
+        except OSError as exc:
+            self.append_status(str(exc))
+            return
         self.append_status(path)

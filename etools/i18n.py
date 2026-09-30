@@ -467,7 +467,7 @@ _STRINGS: dict[str, dict[str, str]] = {
             'send "AT+RST"\n'
             "wait 100\n"
             'expect "OK" 2000\n'
-            'send_hex 01 03 00 00 00 01\n'
+            "send_hex 01 03 00 00 00 01\n"
             'log "done"'
         ),
         "serial.script.run": "运行",
@@ -583,8 +583,7 @@ _STRINGS: dict[str, dict[str, str]] = {
             "指纹：{fingerprint}\n\n是否信任并继续连接？"
         ),
         "term.hostkey_mismatch": (
-            "主机 {host}:{port} 的密钥与 known_hosts 不一致！\n\n"
-            "可能遭受中间人攻击，已拒绝连接。"
+            "主机 {host}:{port} 的密钥与 known_hosts 不一致！\n\n可能遭受中间人攻击，已拒绝连接。"
         ),
         "term.hostkey_trust": "信任并连接",
         "term.hostkey_cancel": "取消",
@@ -1100,7 +1099,7 @@ _STRINGS: dict[str, dict[str, str]] = {
             'send "AT+RST"\n'
             "wait 100\n"
             'expect "OK" 2000\n'
-            'send_hex 01 03 00 00 00 01\n'
+            "send_hex 01 03 00 00 00 01\n"
             'log "done"'
         ),
         "serial.script.run": "Run",
@@ -1272,6 +1271,98 @@ _STRINGS: dict[str, dict[str, str]] = {
         "swv.port_tab_none": "Port —",
     },
 }
+
+
+_STRINGS[LANG_ZH].update(
+    {
+        "batch.stopping": "正在完成当前项，随后停止",
+        "script.unsaved_confirm": "脚本已修改，是否保存？",
+        "script.delete_confirm": "将脚本 {name} 移入回收区？",
+        "script.restore": "恢复最近删除",
+        "connection.connecting": "连接中…",
+        "connection.cancel": "取消连接",
+        "connection.closing": "正在等待后台操作结束…",
+        "connection.bad_port": "端口必须在 1–65535 之间；监听端口可用 0 自动分配。",
+        "settings.advanced": "高级参数",
+        "mon.pause_tip": "暂停显示，继续采集并保留记录",
+        "mon.display": "显示",
+        "mon.capture": "保存采集",
+        "mon.replay": "回放采集",
+        "mon.replay_tip": "按原始时间回放到监视器",
+        "tool.labels": "显示工具名称",
+        "send.preview": "{n} 字节 · {mode} · 行尾 {ending} · {peer}",
+        "send.invalid": "输入无效：{error}",
+        "project.title": "项目配置",
+        "project.name": "项目名称",
+        "project.save": "保存当前",
+        "project.copy": "复制",
+        "project.apply": "应用",
+        "project.import": "导入",
+        "project.export": "导出",
+        "project.overwrite": "覆盖项目 {name}？",
+        "project.disconnect": "请先断开设备连接并停止运行中的任务，再应用项目配置。",
+        "project.applied": "项目配置已应用",
+        "workflow.title": "烧录与联调",
+        "workflow.firmware": "固件",
+        "workflow.startup": "启动标记（可选）",
+        "workflow.command": "测试命令（可选）",
+        "workflow.expected": "预期响应",
+        "workflow.wait": "每步等待超时",
+        "workflow.run": "开始联调",
+        "workflow.export": "导出报告",
+        "workflow.preflight": "请连接探针和串口，并等待其他任务结束。",
+        "workflow.invalid": "请选择有效固件并填写预期响应。",
+        "workflow.timeout": "等待响应超时",
+        "workflow.send_failed": "测试命令发送失败",
+        "workflow.result": "联调结果",
+        "term.command_mode": "SSH 命令执行",
+    }
+)
+_STRINGS[LANG_EN].update(
+    {
+        "batch.stopping": "Finishing current item before stopping",
+        "script.unsaved_confirm": "Save changes to this script?",
+        "script.delete_confirm": "Move script {name} to trash?",
+        "script.restore": "Restore last deleted",
+        "connection.connecting": "Connecting...",
+        "connection.cancel": "Cancel connection",
+        "connection.closing": "Waiting for background operations to finish...",
+        "connection.bad_port": "Use port 1-65535, or 0 for an automatically assigned listen port.",
+        "settings.advanced": "Advanced settings",
+        "mon.pause_tip": "Freeze the display while continuing to capture records",
+        "mon.display": "Display",
+        "mon.capture": "Save capture",
+        "mon.replay": "Replay capture",
+        "mon.replay_tip": "Replay original timing in the monitor",
+        "tool.labels": "Show tool names",
+        "send.preview": "{n} bytes · {mode} · Ending {ending} · {peer}",
+        "send.invalid": "Invalid input: {error}",
+        "project.title": "Project profiles",
+        "project.name": "Project name",
+        "project.save": "Save current",
+        "project.copy": "Duplicate",
+        "project.apply": "Apply",
+        "project.import": "Import",
+        "project.export": "Export",
+        "project.overwrite": "Overwrite project {name}?",
+        "project.disconnect": "Disconnect devices and stop tasks before applying a profile.",
+        "project.applied": "Project profile applied",
+        "workflow.title": "Program and test",
+        "workflow.firmware": "Firmware",
+        "workflow.startup": "Startup marker (optional)",
+        "workflow.command": "Test command (optional)",
+        "workflow.expected": "Expected response",
+        "workflow.wait": "Timeout per step",
+        "workflow.run": "Run workflow",
+        "workflow.export": "Export report",
+        "workflow.preflight": "Connect a probe and serial port, then wait for other tasks.",
+        "workflow.invalid": "Select a valid firmware and enter an expected response.",
+        "workflow.timeout": "Response timed out",
+        "workflow.send_failed": "Failed to send test command",
+        "workflow.result": "Workflow result",
+        "term.command_mode": "SSH command execution",
+    }
+)
 
 
 def current_language() -> str:

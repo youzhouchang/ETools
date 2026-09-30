@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import socket
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -43,7 +44,13 @@ def inspect_host_key(host: str, port: int = 22) -> tuple[str, str]:
     except ImportError:
         return "unknown", ""
     try:
-        key = paramiko.Transport((host, int(port))).get_remote_server_key()
+        with socket.create_connection((host, int(port)), timeout=5.0) as sock:
+            transport = paramiko.Transport(sock)
+            try:
+                transport.start_client(timeout=5.0)
+                key = transport.get_remote_server_key()
+            finally:
+                transport.close()
     except Exception:
         # Offline / not SSH — caller will fail on connect with a real error.
         return "unknown", ""

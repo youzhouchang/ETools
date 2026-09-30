@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QToolButton,
 )
 
+from etools.core.net_addr import suggest_remote_ipv4
 from etools.core.ssh_link import (
     SshLink,
     inspect_host_key,
@@ -26,7 +27,6 @@ from etools.ui.shell import ToolActionSpec
 from etools.ui.tool_prefs import load_tool_prefs, save_tool_prefs
 from etools.ui.tools.base import ToolPage
 from etools.ui.tools.sftp_panel import SftpPanel
-from etools.core.net_addr import suggest_remote_ipv4
 from etools.ui.widgets.ip_edit import IPv4Edit
 
 _HISTORY_MAX = 30
@@ -60,24 +60,27 @@ class TerminalPage(ToolPage):
         self.session_combo = QComboBox()
         self.session_combo.setFixedHeight(28)
         self.session_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self.lbl_session = self.form_row(tr("term.session"), self.session_combo)
-
+        self.session_save_btn = QPushButton(tr("term.session_save"))
+        self.session_save_btn.setObjectName("ghost")
+        self.session_save_btn.setFixedHeight(28)
+        self.session_save_btn.setMinimumWidth(64)
+        self.session_del_btn = QPushButton(tr("term.session_delete"))
+        self.session_del_btn.setObjectName("ghost")
+        self.session_del_btn.setFixedHeight(28)
+        self.session_del_btn.setMinimumWidth(56)
+        # Session picker + actions share one form row so buttons are not
+        # crushed into a leftover empty-label strip below.
+        sess_row = QHBoxLayout()
+        sess_row.setContentsMargins(0, 0, 0, 0)
+        sess_row.setSpacing(6)
+        sess_row.addWidget(self.session_combo, 1)
+        sess_row.addWidget(self.session_save_btn)
+        sess_row.addWidget(self.session_del_btn)
         from PySide6.QtWidgets import QWidget as _QWidget
 
         sess_wrap = _QWidget()
-        sess_row = QHBoxLayout(sess_wrap)
-        sess_row.setContentsMargins(0, 0, 0, 0)
-        sess_row.setSpacing(6)
-        self.session_save_btn = QPushButton(tr("term.session_save"))
-        self.session_save_btn.setObjectName("ghost")
-        self.session_save_btn.setFixedHeight(26)
-        self.session_del_btn = QPushButton(tr("term.session_delete"))
-        self.session_del_btn.setObjectName("ghost")
-        self.session_del_btn.setFixedHeight(26)
-        sess_row.addWidget(self.session_save_btn)
-        sess_row.addWidget(self.session_del_btn)
-        sess_row.addStretch(1)
-        self.form_row("", sess_wrap)
+        sess_wrap.setLayout(sess_row)
+        self.lbl_session = self.form_row(tr("term.session"), sess_wrap)
 
         self.host = IPv4Edit(suggest_remote_ipv4())
         self.lbl_host = self.form_row(tr("term.host"), self.host)
@@ -120,7 +123,7 @@ class TerminalPage(ToolPage):
         self.ctx_action(self.conn_btn)
 
         # Main: SSH output group + SFTP group (bottom)
-        term_box = self.main_group("SSH")
+        term_box = self.main_group(tr("term.command_mode"))
         self.term_box = term_box
         term_lay = term_box.layout()
         self.term = QPlainTextEdit()
@@ -186,10 +189,10 @@ class TerminalPage(ToolPage):
         self.retranslate()
         self._load_prefs()
         self._reload_sessions()
-        self.host.editingFinished.connect(self._persist_prefs)
-        self.user.editingFinished.connect(self._persist_prefs)
-        self.port.editingFinished.connect(self._persist_prefs)
-        self.key_edit.editingFinished.connect(self._persist_prefs)
+        self.host.editingFinished.connect(self.persist_prefs)
+        self.user.editingFinished.connect(self.persist_prefs)
+        self.port.editingFinished.connect(self.persist_prefs)
+        self.key_edit.editingFinished.connect(self.persist_prefs)
 
     @property
     def ssh_link(self) -> SshLink:
@@ -232,9 +235,10 @@ class TerminalPage(ToolPage):
         path, _ = QFileDialog.getOpenFileName(self, tr("term.key_title"), start)
         if path:
             self.key_edit.setText(path)
-            self._persist_prefs()
+            self.persist_prefs()
 
     def retranslate(self) -> None:
+        self.term_box.setTitle(tr("term.command_mode"))
         self.ctx_ssh.setTitle(tr("term.title"))
         self.lbl_session.setText(tr("term.session"))
         self.session_save_btn.setText(tr("term.session_save"))
@@ -260,12 +264,8 @@ class TerminalPage(ToolPage):
         acts = [
             ToolActionSpec("toggle", "term.connect", "connect", self.toggle_connection),
             ToolActionSpec("exec", "term.exec", "read", self.exec_command),
-            ToolActionSpec(
-                "run_script", "script.run_menu", "hex", self._run_script_menu
-            ),
-            ToolActionSpec(
-                "clear", "term.clear", "clear", self.clear_view, separator_before=True
-            ),
+            ToolActionSpec("run_script", "script.run_menu", "hex", self._run_script_menu),
+            ToolActionSpec("clear", "term.clear", "clear", self.clear_view, separator_before=True),
         ]
         acts.extend(self.sftp_panel.toolbar_actions())
         return acts
@@ -419,7 +419,7 @@ class TerminalPage(ToolPage):
                 self.user.setText(str(item.get("user", "")))
                 self.port.setText(str(item.get("port", "22")))
                 self.key_edit.setText(str(item.get("keyfile", "") or ""))
-                self._persist_prefs()
+                self.persist_prefs()
                 break
 
     def _save_session(self) -> None:
@@ -489,7 +489,7 @@ class TerminalPage(ToolPage):
             self.key_edit.setText(str(prefs["keyfile"]))
         # password intentionally not persisted
 
-    def _persist_prefs(self) -> None:
+    def persist_prefs(self) -> None:
         save_tool_prefs(
             self.tool_id,
             {
@@ -513,6 +513,8 @@ class TerminalPage(ToolPage):
         return box.clickedButton() is trust
 
     def _on_toggle(self) -> None:
+        if self._runner.busy:
+            return
         if self._opened:
             self._ssh.close()
             self._opened = False
@@ -521,7 +523,7 @@ class TerminalPage(ToolPage):
             self._repaint_btn()
             self._log(tr("term.closed"))
             self.ssh_link_changed.emit(None)
-            self._persist_prefs()
+            self.persist_prefs()
             return
         host = self.host.text().strip()
         user = self.user.text().strip()
@@ -536,32 +538,7 @@ class TerminalPage(ToolPage):
             self._log(tr("term.err", err="host required"))
             return
         self.conn_btn.setEnabled(False)
-        self._persist_prefs()
-
-        status, fingerprint = inspect_host_key(host, port)
-        accept_new = False
-        if status == "mismatch":
-            self._log(
-                tr("term.hostkey_mismatch", host=host, port=port, fingerprint=fingerprint)
-            )
-            self.conn_btn.setEnabled(True)
-            return
-        if status == "missing":
-            if not self._confirm_host_key(host, port, fingerprint or "?"):
-                self.conn_btn.setEnabled(True)
-                return
-            accept_new = True
-
-        def work():
-            self._ssh.connect(
-                host=host,
-                port=port,
-                username=user,
-                password=password,
-                key_filename=keyfile,
-                accept_new_host_key=accept_new,
-            )
-            return user, host
+        self.persist_prefs()
 
         def ok(result) -> None:
             self._opened = True
@@ -576,15 +553,40 @@ class TerminalPage(ToolPage):
             self.conn_btn.setEnabled(True)
             self._log(tr("term.err", err=msg))
 
-        self._runner.start(work, ok, fail)
+        def inspected(result):
+            status, fingerprint = result
+            if status == "mismatch":
+                fail(tr("term.hostkey_mismatch", host=host, port=port, fingerprint=fingerprint))
+                return
+            accept_new = False
+            if status == "missing":
+                if not self._confirm_host_key(host, port, fingerprint or "?"):
+                    self.conn_btn.setEnabled(True)
+                    return
+                accept_new = True
+
+            def work():
+                self._ssh.connect(
+                    host=host,
+                    port=port,
+                    username=user,
+                    password=password,
+                    key_filename=keyfile,
+                    accept_new_host_key=accept_new,
+                )
+                return user, host
+
+            self._runner.start(work, ok, fail)
+
+        self._log(tr("connection.connecting"))
+        self._runner.start(lambda: inspect_host_key(host, port), inspected, fail)
 
     def _on_exec(self) -> None:
-        if not self._opened:
+        if not self._opened or self._runner.busy:
             return
         text = self.cmd.text().strip()
         if not text:
             return
-        self.cmd.clear()
         if text not in self._history:
             self._history.append(text)
             del self._history[:-_HISTORY_MAX]
@@ -594,8 +596,8 @@ class TerminalPage(ToolPage):
             return text, self._ssh.exec_command(text)
 
         def ok(result) -> None:
-            cmd, (status, out, err) = result
-            self._log(f"$ {cmd}")
+            self._set_ready(self._opened)
+            _cmd, (status, out, err) = result
             if out:
                 self._log(out.rstrip())
             if err:
@@ -603,12 +605,16 @@ class TerminalPage(ToolPage):
             self._log(f"[exit {status}]")
 
         def fail(msg: str) -> None:
+            self._set_ready(self._opened)
             self._log(tr("term.err", err=msg))
 
-        self._runner.start(work, ok, fail)
+        if self._runner.start(work, ok, fail):
+            self.cmd.clear()
+            self._set_ready(False)
+            self._log(f"$ {text}")
 
     def shutdown(self) -> None:
-        self._persist_prefs()
+        self.persist_prefs()
         self._runner.shutdown()
         self._ssh.close()
         self.sftp_panel.shutdown()

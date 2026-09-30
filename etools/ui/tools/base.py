@@ -25,7 +25,7 @@ def _form_layout() -> QFormLayout:
     form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
     form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
     form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-    form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
+    form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
     form.setHorizontalSpacing(10)
     form.setVerticalSpacing(8)
     return form
@@ -119,6 +119,67 @@ class ToolPage(QWidget):
 
     def shutdown(self) -> None:
         """Release background threads / sockets on window close."""
+
+    def can_close(self) -> bool:
+        return True
+
+    def persist_prefs(self) -> None:
+        """Persist this tool's UI preferences (shell / project capture)."""
+
+    @property
+    def left_width(self) -> int:
+        return int(self._left_width)
+
+    @property
+    def runner(self):
+        """Background OpRunner if the page owns one, else None."""
+        return getattr(self, "_runner", None)
+
+    @property
+    def busy(self) -> bool:
+        runner = self.runner
+        svc = getattr(self, "svc", None)
+        return bool((runner is not None and runner.busy) or (svc is not None and svc.running))
+
+    def install_send_preview(self, layout) -> None:
+        self.send_preview = QLabel()
+        self.send_preview.setObjectName("mutedLabel")
+        self.send_preview.setWordWrap(True)
+        layout.addWidget(self.send_preview)
+        self.send_edit.textChanged.connect(self._update_send_preview)
+        for name in ("mode_combo", "ending", "encoding", "checksum", "peer_combo"):
+            control = getattr(self, name, None)
+            if control is not None:
+                control.currentIndexChanged.connect(self._update_send_preview)
+        self._update_send_preview()
+
+    def _update_send_preview(self, *_args) -> None:
+        from etools.core.checksum import append_checksum
+        from etools.i18n import tr
+        from etools.ui.widgets.traffic_view import parse_hex_input
+
+        text = self.send_edit.text()
+        if not text:
+            self.send_preview.clear()
+            self.send_edit.setToolTip("")
+            return
+        try:
+            mode = str(self.mode_combo.currentData())
+            data = parse_hex_input(text) if mode == "hex" else text.encode(self._encoding_name())
+            checksum = getattr(self, "checksum", None)
+            if checksum is not None:
+                data = append_checksum(data, str(checksum.currentData() or "none"))
+            ending = str(self.ending.currentData() or "none")
+            data += {"none": b"", "lf": b"\n", "cr": b"\r", "crlf": b"\r\n"}[ending]
+            peer_combo = getattr(self, "peer_combo", None)
+            peer = peer_combo.currentText() if peer_combo else self.port_combo.currentText()
+            self.send_preview.setText(
+                tr("send.preview", n=len(data), mode=mode.upper(), ending=ending.upper(), peer=peer)
+            )
+            self.send_edit.setToolTip(data[:256].hex(" ").upper())
+        except (ValueError, LookupError) as exc:
+            self.send_preview.setText(tr("send.invalid", error=str(exc)))
+            self.send_edit.setToolTip(str(exc))
 
     def toggle_connection(self) -> None:
         """Open/close the tool's primary connection (toolbar default)."""

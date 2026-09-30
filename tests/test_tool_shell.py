@@ -116,7 +116,7 @@ def test_serial_presets_and_cyclic(qapp, tmp_path, monkeypatch):
     page._preset_checks[0].setChecked(True)
     page._preset_edits[2].setText("STATUS?")
     page.cyclic_interval.setValue(250)
-    page._persist_prefs()
+    page.persist_prefs()
     prefs = page._preset_edits[0].text(), page.cyclic_interval.value()
     assert prefs == ("AT+RST", 250)
 

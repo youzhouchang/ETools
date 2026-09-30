@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QKeySequence, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -139,6 +139,8 @@ class ToolShell(QWidget):
         self._action_providers = action_providers
         self._current_key = "program"
         self._rail_collapsed = False
+        self._labels_visible = bool(get_config().extra.get("rail_labels", False))
+        self._actions = {}
         self._tool_buttons: dict[str, IconToolButton] = {}
         self._toolbars: dict[str, QToolBar] = {}
         self._icon_names: dict[str, str] = dict(TOOL_ORDER)
@@ -174,14 +176,14 @@ class ToolShell(QWidget):
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
         theme = get_theme(get_config().theme)
-        for i, (key, icon_name) in enumerate(TOOL_ORDER):
+        for key, icon_name in TOOL_ORDER:
             if key not in pages:
                 continue
             btn = IconToolButton()
             btn.setIconSize(QSize(28, 28))
             btn.set_backgrounds(theme.accent, theme.bg_hover)
             btn.setIcon(load_icon(icon_name, semantic_color(icon_name, theme), 28))
-            self._group.addButton(btn, i)
+            self._group.addButton(btn, self._key_order.index(key))
             rail_lay.addWidget(btn, 0, Qt.AlignmentFlag.AlignHCenter)
             self._tool_buttons[key] = btn
 
@@ -238,6 +240,12 @@ class ToolShell(QWidget):
         if "program" in self._tool_buttons:
             self._tool_buttons["program"].setChecked(True)
         self.set_current_tool("program")
+        self.set_labels_visible(self._labels_visible)
+        self._state_timer = QTimer(self)
+        self._state_timer.setInterval(150)
+        self._state_timer.timeout.connect(self.refresh_action_states)
+        self._state_timer.start()
+        self.refresh_action_states()
 
     # -- public API ----------------------------------------------------
 
@@ -276,9 +284,14 @@ class ToolShell(QWidget):
         self.tool_changed.emit(key)
 
     def apply_language(self) -> None:
+        for page in self._pages.values():
+            for child in page.findChildren(QWidget):
+                key = child.property("i18nKey")
+                if key and hasattr(child, "setText"):
+                    child.setText(tr(key))
         for key, btn in self._tool_buttons.items():
             tip = tr(f"tool.{key}_tip")
-            btn.setText("")
+            btn.setText(tr(f"tool.{key}") if self._labels_visible else "")
             btn.setToolTip(tip)
             btn.setAccessibleName(tip)
         self._collapse_btn.setToolTip(
@@ -298,6 +311,7 @@ class ToolShell(QWidget):
             color = t.on_accent if btn.isChecked() else semantic_color(icon_name, t)
             btn.setIcon(load_icon(icon_name, color, 28))
             btn.set_backgrounds(t.accent, t.bg_hover)
+            btn.label_color = t.on_accent if btn.isChecked() else t.text
             btn.update()
         self._collapse_btn.set_appearance(t.text_dim, t.bg_hover)
 
@@ -308,7 +322,9 @@ class ToolShell(QWidget):
         """Two-state rail: expanded ↔ collapsed. Never free width."""
         collapsed = bool(collapsed)
         self._rail_collapsed = collapsed
-        width = _RAIL_W_COLLAPSED if collapsed else _RAIL_W_EXPANDED
+        width = (
+            _RAIL_W_COLLAPSED if collapsed else (144 if self._labels_visible else _RAIL_W_EXPANDED)
+        )
         for btn in self._tool_buttons.values():
             btn.setVisible(not collapsed)
         self._collapse_btn.set_collapsed(collapsed)
@@ -317,8 +333,7 @@ class ToolShell(QWidget):
         # Keep the chevron at the same Y as the expanded icon stack's bottom
         # edge so collapse does not make the control jump.
         tools_span = (
-            len(self._tool_buttons) * _RAIL_BTN
-            + max(1, len(self._tool_buttons)) * _RAIL_GAP
+            len(self._tool_buttons) * _RAIL_BTN + max(1, len(self._tool_buttons)) * _RAIL_GAP
         )
         if collapsed:
             self._pre_toggle_spacer.changeSize(
@@ -345,6 +360,60 @@ class ToolShell(QWidget):
         self._rail.setToolTip(tip)
         self._collapse_btn.setToolTip(tip)
         self._collapse_btn.setAccessibleName(tip)
+
+    def set_labels_visible(self, visible: bool) -> None:
+        self._labels_visible = bool(visible)
+        for key, button in self._tool_buttons.items():
+            button.setFixedSize(140 if visible else 48, 48)
+            button.setText(tr(f"tool.{key}") if visible else "")
+        self.set_rail_collapsed(self._rail_collapsed)
+
+    def refresh_action_states(self) -> None:
+        theme = get_theme()
+        for key, page in self._pages.items():
+            runner = getattr(page, "_runner", None)
+            busy = bool(runner and runner.busy)
+            svc = getattr(page, "svc", None)
+            busy = busy or bool(svc and svc.running)
+            flash = getattr(page, "flash_panel", None)
+            busy = busy or bool(flash and flash.is_busy)
+            opened = bool(getattr(page, "is_open", False))
+            button = self._tool_buttons.get(key)
+            if button:
+                button.status_color = theme.warning if busy else (theme.success if opened else None)
+                button.update()
+            controls = {
+                "toggle": getattr(page, "open_btn", None) or getattr(page, "conn_btn", None),
+                "connect": getattr(page, "conn_btn", None),
+                "send": getattr(page, "send_btn", None),
+                "exec": getattr(page, "exec_btn", None),
+                "run": getattr(page, "run_btn", None),
+                "stop": getattr(page, "stop_btn", None),
+            }
+            flash = getattr(page, "flash_panel", None)
+            if flash:
+                controls.update(
+                    {
+                        name: getattr(flash, name + "_btn", None)
+                        for name in ("program", "erase", "verify", "reset", "read")
+                    }
+                )
+            sftp = getattr(page, "sftp_panel", None)
+            if sftp:
+                controls.update(
+                    {
+                        name: getattr(sftp, name + "_btn", None)
+                        for name in ("list", "upload", "download")
+                    }
+                )
+            for spec, action in self._actions.get(key, []):
+                control = controls.get(spec.key)
+                if control is not None:
+                    action.setEnabled(control.isEnabled())
+                    if spec.key in {"toggle", "connect"}:
+                        action.setText(control.text())
+                elif spec.key == "run_script":
+                    action.setEnabled(not busy)
 
     def shutdown(self) -> None:
         for page in self._pages.values():
@@ -390,6 +459,7 @@ class ToolShell(QWidget):
         if tb is None:
             return
         tb.clear()
+        self._actions[key] = []
         provider = self._action_providers.get(key)
         if provider is None:
             return
@@ -399,4 +469,5 @@ class ToolShell(QWidget):
             action = QAction(tr(spec.text_key), self)
             set_action_icon(action, spec.icon_name, 18)
             action.triggered.connect(spec.slot)
+            self._actions[key].append((spec, action))
             tb.addAction(action)

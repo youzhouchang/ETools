@@ -8,6 +8,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -99,12 +100,18 @@ class _SerialTerminal(QPlainTextEdit):
 
         key = event.key()
         special = {
-            Qt.Key.Key_Return: b"\r", Qt.Key.Key_Enter: b"\r",
-            Qt.Key.Key_Backspace: b"\x7f", Qt.Key.Key_Tab: b"\t",
-            Qt.Key.Key_Escape: b"\x1b", Qt.Key.Key_Up: b"\x1b[A",
-            Qt.Key.Key_Down: b"\x1b[B", Qt.Key.Key_Right: b"\x1b[C",
-            Qt.Key.Key_Left: b"\x1b[D", Qt.Key.Key_Home: b"\x1b[H",
-            Qt.Key.Key_End: b"\x1b[F", Qt.Key.Key_Delete: b"\x1b[3~",
+            Qt.Key.Key_Return: b"\r",
+            Qt.Key.Key_Enter: b"\r",
+            Qt.Key.Key_Backspace: b"\x7f",
+            Qt.Key.Key_Tab: b"\t",
+            Qt.Key.Key_Escape: b"\x1b",
+            Qt.Key.Key_Up: b"\x1b[A",
+            Qt.Key.Key_Down: b"\x1b[B",
+            Qt.Key.Key_Right: b"\x1b[C",
+            Qt.Key.Key_Left: b"\x1b[D",
+            Qt.Key.Key_Home: b"\x1b[H",
+            Qt.Key.Key_End: b"\x1b[F",
+            Qt.Key.Key_Delete: b"\x1b[3~",
         }
         if key in special:
             data = special[key]
@@ -277,7 +284,12 @@ class SerialPage(ToolPage):
 
         self.preset_box.toggled.connect(_toggle_presets)
         self.preset_box.setMaximumHeight(40)
-        preset_lay = QVBoxLayout(self.preset_box)
+        preset_outer = QVBoxLayout(self.preset_box)
+        self.preset_content = QWidget()
+        preset_outer.addWidget(self.preset_content)
+        self.preset_content.setVisible(False)
+        self.preset_box.toggled.connect(self.preset_content.setVisible)
+        preset_lay = QVBoxLayout(self.preset_content)
         preset_lay.setContentsMargins(8, 10, 8, 8)
         preset_lay.setSpacing(4)
         self._preset_checks: list[QCheckBox] = []
@@ -305,8 +317,8 @@ class SerialPage(ToolPage):
             self._preset_edits.append(edit)
             self._preset_btns.append(btn)
             btn.clicked.connect(lambda _c=False, idx=i: self._on_preset_send(idx))
-            edit.editingFinished.connect(self._persist_prefs)
-            check.toggled.connect(lambda _c: self._persist_prefs())
+            edit.editingFinished.connect(self.persist_prefs)
+            check.toggled.connect(lambda _c: self.persist_prefs())
 
         cyclic_row = QHBoxLayout()
         cyclic_row.setSpacing(8)
@@ -330,27 +342,32 @@ class SerialPage(ToolPage):
         self._cyclic_timer.timeout.connect(self._on_cyclic_tick)
         self._cyclic_index = 0
 
-        top_meta = QHBoxLayout()
+        top_meta = QGridLayout()
         top_meta.setSpacing(8)
-        top_meta.addWidget(self.lbl_mode)
-        top_meta.addWidget(self.mode_combo)
-        top_meta.addWidget(self.lbl_rx_mode)
-        top_meta.addWidget(self.rx_mode)
-        top_meta.addWidget(self.lbl_ending)
-        top_meta.addWidget(self.ending)
-        top_meta.addWidget(self.lbl_checksum)
-        top_meta.addWidget(self.checksum)
-        top_meta.addWidget(self.checksum_preview)
-        top_meta.addWidget(self.rx_verify)
-        top_meta.addWidget(self.history_btn)
-        top_meta.addWidget(self.send_file_btn)
-        top_meta.addStretch(1)
+        for index, control in enumerate(
+            (
+                self.lbl_mode,
+                self.mode_combo,
+                self.lbl_rx_mode,
+                self.rx_mode,
+                self.lbl_ending,
+                self.ending,
+                self.lbl_checksum,
+                self.checksum,
+                self.checksum_preview,
+                self.rx_verify,
+                self.history_btn,
+                self.send_file_btn,
+            )
+        ):
+            top_meta.addWidget(control, index // 6, index % 6)
         send_row.addWidget(self.send_edit, 1)
         send_row.addWidget(self.send_btn)
         meta_wrap = QVBoxLayout()
         meta_wrap.setSpacing(4)
         meta_wrap.addLayout(top_meta)
         meta_wrap.addLayout(send_row)
+        self.install_send_preview(meta_wrap)
         mon_lay.addWidget(self.traffic, 1)
         mon_lay.addWidget(self.preset_box, 0)
         mon_lay.addLayout(meta_wrap)
@@ -437,15 +454,21 @@ class SerialPage(ToolPage):
         self._refresh_ports()
         self._load_prefs()
         for combo in (
-            self.baud, self.data, self.parity, self.stop, self.flow,
-            self.ending, self.mode_combo, self.encoding,
+            self.baud,
+            self.data,
+            self.parity,
+            self.stop,
+            self.flow,
+            self.ending,
+            self.mode_combo,
+            self.encoding,
         ):
-            combo.currentIndexChanged.connect(lambda _i: self._persist_prefs())
+            combo.currentIndexChanged.connect(lambda _i: self.persist_prefs())
         self.encoding.currentIndexChanged.connect(self._on_encoding_changed)
         self.rx_mode.currentIndexChanged.connect(self._on_rx_mode_changed)
-        self.rx_mode.currentIndexChanged.connect(lambda _i: self._persist_prefs())
-        self.baud.currentTextChanged.connect(lambda _t: self._persist_prefs())
-        self.port_combo.currentIndexChanged.connect(lambda _i: self._persist_prefs())
+        self.rx_mode.currentIndexChanged.connect(lambda _i: self.persist_prefs())
+        self.baud.currentTextChanged.connect(lambda _t: self.persist_prefs())
+        self.port_combo.currentIndexChanged.connect(lambda _i: self.persist_prefs())
         self.dtr.toggled.connect(lambda _c: self._apply_modem())
         self.rts.toggled.connect(lambda _c: self._apply_modem())
         self.checksum.currentIndexChanged.connect(self._on_checksum_changed)
@@ -454,7 +477,7 @@ class SerialPage(ToolPage):
 
     def _on_checksum_changed(self, _index: int = 0) -> None:
         self._refresh_checksum_preview()
-        self._persist_prefs()
+        self.persist_prefs()
 
     def _refresh_checksum_preview(self, *_args) -> None:
         algo = str(self.checksum.currentData() or "none")
@@ -466,7 +489,7 @@ class SerialPage(ToolPage):
             if self.mode_combo.currentData() == "hex":
                 body = parse_hex_input(text)
             else:
-                body = text.encode(self._encoding_name(), errors="replace")
+                body = text.encode(self._encoding_name())
         except ValueError:
             self.checksum_preview.setText("")
             return
@@ -479,7 +502,7 @@ class SerialPage(ToolPage):
     def _on_encoding_changed(self) -> None:
         name = self._encoding_name()
         self.traffic.set_encoding(name)
-        self._persist_prefs()
+        self.persist_prefs()
 
     def eventFilter(self, obj, event):  # noqa: N802
         from PySide6.QtCore import QEvent, Qt
@@ -576,9 +599,7 @@ class SerialPage(ToolPage):
         return [
             ToolActionSpec("toggle", "serial.open", "connect", self.toggle_connection),
             ToolActionSpec("send", "serial.send", "program", self.send),
-            ToolActionSpec(
-                "run_script", "script.run_menu", "hex", self._run_script_menu
-            ),
+            ToolActionSpec("run_script", "script.run_menu", "hex", self._run_script_menu),
             ToolActionSpec("modbus", "modbus.title", "compare", self._open_modbus),
             ToolActionSpec("clear", "mon.clear", "clear", self.clear_view, separator_before=True),
         ]
@@ -687,7 +708,7 @@ class SerialPage(ToolPage):
                 self.encoding.setCurrentIndex(idx)
         self.traffic.set_encoding(self._encoding_name())
 
-    def _persist_prefs(self) -> None:
+    def persist_prefs(self) -> None:
         save_tool_prefs(
             self.tool_id,
             {
@@ -731,7 +752,7 @@ class SerialPage(ToolPage):
         if self._only_free == bool(on):
             return
         self._only_free = bool(on)
-        self._persist_prefs()
+        self.persist_prefs()
         self._refresh_ports(probe=True)
 
     def _remember_baud(self, text: str) -> None:
@@ -889,7 +910,7 @@ class SerialPage(ToolPage):
             if force_hex or self.mode_combo.currentData() == "hex":
                 body = parse_hex_input(text)
             else:
-                body = text.encode(self._encoding_name(), errors="replace")
+                body = text.encode(self._encoding_name())
         except ValueError:
             self.traffic.append_status(tr("serial.err", err="bad hex"))
             return None
@@ -975,7 +996,7 @@ class SerialPage(ToolPage):
         for i, edit in enumerate(self._preset_edits):
             if i < len(items) and isinstance(items[i], str):
                 edit.setText(items[i])
-        self._persist_prefs()
+        self.persist_prefs()
         from etools.ui.kit import toast
 
         toast(tr("serial.presets_imported", n=min(len(items), len(self._preset_edits))))
@@ -1019,12 +1040,12 @@ class SerialPage(ToolPage):
             self.traffic.append_status(tr("serial.cyclic_running"))
         else:
             self._cyclic_timer.stop()
-        self._persist_prefs()
+        self.persist_prefs()
 
     def _on_interval_changed(self, value: int) -> None:
         if self._cyclic_timer.isActive():
             self._cyclic_timer.setInterval(max(1, int(value)))
-        self._persist_prefs()
+        self.persist_prefs()
 
     def _stop_cyclic(self) -> None:
         self._cyclic_timer.stop()
@@ -1246,9 +1267,11 @@ class SerialPage(ToolPage):
         self._repaint_btn()
 
     def shutdown(self) -> None:
+        self.traffic.stop_replay()
+        self.traffic._close_auto_log()
         self._hotplug.stop()
         self._cyclic_timer.stop()
         self._script_timer.stop()
         self._script_running = False
-        self._persist_prefs()
+        self.persist_prefs()
         self._link.close()

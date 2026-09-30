@@ -24,6 +24,8 @@ class IconToolButton(QToolButton):
         self.setFixedSize(48, 48)
         self._checked_bg = None
         self._hover_bg = None
+        self.status_color = None
+        self.label_color = "#E6EAF0"
 
     def set_backgrounds(self, checked: str | None, hover: str | None) -> None:
         self._checked_bg = checked
@@ -50,7 +52,7 @@ class IconToolButton(QToolButton):
         icon = self.icon()
         if not icon.isNull():
             s = self.iconSize()
-            ix = (rect.width() - s.width()) // 2
+            ix = 10 if self.text() else (rect.width() - s.width()) // 2
             iy = (rect.height() - s.height()) // 2
             # Never use Selected/Disabled mode — icon is already color-tinted
             icon.paint(
@@ -59,4 +61,15 @@ class IconToolButton(QToolButton):
                 Qt.AlignmentFlag.AlignCenter,
                 QIcon.Mode.Normal,
             )
+        if self.text():
+            painter.setPen(QColor(self.label_color))
+            painter.drawText(
+                QRect(46, 0, rect.width() - 50, rect.height()),
+                Qt.AlignmentFlag.AlignVCenter,
+                self.text(),
+            )
+        if self.status_color:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(self.status_color))
+            painter.drawEllipse(rect.width() - 11, 5, 6, 6)
         painter.end()

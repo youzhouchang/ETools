@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
 )
@@ -60,8 +61,13 @@ class ScriptPage(ToolPage):
         self.svc.log.connect(self._append_log)
         self.svc.done.connect(self._on_script_done)
         self._current_name = ""
+        self._build_body()
 
-        # Left: file management (uses ToolPage ctx + main split like other tools)
+    @property
+    def current_script_name(self) -> str:
+        return self._current_name
+
+    def _build_body(self) -> None:
         self.ctx_files = self.ctx_group(tr("script.file"))
         self.file_combo = QComboBox()
         self.file_combo.setFixedHeight(28)
@@ -76,7 +82,7 @@ class ScriptPage(ToolPage):
         self.template_combo.addItem(tr("script.tpl.flash"), "flash")
         self.lbl_template = self.form_row(tr("script.template"), self.template_combo)
 
-        # 2×2 button grid (full ctx width — do not nest in a form field).
+        # File and execution actions share the script group with its selectors.
         self.new_btn = QPushButton(tr("script.new"))
         self.new_btn.setObjectName("ghost")
         self.save_btn = QPushButton(tr("script.save"))
@@ -94,7 +100,8 @@ class ScriptPage(ToolPage):
         grid.addWidget(self.save_btn, 0, 1)
         grid.addWidget(self.delete_btn, 1, 0)
         grid.addWidget(self.reload_btn, 1, 1)
-        self.ctx_layout.addLayout(grid)
+        files_layout = self.ctx_files.layout()
+        files_layout.addLayout(grid)
 
         self.run_btn = QPushButton(tr("script.run"))
         self.run_btn.setObjectName("accent")
@@ -103,9 +110,9 @@ class ScriptPage(ToolPage):
         self.stop_btn.setObjectName("ghost")
         self.stop_btn.setFixedHeight(28)
         self.stop_btn.setEnabled(False)
-        self.ctx_layout.addWidget(self.run_btn)
-        self.ctx_layout.addWidget(self.stop_btn)
-        self.ctx_layout.addStretch(1)
+        files_layout.addWidget(self.run_btn)
+        files_layout.addWidget(self.stop_btn)
+        files_layout.addStretch(1)
 
         # Main: editor + console
         self.status = QLabel(tr("script.idle"))
@@ -114,6 +121,9 @@ class ScriptPage(ToolPage):
         self.editor.setObjectName("logView")
         self.editor.setPlaceholderText(tr("script.placeholder"))
         self.editor.setStyleSheet("font-family: Consolas, 'Courier New', monospace;")
+        self.editor.document().modificationChanged.connect(
+            lambda dirty: self.save_btn.setText(tr("script.save") + (" *" if dirty else ""))
+        )
 
         console_bar = QHBoxLayout()
         console_bar.addWidget(QLabel(tr("script.console")))
@@ -166,25 +176,42 @@ class ScriptPage(ToolPage):
 
     def _on_file_selected(self, _index: int = 0) -> None:
         name = str(self.file_combo.currentData() or "")
-        self._current_name = name
+        if not self.can_close():
+            self.file_combo.blockSignals(True)
+            self.file_combo.setCurrentIndex(max(0, self.file_combo.findData(self._current_name)))
+            self.file_combo.blockSignals(False)
+            return
         if not name:
+            self._current_name = ""
             return
         try:
-            self.editor.setPlainText(script_store.load_script(name))
+            source = script_store.load_script(name)
+            self._current_name = name
+            self.file_combo.blockSignals(True)
+            self.file_combo.setCurrentIndex(self.file_combo.findData(name))
+            self.file_combo.blockSignals(False)
+            self.editor.setPlainText(source)
+            self.editor.document().setModified(False)
         except OSError as exc:
+            self.file_combo.blockSignals(True)
+            self.file_combo.setCurrentIndex(max(0, self.file_combo.findData(self._current_name)))
+            self.file_combo.blockSignals(False)
             self.console.appendPlainText(str(exc))
 
     def _on_new(self) -> None:
+        if not self.can_close():
+            return
         self._current_name = ""
+        self.file_combo.blockSignals(True)
         self.file_combo.setCurrentIndex(0)
+        self.file_combo.blockSignals(False)
         self.editor.setPlainText(_TEMPLATES["blank"])
+        self.editor.document().setModified(True)
 
     def _on_save(self) -> None:
         name = self._current_name
         if not name:
-            text, ok = QInputDialog.getText(
-                self, tr("script.save_as"), tr("script.name_label")
-            )
+            text, ok = QInputDialog.getText(self, tr("script.save_as"), tr("script.name_label"))
             if not ok or not text.strip():
                 return
             name = text.strip()
@@ -194,12 +221,24 @@ class ScriptPage(ToolPage):
             self.console.appendPlainText(str(exc))
             return
         self._current_name = name
+        self.editor.document().setModified(False)
         self.reload_files(select=name)
         self.console.appendPlainText(tr("script.saved", name=name))
 
     def _on_delete(self) -> None:
         name = self._current_name
         if not name:
+            return
+        if (
+            QMessageBox.question(
+                self,
+                tr("script.delete"),
+                tr("script.delete_confirm", name=name),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
             return
         try:
             script_store.delete_script(name)
@@ -291,16 +330,46 @@ class ScriptPage(ToolPage):
             ToolActionSpec("run", "script.run", "program", self._on_run),
             ToolActionSpec("stop", "script.stop", "stop", self._on_stop),
             ToolActionSpec("save", "script.save", "save", self._on_save),
+            ToolActionSpec("restore", "script.restore", "refresh", self._restore_deleted),
         ]
+
+    def _restore_deleted(self) -> None:
+        try:
+            path = script_store.restore_last_script()
+            if path is not None:
+                self.reload_files()
+                self.console.appendPlainText(str(path))
+        except OSError as exc:
+            self.console.appendPlainText(str(exc))
 
     def shutdown(self) -> None:
         self.svc.stop()
 
+    def can_close(self) -> bool:
+        if not self.editor.document().isModified():
+            return True
+        answer = QMessageBox.question(
+            self,
+            tr("script.unsaved"),
+            tr("script.unsaved_confirm"),
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+        if answer == QMessageBox.StandardButton.Save:
+            self._on_save()
+            return not self.editor.document().isModified()
+        return answer == QMessageBox.StandardButton.Discard
+
     # -- internals -----------------------------------------------------
 
     def _on_template(self, _index: int = 0) -> None:
+        if not self.can_close():
+            return
         key = str(self.template_combo.currentData() or "blank")
         self.editor.setPlainText(_TEMPLATES.get(key, _TEMPLATES["blank"]))
+        self.editor.document().setModified(True)
 
     def _append_log(self, message: str) -> None:
         self.console.appendPlainText(message)

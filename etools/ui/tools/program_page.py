@@ -78,9 +78,7 @@ class ProgramPage(ToolPage):
             title = panel._form.findChild(QLabel, "panelTitle")
             if title is not None:
                 title.hide()
-            panel._form.setStyleSheet(
-                "QWidget#panel { border: none; background: transparent; }"
-            )
+            panel._form.setStyleSheet("QWidget#panel { border: none; background: transparent; }")
         if isinstance(scroll, QScrollArea):
             scroll.setWidget(left_box)
         else:
@@ -168,6 +166,10 @@ class ProgramPage(ToolPage):
     def set_handlers(self, mapping: dict[str, Callable[[], Any]]) -> None:
         self._handlers.update(mapping)
 
+    @property
+    def is_open(self) -> bool:
+        return self.probe_panel._connected
+
     def toolbar_actions(self) -> list[ToolActionSpec]:
         h = self._handlers
         return [
@@ -190,9 +192,7 @@ class ProgramPage(ToolPage):
                 separator_before=True,
             ),
             ToolActionSpec("hex", "act.hex", "hex", h.get("hex", lambda: None)),
-            ToolActionSpec(
-                "run_script", "script.run_menu", "hex", self._run_script_menu
-            ),
+            ToolActionSpec("run_script", "script.run_menu", "hex", self._run_script_menu),
         ]
 
     def _run_script_menu(self) -> None:

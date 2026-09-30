@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QObject, QSignalBlocker, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -93,9 +93,7 @@ class MainWindow(QMainWindow):
         self.service = FlashService(self.driver)
 
         self._relay = SignalRelay(self)
-        self._relay.progressed.connect(
-            self._on_progress_info, Qt.ConnectionType.QueuedConnection
-        )
+        self._relay.progressed.connect(self._on_progress_info, Qt.ConnectionType.QueuedConnection)
         self.driver.set_progress_callback(self._relay.push)
 
         self._runner = OpRunner(self)
@@ -257,6 +255,10 @@ class MainWindow(QMainWindow):
         return f"{n} B"
 
     def _refresh_status_bar(self) -> None:
+        for key, action in getattr(self, "_flash_menu_actions", {}).items():
+            control = getattr(self.flash_panel, key + "_btn", None)
+            if control is not None:
+                action.setEnabled(control.isEnabled())
         page = self._active_page()
         text, kind = tr("status.link_idle"), "warn"
         if page is not None:
@@ -281,9 +283,7 @@ class MainWindow(QMainWindow):
             self.traffic_badge.set_stats_text(tr("status.traffic_idle"))
 
     def _set_link_badge(self, text: str, kind: str = "warn") -> None:
-        obj = {"ok": "statusOk", "err": "statusErr", "warn": "statusWarn"}.get(
-            kind, "statusWarn"
-        )
+        obj = {"ok": "statusOk", "err": "statusErr", "warn": "statusWarn"}.get(kind, "statusWarn")
         if self.link_badge.text() == text and self.link_badge.objectName() == obj:
             return
         self.link_badge.setText(text)
@@ -333,6 +333,8 @@ class MainWindow(QMainWindow):
         m_file.addAction(a_open)
         a_batch = act(tr("batch.title"), "program", "")
         m_file.addAction(a_batch)
+        m_file.addAction(tr("project.title"), self._show_projects)
+        m_file.addAction(tr("workflow.title"), self._show_workflow)
         m_file.addSeparator()
         m_file.addAction(a_settings)
         m_file.addSeparator()
@@ -346,8 +348,16 @@ class MainWindow(QMainWindow):
         a_read_chip = act(tr("act.read_chip"), "read", "")
         for a in (a_prog, a_erase, a_verify, a_reset, a_read_chip):
             m_fw.addAction(a)
+        self._flash_menu_actions = dict(
+            program=a_prog, erase=a_erase, verify=a_verify, reset=a_reset, read=a_read_chip
+        )
 
         m_view = mb.addMenu(tr("menu.view"))
+        a_labels = act(tr("tool.labels"))
+        a_labels.setCheckable(True)
+        a_labels.setChecked(bool(get_config().extra.get("rail_labels", False)))
+        a_labels.toggled.connect(self._toggle_rail_labels)
+        m_view.addAction(a_labels)
         m_theme = m_view.addMenu(tr("menu.theme"))
         current_theme_name = (get_config().theme or "dark").lower()
         a_theme_dark = act(tr("act.theme_dark"), "theme-dark", "")
@@ -428,12 +438,16 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(1500, self._startup_update_check)
 
     def _startup_update_check(self) -> None:
+        if getattr(self, "_close_approved", False):
+            return
         extra = get_config().extra or {}
         if extra.get("auto_check_update", True) is False:
             return
         self._check_updates(silent=True)
 
     def _check_updates(self, silent: bool = False) -> None:
+        if getattr(self, "_close_approved", False):
+            return
         if self._update_thread is not None and self._update_thread.isRunning():
             return
         if not silent:
@@ -458,6 +472,8 @@ class MainWindow(QMainWindow):
         self._update_worker = None
 
     def _on_update_result(self, info) -> None:
+        if getattr(self, "_close_approved", False):
+            return
         silent = getattr(self, "_update_silent", True)
         if info is None:
             if not silent:
@@ -501,9 +517,7 @@ class MainWindow(QMainWindow):
             if hasattr(page, "retranslate"):
                 page.retranslate()
         connected = self.service.connected
-        self.conn_badge.setText(
-            tr("status.connected") if connected else tr("status.disconnected")
-        )
+        self.conn_badge.setText(tr("status.connected") if connected else tr("status.disconnected"))
         self.traffic_badge.set_clear_text(tr("status.clear_stats"))
         self.traffic_badge.set_tip(tr("status.stats_tip"))
         if hasattr(self, "_a_only_free"):
@@ -627,6 +641,8 @@ class MainWindow(QMainWindow):
             ("act.about", tr("act.about"), self._show_about),
             ("batch.title", tr("batch.title"), self._show_batch_program),
             ("diag.title", tr("diag.title"), self._show_diag),
+            ("project.title", tr("project.title"), self._show_projects),
+            ("workflow.title", tr("workflow.title"), self._show_workflow),
         ]
         CommandPalette(commands, self).exec()
 
@@ -634,6 +650,101 @@ class MainWindow(QMainWindow):
         from etools.ui.widgets.net_diag_dialog import NetDiagDialog
 
         NetDiagDialog(self).exec()
+
+    def _toggle_rail_labels(self, checked):
+        get_config().extra["rail_labels"] = bool(checked)
+        save_config()
+        if hasattr(self, "shell"):
+            self.shell.set_labels_visible(checked)
+
+    def _show_projects(self):
+        from etools.core import project_profiles
+        from etools.ui.widgets.project_dialog import ProjectDialog
+
+        def capture():
+            for page in (
+                self.serial_page,
+                self.ethernet_page,
+                self.can_page,
+                self.terminal_page,
+                self.sftp_panel,
+            ):
+                page.persist_prefs()
+            cfg = get_config()
+            cfg.default_target = str(self.probe_panel.target_combo.currentData() or "cortex_m")
+            cfg.default_connect_mode = str(self.probe_panel.mode_combo.currentData() or "halt")
+            cfg.last_firmware = self.flash_panel.firmware_path()
+            cfg.verify_after_program = self.flash_panel.verify_check.isChecked()
+            cfg.extra["project_script"] = self.script_page.current_script_name
+            cfg.extra.update(
+                frequency_khz=self.probe_panel.freq_spin.value(),
+                wire_protocol=self.probe_panel.protocol_combo.currentData(),
+                reset_type=self.probe_panel.reset_combo.currentData(),
+            )
+            return project_profiles.snapshot()
+
+        def apply(payload):
+            if (
+                self.service.connected
+                or self._runner.busy
+                or self.script_page.svc.running
+                or any(
+                    page.is_open
+                    for page in (
+                        self.serial_page,
+                        self.ethernet_page,
+                        self.can_page,
+                        self.terminal_page,
+                    )
+                )
+                or self.ethernet_page._runner.busy
+                or self.terminal_page._runner.busy
+            ):
+                raise RuntimeError(tr("project.disconnect"))
+            if not self.script_page.can_close():
+                raise RuntimeError(tr("script.unsaved"))
+            blockers = [QSignalBlocker(child) for child in self.findChildren(QWidget)]
+            project_profiles.apply_profile(payload)
+            cfg = get_config()
+            self.flash_panel.fw_edit.setText(cfg.last_firmware)
+            self.flash_panel.verify_check.setChecked(cfg.verify_after_program)
+            for combo, value in (
+                (self.probe_panel.target_combo, cfg.default_target),
+                (self.probe_panel.mode_combo, cfg.default_connect_mode),
+                (self.probe_panel.protocol_combo, cfg.extra.get("wire_protocol", "swd")),
+                (self.probe_panel.reset_combo, cfg.extra.get("reset_type", "default")),
+            ):
+                idx = combo.findData(value)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+            self.probe_panel.freq_spin.setValue(int(cfg.extra.get("frequency_khz", 10000)))
+            for page in (
+                self.serial_page,
+                self.ethernet_page,
+                self.can_page,
+                self.terminal_page,
+                self.sftp_panel,
+            ):
+                page._load_prefs()
+            del blockers
+            if hasattr(self, "_workflow_dialog"):
+                self._workflow_dialog.load_settings()
+            self.serial_page._update_send_preview()
+            self.ethernet_page._update_send_preview()
+            name = cfg.extra.get("project_script", "")
+            idx = self.script_page.file_combo.findData(name)
+            if name and idx >= 0:
+                self.script_page.file_combo.setCurrentIndex(idx)
+            self.statusBar().showMessage(tr("project.applied"), 5000)
+
+        ProjectDialog(capture, apply, self).exec()
+
+    def _show_workflow(self):
+        from etools.ui.widgets.workflow_dialog import WorkflowDialog
+
+        if not hasattr(self, "_workflow_dialog"):
+            self._workflow_dialog = WorkflowDialog(self)
+        self._workflow_dialog.exec()
 
     def _show_batch_program(self) -> None:
         from etools.ui.widgets.batch_program_dialog import BatchProgramDialog
@@ -658,7 +769,8 @@ class MainWindow(QMainWindow):
             def on_err(msg: str) -> None:
                 fail(msg)
 
-            self._runner.start(work, on_ok, on_err)
+            if not self._runner.start(work, on_ok, on_err):
+                fail(tr("workflow.preflight"))
 
         BatchProgramDialog(program_fn, self).exec()
 
@@ -805,16 +917,34 @@ class MainWindow(QMainWindow):
             log.info(message)
 
     def _set_status(self, text: str, kind: str = "warn") -> None:
-        obj = {"ok": "statusOk", "err": "statusErr", "warn": "statusWarn"}.get(
-            kind, "statusWarn"
-        )
+        obj = {"ok": "statusOk", "err": "statusErr", "warn": "statusWarn"}.get(kind, "statusWarn")
         self.conn_badge.setText(text)
         self.conn_badge.setObjectName(obj)
         st = self.conn_badge.style()
         st.unpolish(self.conn_badge)
         st.polish(self.conn_badge)
 
+    @property
+    def runner(self):
+        """Primary UI background runner (public for dialogs/workflows)."""
+        return self._runner
+
+    @property
+    def workflow_active(self) -> bool:
+        return bool(getattr(self, "_workflow_active", False))
+
+    @workflow_active.setter
+    def workflow_active(self, value: bool) -> None:
+        self._workflow_active = bool(value)
+
+    def set_busy(self, busy: bool) -> None:
+        """Reflect flash-panel busy state (public for dialogs/workflows)."""
+        self._set_busy(busy)
+
     def _run_async(self, fn, on_ok, on_err=None, *, quiet_busy: bool = False) -> bool:
+        if self.workflow_active:
+            return False
+
         def ok(result) -> None:
             self._set_busy(False)
             on_ok(result)
@@ -835,6 +965,8 @@ class MainWindow(QMainWindow):
 
     def _set_busy(self, busy: bool) -> None:
         self.flash_panel.set_busy(busy)
+        for key, action in getattr(self, "_flash_menu_actions", {}).items():
+            action.setEnabled(getattr(self.flash_panel, key + "_btn").isEnabled())
 
     # ------------------------------------------------------------------
     # Actions
@@ -887,9 +1019,7 @@ class MainWindow(QMainWindow):
                 self.swo_panel.set_connected(True)
                 self.variable_monitor.set_connected(True)
                 details_for_flash = getattr(result, "data", None)
-                if details_for_flash is not None and getattr(
-                    details_for_flash, "flash_size", 0
-                ):
+                if details_for_flash is not None and getattr(details_for_flash, "flash_size", 0):
                     self.hex_preview._flash_size_hint = int(details_for_flash.flash_size)
                 else:
                     self.hex_preview._flash_size_hint = 0
@@ -1051,9 +1181,7 @@ class MainWindow(QMainWindow):
             self._log(msg, True)
             self._hide_progress()
 
-        self._run_async(
-            lambda: self.service.read_flash(address, size, out_path), on_ok, on_err
-        )
+        self._run_async(lambda: self.service.read_flash(address, size, out_path), on_ok, on_err)
 
     def _start_verify(self, path: str) -> None:
         self._show_progress(0, tr("log.verifying"))
@@ -1103,12 +1231,38 @@ class MainWindow(QMainWindow):
             self._log(msg, True)
             self._hide_progress()
 
-        self._run_async(
-            lambda: self.service.fill_memory(addr, size, value), on_ok, on_err
-        )
+        self._run_async(lambda: self.service.fill_memory(addr, size, value), on_ok, on_err)
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        if self.workflow_active:
+            self._workflow_dialog._stop()
+            event.ignore()
+            return
+        if not getattr(self, "_close_approved", False) and not self.script_page.can_close():
+            event.ignore()
+            return
+        self._close_approved = True
+        self._probe_timer.stop()
+        runners = [
+            self._runner,
+            self.ethernet_page._runner,
+            self.terminal_page._runner,
+            self.sftp_panel._runner,
+        ]
+        update_running = self._update_thread is not None and self._update_thread.isRunning()
+        if any(runner.busy for runner in runners) or update_running:
+            self.setEnabled(False)
+            for runner in runners:
+                runner.cancel()
+            self.terminal_page._ssh.close()
+            self.ethernet_page._connect_cancel.set()
+            self.statusBar().showMessage(tr("connection.closing"))
+            event.ignore()
+            QTimer.singleShot(150, self.close)
+            return
         try:
+            self._status_timer.stop()
+            self.shell._state_timer.stop()
             self._save_geometry()
             if hasattr(self, "shell"):
                 self.shell.shutdown()
@@ -1165,8 +1319,8 @@ class MainWindow(QMainWindow):
             ("terminal", getattr(self, "terminal_page", None)),
             ("script", getattr(self, "script_page", None)),
         ):
-            if page is not None and hasattr(page, "_left_width"):
-                widths[key] = int(page._left_width)
+            if page is not None and hasattr(page, "left_width"):
+                widths[key] = int(page.left_width)
         extra["tool_left_widths"] = widths
         cfg.extra = extra
         save_config()

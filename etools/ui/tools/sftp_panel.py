@@ -120,7 +120,7 @@ class SftpPanel(QWidget):
         self.remote_edit.returnPressed.connect(self.refresh)
         self.retranslate()
         self._load_prefs()
-        self.remote_edit.editingFinished.connect(self._persist_prefs)
+        self.remote_edit.editingFinished.connect(self.persist_prefs)
 
     def retranslate(self) -> None:
         self.title.setText(tr("sftp.title"))
@@ -162,7 +162,7 @@ class SftpPanel(QWidget):
         if remote:
             self.remote_edit.setText(str(remote))
 
-    def _persist_prefs(self) -> None:
+    def persist_prefs(self) -> None:
         save_tool_prefs(self.tool_id, {"sftp_remote": self.remote_edit.text().strip()})
 
     def _run(self, fn, on_ok) -> None:
@@ -212,7 +212,7 @@ class SftpPanel(QWidget):
 
     def _set_path(self, path: str) -> None:
         self.remote_edit.setText(path)
-        self._persist_prefs()
+        self.persist_prefs()
         self.refresh()
 
     def _go_parent(self) -> None:
@@ -397,5 +397,5 @@ class SftpPanel(QWidget):
         self._run(work, done)
 
     def shutdown(self) -> None:
-        self._persist_prefs()
+        self.persist_prefs()
         self._runner.shutdown()
