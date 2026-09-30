@@ -57,6 +57,7 @@ _SEMANTIC_ROLE: dict[str, str] = {
     "tool-program": "accent",
     "tool-serial": "success",
     "tool-ethernet": "accent",
+    "tool-can": "success",
     "tool-terminal": "warning",
     "tool-script": "accent",
 }

@@ -27,6 +27,7 @@ from etools.ui.runtime import OpRunner, SignalRelay, TaskManager
 from etools.ui.shell import ToolShell
 from etools.ui.styles import apply_combo_style, build_stylesheet, get_theme
 from etools.ui.tools import (
+    CanPage,
     EthernetPage,
     ProgramPage,
     ScriptPage,
@@ -135,6 +136,7 @@ class MainWindow(QMainWindow):
         self.program_page = ProgramPage()
         self.serial_page = SerialPage()
         self.ethernet_page = EthernetPage()
+        self.can_page = CanPage()
         self.terminal_page = TerminalPage()
         self.script_page = ScriptPage()
         # SFTP lives inside the Terminal page (bottom group).
@@ -182,6 +184,7 @@ class MainWindow(QMainWindow):
             "program": self.program_page,
             "serial": self.serial_page,
             "ethernet": self.ethernet_page,
+            "can": self.can_page,
             "terminal": self.terminal_page,
             "script": self.script_page,
         }
@@ -189,6 +192,7 @@ class MainWindow(QMainWindow):
             "program": program_actions,
             "serial": lambda: self.serial_page.toolbar_actions(),
             "ethernet": lambda: self.ethernet_page.toolbar_actions(),
+            "can": lambda: self.can_page.toolbar_actions(),
             "terminal": terminal_actions,
             "script": lambda: self.script_page.toolbar_actions(),
         }
@@ -197,6 +201,7 @@ class MainWindow(QMainWindow):
         self.script_page.bind_flash(self.service)
         self.script_page.bind_serial(self.serial_page)
         self.script_page.bind_net(self.ethernet_page)
+        self.script_page.bind_can(self.can_page)
         self.script_page.bind_term(self.terminal_page)
         self.setCentralWidget(self.shell)
         self._restore_tool_widths()
@@ -239,6 +244,7 @@ class MainWindow(QMainWindow):
         return {
             "serial": self.serial_page,
             "ethernet": self.ethernet_page,
+            "can": self.can_page,
             "terminal": self.terminal_page,
         }.get(tool)
 
@@ -488,6 +494,7 @@ class MainWindow(QMainWindow):
         for page in (
             self.serial_page,
             self.ethernet_page,
+            self.can_page,
             self.terminal_page,
             self.script_page,
         ):
@@ -605,6 +612,7 @@ class MainWindow(QMainWindow):
             ("tool.program", tr("tool.program"), go_tool("program")),
             ("tool.serial", tr("tool.serial"), go_tool("serial")),
             ("tool.ethernet", tr("tool.ethernet"), go_tool("ethernet")),
+            ("tool.can", tr("tool.can"), go_tool("can")),
             ("tool.terminal", tr("tool.terminal"), go_tool("terminal")),
             ("tool.script", tr("tool.script"), go_tool("script")),
             ("act.open", tr("act.open"), self._toolbar_open_firmware),
@@ -1104,6 +1112,8 @@ class MainWindow(QMainWindow):
             self._save_geometry()
             if hasattr(self, "shell"):
                 self.shell.shutdown()
+            if hasattr(self, "can_page"):
+                self.can_page.shutdown()
             self.rtt_panel.shutdown()
             self.swo_panel.shutdown()
             self.variable_monitor.shutdown()
@@ -1131,6 +1141,7 @@ class MainWindow(QMainWindow):
             "program": getattr(self, "program_page", None),
             "serial": getattr(self, "serial_page", None),
             "ethernet": getattr(self, "ethernet_page", None),
+            "can": getattr(self, "can_page", None),
             "terminal": getattr(self, "terminal_page", None),
             "script": getattr(self, "script_page", None),
         }
@@ -1150,6 +1161,7 @@ class MainWindow(QMainWindow):
             ("program", getattr(self, "program_page", None)),
             ("serial", getattr(self, "serial_page", None)),
             ("ethernet", getattr(self, "ethernet_page", None)),
+            ("can", getattr(self, "can_page", None)),
             ("terminal", getattr(self, "terminal_page", None)),
             ("script", getattr(self, "script_page", None)),
         ):

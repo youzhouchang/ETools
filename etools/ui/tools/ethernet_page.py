@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from etools.core.net_addr import local_ipv4, suggest_remote_ipv4
 from etools.core.net_link import NetLink
 from etools.i18n import tr
 from etools.ui.shell import ToolActionSpec
@@ -41,25 +42,7 @@ _HISTORY_MAX = 30
 
 
 def _local_ipv4() -> str:
-    """Best-effort outbound-facing IPv4 of this machine."""
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-        finally:
-            s.close()
-        if ip and not ip.startswith("127."):
-            return ip
-    except Exception:
-        pass
-    try:
-        ip = socket.gethostbyname(socket.gethostname())
-        if ip and not ip.startswith("127."):
-            return ip
-    except Exception:
-        pass
-    return "127.0.0.1"
+    return local_ipv4()
 
 
 class _RxRelay(QObject):
@@ -95,7 +78,7 @@ class EthernetPage(ToolPage):
         self.proto.setFixedHeight(28)
         self.lbl_proto = self.form_row(tr("net.proto"), self.proto)
 
-        self.host = IPv4Edit("192.168.1.100")
+        self.host = IPv4Edit(suggest_remote_ipv4())
         self.lbl_host = self.form_row(tr("net.remote_host"), self.host)
 
         self.port = QLineEdit("8080")
@@ -223,15 +206,22 @@ class EthernetPage(ToolPage):
         mode = self.proto.currentIndex()
         is_server = mode == _PROTO_SERVER
         is_udp = mode == _PROTO_UDP
-        # Server binds locally; UDP needs both local bind and remote peer.
+        # Save the host that belonged to the *previous* mode, then restore the new one.
+        prev = getattr(self, "_last_mode", self._mode_key())
+        prev_host = self.host.text().strip()
+        if prev_host:
+            by_mode = self._host_by_mode()
+            by_mode[prev] = prev_host
+            save_tool_prefs(self.tool_id, {"host_by_mode": by_mode})
+        self._last_mode = self._mode_key()
         self.lbl_host.setText(tr("net.host") if is_server else tr("net.remote_host"))
         self.lbl_port.setText(tr("net.port") if is_server else tr("net.remote_port"))
         self.local_port.setVisible(is_udp)
         self.lbl_local_port.setVisible(is_udp)
         self.peer_combo.setVisible(is_server)
         self.lbl_peer.setVisible(is_server)
+        self._restore_host_for_mode()
         if is_server:
-            self.host.setText("0.0.0.0")
             self.conn_btn.setText(tr("net.listen"))
         elif is_udp:
             self.lbl_host.setText(tr("net.remote_host"))
@@ -373,14 +363,34 @@ class EthernetPage(ToolPage):
         del buf[:n]
         return data
 
+    def _mode_key(self) -> str:
+        return {0: "client", 1: "server", 2: "udp"}.get(self.proto.currentIndex(), "client")
+
+    def _host_by_mode(self) -> dict[str, str]:
+        raw = load_tool_prefs(self.tool_id).get("host_by_mode")
+        if isinstance(raw, dict):
+            return {str(k): str(v) for k, v in raw.items() if v}
+        return {}
+
+    def _restore_host_for_mode(self) -> None:
+        """Fill host from this mode's last value, else subnet guess / 0.0.0.0."""
+        mode = self._mode_key()
+        saved = self._host_by_mode().get(mode) or load_tool_prefs(self.tool_id).get("host")
+        if mode == "server":
+            self.host.setText(str(saved or "0.0.0.0"))
+            return
+        self.host.setText(str(saved or suggest_remote_ipv4()))
+
     def _load_prefs(self) -> None:
         prefs = load_tool_prefs(self.tool_id)
         if prefs.get("proto_index") is not None:
             idx = int(prefs["proto_index"])
             if 0 <= idx < self.proto.count():
+                self.proto.blockSignals(True)
                 self.proto.setCurrentIndex(idx)
-        if prefs.get("host"):
-            self.host.setText(str(prefs["host"]))
+                self.proto.blockSignals(False)
+        self._last_mode = self._mode_key()
+        self._restore_host_for_mode()
         if prefs.get("port"):
             self.port.setText(str(prefs["port"]))
         if prefs.get("local_port"):
@@ -409,11 +419,16 @@ class EthernetPage(ToolPage):
                     edit.setText(presets[i])
 
     def _persist_prefs(self) -> None:
+        host = self.host.text().strip()
+        by_mode = self._host_by_mode()
+        if host:
+            by_mode[self._mode_key()] = host
         save_tool_prefs(
             self.tool_id,
             {
                 "proto_index": self.proto.currentIndex(),
-                "host": self.host.text().strip(),
+                "host": host,
+                "host_by_mode": by_mode,
                 "port": self.port.text().strip(),
                 "local_port": self.local_port.text().strip(),
                 "ending": self.ending.currentData(),
@@ -473,6 +488,7 @@ class EthernetPage(ToolPage):
         self._repaint_btn()
         self._refresh_peers()
         self.traffic.append_status(opened)
+        self._persist_prefs()
 
     def _set_send_enabled(self, enabled: bool) -> None:
         self.send_btn.setEnabled(enabled)

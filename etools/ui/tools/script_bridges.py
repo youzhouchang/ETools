@@ -118,6 +118,50 @@ class TermLuaBridge:
         return self._pump.submit(lambda: self._page.lua_send_text(text))
 
 
+class CanLuaBridge:
+    """Lua ``can.*`` backed by the CanPage."""
+
+    def __init__(self, page, pump: _QueueBridge) -> None:
+        self._page = page
+        self._pump = pump
+
+    def opened(self) -> bool:
+        return bool(self._pump.submit(lambda: self._page.lua_opened()))
+
+    def send(self, arb_id: int, data: str = "", ext: bool = False, rtr: bool = False) -> bool:
+        return self._pump.submit(
+            lambda: self._page.lua_send_frame(int(arb_id), str(data), bool(ext), bool(rtr))
+        )
+
+    def nmt(self, command: str, node: int = 0) -> bool:
+        return self._pump.submit(lambda: self._page.lua_nmt(str(command), int(node)))
+
+    def sdo_read(self, node: int, index: int, subindex: int = 0) -> str:
+        return self._pump.submit(
+            lambda: self._page.lua_sdo_read(int(node), int(index), int(subindex))
+        )
+
+    def sdo_write(self, node: int, index: int, subindex: int, value: str) -> bool:
+        return self._pump.submit(
+            lambda: self._page.lua_sdo_write(int(node), int(index), int(subindex), str(value))
+        )
+
+    def recv(self, max_frames: int = 16) -> list:
+        frames = self._pump.submit(lambda: self._page.lua_take_frames(int(max_frames)))
+        return list(frames or [])
+
+    def expect_id(self, arb_id: int, timeout_ms: int = 2000) -> dict | None:
+        deadline = time.monotonic() + max(1, int(timeout_ms)) / 1000.0
+        want = int(arb_id)
+        while time.monotonic() < deadline:
+            frames = self._pump.submit(lambda: self._page.lua_take_frames(32), timeout=5.0)
+            for fr in frames or []:
+                if int(fr.get("id", -1)) == want:
+                    return fr
+            time.sleep(0.03)
+        return None
+
+
 class FlashLuaBridge:
     """Lua ``flash.*`` backed by FlashService / PyOCD driver."""
 

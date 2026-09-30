@@ -1,8 +1,9 @@
-"""Multi-tool pages — Program + Serial / Ethernet / Terminal / Script shell."""
+"""Multi-tool pages — Program + Serial / Ethernet / CAN / Terminal / Script shell."""
 
 from __future__ import annotations
 
 from etools.ui.tools.base import ToolPage
+from etools.ui.tools.can_page import CanPage
 from etools.ui.tools.ethernet_page import EthernetPage
 from etools.ui.tools.program_page import ProgramPage
 from etools.ui.tools.script_page import ScriptPage
@@ -15,6 +16,7 @@ __all__ = [
     "ProgramPage",
     "SerialPage",
     "EthernetPage",
+    "CanPage",
     "TerminalPage",
     "ScriptPage",
     "SftpPanel",

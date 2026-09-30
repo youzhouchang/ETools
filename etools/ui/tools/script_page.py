@@ -244,6 +244,14 @@ class ScriptPage(ToolPage):
             self._pump.install(self)
         self.svc.set_bridge("term", TermLuaBridge(page, self._pump))
 
+    def bind_can(self, page) -> None:
+        from etools.ui.tools.script_bridges import CanLuaBridge, _QueueBridge
+
+        if not hasattr(self, "_pump"):
+            self._pump = _QueueBridge()
+            self._pump.install(self)
+        self.svc.set_bridge("can", CanLuaBridge(page, self._pump))
+
     def run_named(self, name: str) -> bool:
         """Run a saved script from another tool page's toolbar."""
         if not self.svc.available():

@@ -35,6 +35,7 @@ TOOL_ORDER: list[tuple[str, str]] = [
     ("program", "tool-program"),
     ("serial", "tool-serial"),
     ("ethernet", "tool-ethernet"),
+    ("can", "tool-can"),
     ("terminal", "tool-terminal"),
     ("script", "tool-script"),
 ]

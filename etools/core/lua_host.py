@@ -78,7 +78,7 @@ class LuaHost:
         self._done_hook = hook
 
     def set_bridge(self, name: str, bridge: Any) -> None:
-        """Register a tool bridge: ``serial``, ``net``, ``term``, ``flash``."""
+        """Register a tool bridge: ``serial``, ``net``, ``term``, ``can``, ``flash``."""
         self._bridges[name] = bridge
 
     def clear_bridge(self, name: str) -> None:
@@ -131,6 +131,7 @@ class LuaHost:
         self._install_serial(lua, host)
         self._install_net(lua, host)
         self._install_term(lua, host)
+        self._install_can(lua, host)
         self._install_flash(lua, host)
         lua.globals()["etools"] = host
         lua.globals()["dofile"] = self._blocked("dofile")
@@ -236,6 +237,31 @@ class LuaHost:
         term = lua.eval("{}")
         term["send"] = lambda text: self._bridge_call("term", "send", str(text))
         host["term"] = term
+
+    def _install_can(self, lua, host) -> None:
+        can = lua.eval("{}")
+        can["send"] = lambda arb_id, data="", ext=False, rtr=False: self._bridge_call(
+            "can", "send", int(arb_id), str(data), bool(ext), bool(rtr)
+        )
+        can["nmt"] = lambda command, node=0: self._bridge_call(
+            "can", "nmt", str(command), int(node)
+        )
+        can["sdo_read"] = lambda node, index, subindex=0: self._bridge_call(
+            "can", "sdo_read", int(node), int(index), int(subindex)
+        )
+        can["sdo_write"] = lambda node, index, subindex, value: self._bridge_call(
+            "can", "sdo_write", int(node), int(index), int(subindex), str(value)
+        )
+        can["recv"] = lambda max_frames=16: self._bridge_call("can", "recv", int(max_frames))
+        can["expect_id"] = lambda arb_id, timeout=2000: self._bridge_call(
+            "can", "expect_id", int(arb_id), int(timeout)
+        )
+
+        def _opened():
+            return bool(self._bridges.get("can") and self._bridge_call("can", "opened"))
+
+        can["opened"] = _opened
+        host["can"] = can
 
     def _install_flash(self, lua, host) -> None:
         flash = lua.eval("{}")

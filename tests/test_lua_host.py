@@ -78,6 +78,63 @@ def test_lua_serial_bridge_and_flash_api():
     assert serial.sent == ["AT"]
 
 
+def test_lua_can_bridge_api():
+    host = LuaHost()
+
+    class CanStub:
+        def __init__(self):
+            self.sent = []
+            self.nmts = []
+
+        def opened(self):
+            return True
+
+        def send(self, arb_id, data="", ext=False, rtr=False):
+            self.sent.append((int(arb_id), str(data), bool(ext)))
+            return True
+
+        def nmt(self, command, node=0):
+            self.nmts.append((str(command), int(node)))
+            return True
+
+        def sdo_write(self, node, index, subindex, value):
+            return (int(node), int(index), int(subindex), str(value)) == (1, 0x2000, 0, "0x11")
+
+        def sdo_read(self, node, index, subindex=0):
+            return "0x43 00 20 00 AA BB CC DD"
+
+        def recv(self, max_frames=16):
+            return [{"id": 0x701, "data": "05", "ext": False, "rtr": False}]
+
+        def expect_id(self, arb_id, timeout=2000):
+            return {"id": int(arb_id), "data": "01"}
+
+    can = CanStub()
+    host.set_bridge("can", can)
+    done: list[tuple[bool, str]] = []
+    host.set_done_hook(lambda ok, msg: done.append((ok, msg)))
+    host.run_script(
+        """
+        assert(etools.can.opened())
+        assert(etools.can.send(0x123, '01 02 03', false, false))
+        assert(etools.can.nmt('start', 5))
+        assert(etools.can.sdo_write(1, 0x2000, 0, '0x11'))
+        local hex = etools.can.sdo_read(1, 0x2000, 0)
+        assert(hex ~= nil and hex ~= '')
+        local frames = etools.can.recv(8)
+        assert(frames ~= nil)
+        local f = etools.can.expect_id(0x701, 50)
+        assert(f and f['id'] == 0x701)
+        """
+    )
+    deadline = time.time() + 3
+    while not done and time.time() < deadline:
+        time.sleep(0.02)
+    assert done and done[0][0] is True, done
+    assert can.sent == [(0x123, "01 02 03", False)]
+    assert can.nmts == [("start", 5)]
+
+
 def test_lua_stops_and_reports_errors():
     host = LuaHost()
     done: list[tuple[bool, str]] = []

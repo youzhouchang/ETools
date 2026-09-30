@@ -1,7 +1,7 @@
 [project]
 name = "etools"
 version = "0.5.0"
-description = "ETools — Embedded engineer workbench (MCU flash + serial / network / SSH tools)"
+description = "ETools — Embedded engineer workbench (MCU flash + serial / network / CAN / SSH tools)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -13,6 +13,7 @@ dependencies = [
     "paramiko>=3.0",
     "pyelftools>=0.31",
     "lupa>=2.0",
+    "python-can>=4.0",
 ]
 
 [project.optional-dependencies]

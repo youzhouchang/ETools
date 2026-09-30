@@ -269,6 +269,7 @@ def test_ssh_host_key_errors():
 def test_shell_builds_and_switches(qapp):
     from etools.ui.shell import TOOL_ORDER, ToolShell
     from etools.ui.tools import (
+        CanPage,
         EthernetPage,
         ProgramPage,
         ScriptPage,
@@ -280,6 +281,7 @@ def test_shell_builds_and_switches(qapp):
     program = ProgramPage()
     serial = SerialPage()
     ethernet = EthernetPage()
+    can = CanPage()
     terminal = TerminalPage()
     script = ScriptPage()
     sftp = SftpPanel()
@@ -289,6 +291,7 @@ def test_shell_builds_and_switches(qapp):
         "program": program,
         "serial": serial,
         "ethernet": ethernet,
+        "can": can,
         "terminal": terminal,
         "script": script,
     }
@@ -296,11 +299,12 @@ def test_shell_builds_and_switches(qapp):
         "program": program.toolbar_actions,
         "serial": serial.toolbar_actions,
         "ethernet": ethernet.toolbar_actions,
+        "can": can.toolbar_actions,
         "terminal": lambda: list(terminal.toolbar_actions()) + list(sftp.toolbar_actions()),
         "script": script.toolbar_actions,
     }
     shell = ToolShell(pages, providers)
-    assert shell.tool_keys == [k for k, _ in TOOL_ORDER]
+    assert shell.tool_keys == [k for k, _ in TOOL_ORDER if k in pages]
     assert set(shell.tool_buttons) == set(shell.tool_keys)
     for key in shell.tool_keys:
         assert key in shell.toolbars
@@ -311,7 +315,8 @@ def test_shell_builds_and_switches(qapp):
     assert shell._rail.maximumHeight() >= n * 48
 
     shell.shutdown()
-    for p in (program, serial, ethernet, terminal, script, sftp):
+    can.shutdown()
+    for p in (program, serial, ethernet, can, terminal, script, sftp):
         p.close()
     shell.close()
 

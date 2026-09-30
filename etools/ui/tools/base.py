@@ -173,10 +173,10 @@ class ToolPage(QWidget):
             self._active_form = form
         if isinstance(field, QWidget):
             field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            # Composite fields (e.g. edit+button) must share the row height
-            # so they stay baseline-aligned with plain QLineEdits.
+            # Composite fields (edit+button, button grids) share the 28px rhythm
+            # but may grow taller — never crush multi-button rows.
             if field.layout() is not None:
-                field.setFixedHeight(28)
+                field.setMinimumHeight(28)
                 lay = field.layout()
                 lay.setContentsMargins(0, 0, 0, 0)
         lab = QLabel(label)

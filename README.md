@@ -22,6 +22,13 @@
 - 复位 / 挂起目标
 - RTT / SWV 调试视图、Hex 预览（空白检查 / 文件比较 / 填充 RAM）
 
+### CAN 助手（CAN / CANopen）
+
+- python-can 后端：Virtual / socketcan / PCAN / IXXAT / Kvaser / Vector / SLCAN
+- 帧收发（标准/扩展、RTR、CAN FD）、心跳监视、NMT、SDO 读写（expedited）
+- EDS 加载与 PDO 映射表、轨迹录制（CSV）/ 回放
+- Lua：`etools.can.send / nmt / sdo_read / sdo_write / recv / expect_id`
+
 ### 串口助手（Serial）
 
 - pyserial 端口枚举与热插拔检测
@@ -53,7 +60,7 @@
 ## 环境要求
 
 - Python 3.10+
-- pyOCD、PySide6、pyserial、paramiko（见依赖）
+- pyOCD、PySide6、pyserial、paramiko、python-can（见依赖）
 - 对应探针驱动（ST-Link / J-Link / CMSIS-DAP）
 
 ## 安装

@@ -26,6 +26,7 @@ from etools.ui.shell import ToolActionSpec
 from etools.ui.tool_prefs import load_tool_prefs, save_tool_prefs
 from etools.ui.tools.base import ToolPage
 from etools.ui.tools.sftp_panel import SftpPanel
+from etools.core.net_addr import suggest_remote_ipv4
 from etools.ui.widgets.ip_edit import IPv4Edit
 
 _HISTORY_MAX = 30
@@ -78,7 +79,7 @@ class TerminalPage(ToolPage):
         sess_row.addStretch(1)
         self.form_row("", sess_wrap)
 
-        self.host = IPv4Edit("192.168.1.10")
+        self.host = IPv4Edit(suggest_remote_ipv4())
         self.lbl_host = self.form_row(tr("term.host"), self.host)
 
         self.user = QLineEdit("pi")
@@ -465,8 +466,21 @@ class TerminalPage(ToolPage):
 
     def _load_prefs(self) -> None:
         prefs = load_tool_prefs(self.tool_id)
-        if prefs.get("host"):
-            self.host.setText(str(prefs["host"]))
+        host = str(prefs.get("host") or "").strip()
+        if not host:
+            # Reuse the last Ethernet target when Terminal has no host yet.
+            eth = load_tool_prefs("ethernet")
+            by_mode = eth.get("host_by_mode") or {}
+            host = str(
+                by_mode.get("client")
+                or by_mode.get("udp")
+                or eth.get("host")
+                or suggest_remote_ipv4()
+            ).strip()
+            if host in {"", "0.0.0.0"}:
+                host = suggest_remote_ipv4()
+        if host:
+            self.host.setText(host)
         if prefs.get("user"):
             self.user.setText(str(prefs["user"]))
         if prefs.get("port"):

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import IO, Any
+from typing import IO
 
 from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
@@ -479,7 +479,7 @@ class TrafficView(QWidget):
             self._auto_log_line(f"{self._stamp()}{tr('mon.rx')} {data.hex(' ').upper()}")
         self._append_stream(tr("mon.rx"), data, peer)
 
-    def append_tx(self, data: bytes | str) -> None:
+    def append_tx(self, data: bytes | str, peer: str = "") -> None:
         if isinstance(data, str):
             raw = data.encode("utf-8", errors="replace")
         else:
@@ -489,7 +489,7 @@ class TrafficView(QWidget):
             self._tx_pkts += 1
             self._stats_dirty = True
             self._auto_log_line(f"{self._stamp()}{tr('mon.tx')} {raw.hex(' ').upper()}")
-        self._append_stream(tr("mon.tx"), raw)
+        self._append_stream(tr("mon.tx"), raw, peer)
 
     def _format_record(self, tag: str, data: bytes, peer: str, stamp: str) -> str:
         prefix = f"{stamp}{tag}"
