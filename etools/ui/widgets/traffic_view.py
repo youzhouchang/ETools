@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
+import weakref
 from collections import deque
 from datetime import datetime
 from typing import IO
 
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import QEvent, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -80,10 +80,12 @@ def format_timestamp(mode: str, now: datetime | None = None) -> str:
 class TrafficView(QWidget):
     """RX/TX monitor with hex mode, timestamps, pause, save, filter, stats."""
 
+    _open: list[weakref.ReferenceType[TrafficView]] = []
     stats_changed = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        TrafficView._open.append(weakref.ref(self))
         self._hex_mode = False
         self._records: deque[tuple[str, bytes, str, str]] = deque()
         self._ascii_carry = bytearray()
@@ -124,9 +126,9 @@ class TrafficView(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(8)
 
-        from etools.ui.kit import H_TOOL, ghost_button
+        from etools.ui.kit import H_BTN, H_TOOL, ghost_button
 
-        # Row 1 — always-visible essentials
+        # One row above the log. Shared extras live under More; eye-care is a menu item.
         bar = QHBoxLayout()
         bar.setSpacing(6)
         self.mode_combo = QComboBox()
@@ -137,28 +139,10 @@ class TrafficView(QWidget):
         self._lbl_mode = bar.itemAt(bar.count() - 1).widget()
         bar.addWidget(self.mode_combo)
 
-        self.ts_check = QCheckBox(tr("mon.ts"))
-        self.ts_check.setChecked(True)
-        self.scroll_check = QCheckBox(tr("mon.autoscroll"))
-        self.scroll_check.setChecked(True)
         self.pause_check = QCheckBox(tr("mon.pause"))
         self.pause_check.setToolTip(tr("mon.pause_tip"))
-        bar.addWidget(self.ts_check)
-        bar.addWidget(self.scroll_check)
         bar.addWidget(self.pause_check)
 
-        bar.addStretch(1)
-
-        # RX/TX counters live in the global status bar (one place, with Clear).
-        self.clear_btn = ghost_button(tr("mon.clear"), height=H_TOOL)
-        self.save_btn = ghost_button(tr("mon.save"), height=H_TOOL)
-        bar.addWidget(self.save_btn)
-        bar.addWidget(self.clear_btn)
-        root.addLayout(bar)
-
-        # Row 2 — search (always on, it's the primary discovery affordance)
-        filter_row = QHBoxLayout()
-        filter_row.setSpacing(6)
         self.filter_edit = QLineEdit()
         self.filter_edit.setFixedHeight(H_TOOL)
         self.filter_edit.setClearButtonEnabled(True)
@@ -169,95 +153,99 @@ class TrafficView(QWidget):
         self.dir_combo.addItem(tr("mon.dir.all"), "all")
         self.dir_combo.addItem(tr("mon.dir.rx"), "rx")
         self.dir_combo.addItem(tr("mon.dir.tx"), "tx")
-        self.copy_btn = ghost_button(tr("mon.copy"), height=H_TOOL)
-        filter_row.addWidget(self.filter_hint)
-        filter_row.addWidget(self.filter_edit, 1)
-        filter_row.addWidget(self.dir_combo)
-        filter_row.addWidget(self.copy_btn)
-        root.addLayout(filter_row)
+        bar.addWidget(self.filter_hint)
+        bar.addWidget(self.filter_edit, 1)
+        bar.addWidget(self.dir_combo)
 
-        # Additional monitor controls remain directly accessible.
-        self.advanced_host = QWidget()
-        advanced_row = QGridLayout(self.advanced_host)
-        advanced_row.setContentsMargins(0, 0, 0, 0)
-        advanced_row.setHorizontalSpacing(10)
-        advanced_row.setVerticalSpacing(8)
+        self.more_toggle = QCheckBox(tr("mon.more"))
+        self.more_toggle.setToolTip(tr("mon.more_tip"))
+        self.more_toggle.setChecked(False)
+        self.clear_btn = ghost_button(tr("mon.clear"), height=H_TOOL)
+        bar.addWidget(self.more_toggle)
+        bar.addWidget(self.clear_btn)
+        root.addLayout(bar)
+
+        self.ts_check = QCheckBox(tr("mon.ts"), self)
+        self.ts_check.setChecked(True)
+        self.ts_check.hide()
+        self.scroll_check = QCheckBox(tr("mon.autoscroll"))
+        self.scroll_check.setChecked(True)
+        self.save_btn = ghost_button(tr("mon.save"), height=H_BTN)
+        self.copy_btn = ghost_button(tr("mon.copy"), height=H_BTN)
         self.ts_combo = QComboBox()
-        self.ts_combo.setFixedHeight(H_TOOL)
+        self.ts_combo.setFixedHeight(H_BTN)
         self.ts_combo.addItem(tr("mon.ts.time_ms"), TS_TIME_MS)
         self.ts_combo.addItem(tr("mon.ts.time"), TS_TIME)
         self.ts_combo.addItem(tr("mon.ts.full"), TS_FULL)
         self.ts_combo.addItem(tr("mon.ts.off"), TS_OFF)
         self.wrap_check = QCheckBox(tr("mon.wrap"))
-        # Keep one received frame on one visual row by default. Users can
-        # enable wrapping explicitly for narrow panes or long text payloads.
         self.wrap_check.setChecked(False)
         self.merge_spin = QSpinBox()
         self.merge_spin.setRange(0, 5000)
         self.merge_spin.setSuffix(" ms")
         self.merge_spin.setFixedWidth(90)
-        self.merge_spin.setFixedHeight(H_TOOL)
+        self.merge_spin.setFixedHeight(H_BTN)
         self.merge_spin.setToolTip(tr("mon.merge_tip"))
         self.lbl_merge = QLabel(tr("mon.merge"))
         self.auto_log_check = QCheckBox(tr("mon.auto_log"))
         self.auto_log_check.setToolTip(tr("mon.auto_log_tip"))
-        self.eye_care_check = QCheckBox(tr("mon.eye_care"))
-        self.eye_care_check.setToolTip(tr("mon.eye_care_tip"))
-        self.export_csv_btn = ghost_button(tr("mon.export_csv"), height=H_TOOL)
-        self.inspect_btn = ghost_button(tr("inspector.title"), height=H_TOOL)
-        self.capture_btn = ghost_button(tr("mon.capture"), height=H_TOOL)
-        self.replay_btn = ghost_button(tr("mon.replay"), height=H_TOOL)
-        self.replay_stop_btn = ghost_button(tr("script.stop"), height=H_TOOL)
+        self.eye_care_check = QCheckBox(tr("mon.eye_care"), self)
+        self.eye_care_check.hide()
+        self.export_btn = ghost_button(tr("mon.export_text"), height=H_BTN)
+        self.export_btn.setToolTip(tr("mon.export_text_tip"))
+        self.inspect_btn = ghost_button(tr("inspector.title"), height=H_BTN)
+        self.capture_btn = ghost_button(tr("mon.capture"), height=H_BTN)
+        self.replay_btn = ghost_button(tr("mon.replay"), height=H_BTN)
+        self.replay_stop_btn = ghost_button(tr("script.stop"), height=H_BTN)
         self.replay_stop_btn.setEnabled(False)
         self.capture_btn.clicked.connect(self.export_capture)
         self.replay_btn.clicked.connect(self.replay_capture)
         self.replay_stop_btn.clicked.connect(self.stop_replay)
-
-        # Compact left-aligned rows — buttons must not stretch across the pane.
         for btn in (
-            self.export_csv_btn,
+            self.export_btn,
             self.inspect_btn,
             self.capture_btn,
             self.replay_btn,
             self.replay_stop_btn,
+            self.save_btn,
+            self.copy_btn,
         ):
-            btn.setFixedHeight(H_TOOL)
             btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
-        # Two compact rows (not three): options, then actions.
-        row1 = QHBoxLayout()
-        row1.setSpacing(8)
-        row1.addWidget(self.ts_combo)
-        row1.addWidget(self.wrap_check)
-        row1.addWidget(self.lbl_merge)
-        row1.addWidget(self.merge_spin)
-        row1.addSpacing(12)
-        row1.addWidget(self.eye_care_check)
-        row1.addWidget(self.auto_log_check)
-        row1.addStretch(1)
-        advanced_row.addLayout(row1, 0, 0)
-
-        row2 = QHBoxLayout()
-        row2.setSpacing(8)
-        row2.addWidget(self.export_csv_btn)
-        row2.addWidget(self.inspect_btn)
-        row2.addSpacing(8)
-        row2.addWidget(self.capture_btn)
-        row2.addWidget(self.replay_btn)
-        row2.addWidget(self.replay_stop_btn)
-        row2.addStretch(1)
-        advanced_row.addLayout(row2, 1, 0)
-        advanced_row.setVerticalSpacing(6)
-        advanced_row.setColumnStretch(0, 1)
+        self.advanced_host = QWidget()
+        self.advanced_host.setObjectName("trafficMore")
+        more = QVBoxLayout(self.advanced_host)
+        # Bottom margin keeps the action row off the log frame. Stylesheet
+        # padding makes these buttons taller than the top toolbar.
+        more.setContentsMargins(0, 2, 0, 12)
+        more.setSpacing(8)
+        opt_row = QHBoxLayout()
+        opt_row.setSpacing(8)
+        opt_row.addWidget(self.ts_combo)
+        opt_row.addWidget(self.scroll_check)
+        opt_row.addWidget(self.wrap_check)
+        opt_row.addWidget(self.lbl_merge)
+        opt_row.addWidget(self.merge_spin)
+        opt_row.addWidget(self.auto_log_check)
+        opt_row.addStretch(1)
+        act_row = QHBoxLayout()
+        act_row.setSpacing(8)
+        act_row.addWidget(self.save_btn)
+        act_row.addWidget(self.copy_btn)
+        act_row.addWidget(self.export_btn)
+        act_row.addWidget(self.inspect_btn)
+        act_row.addWidget(self.capture_btn)
+        act_row.addWidget(self.replay_btn)
+        act_row.addWidget(self.replay_stop_btn)
+        act_row.addStretch(1)
+        more.addLayout(opt_row)
+        more.addLayout(act_row)
         self.replay_btn.setToolTip(tr("mon.replay_tip"))
-        # Fixed height so option buttons never paint over the log pane.
         self.advanced_host.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        self.advanced_host.setContentsMargins(0, 0, 0, 2)
-        # Two tool-height rows + row gap — keep the log pane from sliding under.
-        self.advanced_host.setFixedHeight(H_TOOL * 2 + 6 + 4)
+        self.advanced_host.setVisible(False)
+        self.more_toggle.toggled.connect(self._set_more_visible)
+        self._fit_more_panel()
         root.addWidget(self.advanced_host, 0)
-        root.addSpacing(6)
-        self.eye_care_check.toggled.connect(self._on_eye_care_toggled)
 
         self.view = QPlainTextEdit()
         self.view.setUndoRedoEnabled(False)
@@ -287,18 +275,39 @@ class TrafficView(QWidget):
         self.copy_btn.clicked.connect(self._copy_all)
         self.eye_care_check.toggled.connect(self._on_eye_care_toggled)
         self.auto_log_check.toggled.connect(self._on_auto_log_toggled)
-        self.export_csv_btn.clicked.connect(self.export_csv)
+        self.export_btn.clicked.connect(self.export_text)
         self.inspect_btn.clicked.connect(self._open_inspector)
         self.save_btn.clicked.connect(self.save_as)
         self.clear_btn.clicked.connect(self.clear)
         self.view.setLineWrapMode(self.view.LineWrapMode.NoWrap)
         self._refresh_stats()
 
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.StyleChange and hasattr(self, "advanced_host"):
+            self._fit_more_panel()
+
+    def _fit_more_panel(self) -> None:
+        """Lock the extra rows to their real height so they cannot slide into the log."""
+        layout = self.advanced_host.layout()
+        if layout is None:
+            return
+        layout.invalidate()
+        height = layout.sizeHint().height()
+        if height > 0:
+            self.advanced_host.setFixedHeight(height)
+
+    def _set_more_visible(self, on: bool) -> None:
+        self._fit_more_panel()
+        self.advanced_host.setVisible(on)
+
     def retranslate(self) -> None:
         self.capture_btn.setText(tr("mon.capture"))
         self.replay_btn.setText(tr("mon.replay"))
         self.replay_stop_btn.setText(tr("script.stop"))
         self.pause_check.setToolTip(tr("mon.pause_tip"))
+        self.more_toggle.setText(tr("mon.more"))
+        self.more_toggle.setToolTip(tr("mon.more_tip"))
         self._lbl_mode.setText(tr("mon.display"))
         self.mode_combo.setItemText(0, tr("mon.ascii"))
         self.mode_combo.setItemText(1, tr("mon.hex"))
@@ -322,7 +331,8 @@ class TrafficView(QWidget):
         self.copy_btn.setText(tr("mon.copy"))
         self.auto_log_check.setText(tr("mon.auto_log"))
         self.auto_log_check.setToolTip(tr("mon.auto_log_tip"))
-        self.export_csv_btn.setText(tr("mon.export_csv"))
+        self.export_btn.setText(tr("mon.export_text"))
+        self.export_btn.setToolTip(tr("mon.export_text_tip"))
         self.inspect_btn.setText(tr("inspector.title"))
         self.save_btn.setText(tr("mon.save"))
         self.clear_btn.setText(tr("mon.clear"))
@@ -396,7 +406,9 @@ class TrafficView(QWidget):
 
         return bool((get_config().extra or {}).get("eye_care_log"))
 
-    def _on_eye_care_toggled(self, on: bool) -> None:
+    @classmethod
+    def set_eye_care(cls, on: bool) -> None:
+        """Apply the eye-care log background to every open traffic view."""
         from etools.config import get_config, save_config
 
         cfg = get_config()
@@ -407,7 +419,16 @@ class TrafficView(QWidget):
             save_config()
         except OSError:
             pass
-        self._apply_eye_care(on)
+        alive: list[weakref.ReferenceType[TrafficView]] = []
+        for ref in cls._open:
+            view = ref()
+            if view is not None:
+                alive.append(ref)
+                view._apply_eye_care(on)
+        cls._open = alive
+
+    def _on_eye_care_toggled(self, on: bool) -> None:
+        self.set_eye_care(on)
 
     def _apply_eye_care(self, on: bool) -> None:
         """Soft green receive pane (qtSerial-style) for long monitoring sessions."""
@@ -798,29 +819,29 @@ class TrafficView(QWidget):
                     break
         HexInspectorDialog(seed, self).exec()
 
-    def export_csv(self) -> None:
-        """Export records as CSV: time,direction,peer,hex,text."""
+    def records_as_text(self) -> str:
+        """One readable block per record: time and direction, then text, then hex."""
+        blocks: list[str] = []
+        for tag, data, peer, stamp in self._records:
+            head = f"{stamp}  {tag.upper()}"
+            if peer:
+                head += f"  {peer}"
+            text = decode_payload(data, self._encoding)
+            blocks.append(f"{head}\n{text}\n{data.hex(' ').upper()}")
+        if not blocks:
+            return ""
+        return "\n\n".join(blocks) + "\n"
+
+    def export_text(self) -> None:
+        """Export records as plain text that any editor can open."""
         path, _ = QFileDialog.getSaveFileName(
-            self, tr("mon.export_csv"), "traffic.csv", "CSV (*.csv);;All (*.*)"
+            self, tr("mon.export_text"), "traffic.txt", tr("mon.log_filter")
         )
         if not path:
             return
-        import csv
-
         try:
-            with open(path, "w", encoding="utf-8", newline="") as fh:
-                writer = csv.writer(fh)
-                writer.writerow(["stamp", "direction", "peer", "hex", "text"])
-                for tag, data, peer, stamp in self._records:
-                    writer.writerow(
-                        [
-                            stamp,
-                            tag,
-                            peer,
-                            data.hex(" ").upper(),
-                            decode_payload(data, self._encoding),
-                        ]
-                    )
+            with open(path, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(self.records_as_text())
         except OSError as exc:
             self.append_status(str(exc))
             return

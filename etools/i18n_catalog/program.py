@@ -10,6 +10,9 @@ ZH = {
     "probe.status_off": "● 未连接",
     "probe.status_fail": "● 连接失败",
     "probe.status_busy": "● 连接中…",
+    "probe.status_absent": "● 未检测到芯片",
+    "probe.conn_params": "连接参数",
+    "probe.no_mcu": "调试器在线，但芯片没有应答。请检查供电、SWD 和复位。",
     "probe.probe": "调试探针",
     "probe.target": "目标芯片",
     "probe.mode": "连接模式",
@@ -102,6 +105,11 @@ EN = {
     "probe.status_off": "● Disconnected",
     "probe.status_fail": "● Connect failed",
     "probe.status_busy": "● Connecting…",
+    "probe.status_absent": "● No chip",
+    "probe.conn_params": "Connection",
+    "probe.no_mcu": (
+        "The probe is online, but the chip did not answer. Check power, SWD, and reset."
+    ),
     "probe.probe": "Debug probe",
     "probe.target": "Target",
     "probe.mode": "Connect mode",

@@ -12,7 +12,9 @@ from etools.core.probe_errors import (  # noqa: E402
     ProbeDisconnected,
     ProbeOperationError,
     ProbePackMissing,
+    ProbeTargetAbsent,
     classify_probe_error,
+    target_is_absent,
 )
 from etools.i18n import _STRINGS, LANG_EN, LANG_ZH  # noqa: E402
 from etools.i18n_catalog import CATALOGS  # noqa: E402
@@ -32,6 +34,12 @@ def test_catalogs_do_not_overlap():
         assert seen.isdisjoint(keys)
         seen.update(keys)
     assert seen == set(_STRINGS[LANG_ZH])
+
+
+def test_idcode_means_chip_absent():
+    exc = RuntimeError("STLink error (9): Get IDCODE error")
+    assert target_is_absent(exc)
+    assert isinstance(classify_probe_error(exc), ProbeTargetAbsent)
 
 
 def test_classify_disconnect_pack_and_operation():

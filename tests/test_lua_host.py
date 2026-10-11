@@ -135,6 +135,43 @@ def test_lua_can_bridge_api():
     assert can.nmts == [("start", 5)]
 
 
+def test_lua_link_opened_and_net_expect():
+    host = LuaHost()
+
+    class Link:
+        def __init__(self):
+            self.buf = b"pong"
+
+        def opened(self):
+            return True
+
+        def send(self, text):
+            return text == "ping"
+
+        def recv(self, n=4096):
+            return ""
+
+        def expect(self, needle, timeout):
+            return needle.encode() in self.buf
+
+    net = Link()
+    host.set_bridge("net", net)
+    done: list[tuple[bool, str]] = []
+    host.set_done_hook(lambda ok, msg: done.append((ok, msg)))
+    host.run_script(
+        """
+        assert(etools.net.opened())
+        assert(etools.serial.opened() == false)
+        assert(etools.net.send('ping'))
+        assert(etools.net.expect('pong', 50))
+        """
+    )
+    deadline = time.time() + 3
+    while not done and time.time() < deadline:
+        time.sleep(0.02)
+    assert done and done[0][0] is True, done
+
+
 def test_lua_stops_and_reports_errors():
     host = LuaHost()
     done: list[tuple[bool, str]] = []

@@ -26,6 +26,9 @@ def test_tool_icons_exist():
         "tool-program",
         "tool-serial",
         "tool-ethernet",
+        "tool-mqtt",
+        "tool-map",
+        "tool-dash",
         "tool-terminal",
     ):
         path = ICON_DIR / f"{name}.svg"

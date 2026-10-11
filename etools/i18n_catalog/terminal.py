@@ -69,7 +69,8 @@ ZH = {
     "sftp.cancel": "取消传输",
     "sftp.cancelling": "当前文件完成后停止…",
     "sftp.cancelled": "传输已取消",
-    "term.command_mode": "SSH 命令执行",
+    "term.command_mode": "交互终端",
+    "term.shell_fail": "交互会话未建立，仍可用单次命令",
 }
 
 EN = {
@@ -142,5 +143,6 @@ EN = {
     "sftp.cancel": "Cancel transfer",
     "sftp.cancelling": "Will stop after the current file…",
     "sftp.cancelled": "Transfer cancelled",
-    "term.command_mode": "SSH command execution",
+    "term.command_mode": "Interactive terminal",
+    "term.shell_fail": "Interactive session unavailable; one-shot commands still work",
 }

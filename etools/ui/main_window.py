@@ -18,7 +18,7 @@ from etools.config import get_config, save_config
 from etools.core.models import ProbeInfo, ProgressInfo, TargetInfo
 from etools.core.operations import FlashService
 from etools.core.pyocd_driver import PyOCDDriver
-from etools.i18n import LANG_EN, LANG_ZH, set_language, tr
+from etools.i18n import set_language, tr
 from etools.logger import get_logger
 from etools.ui.icons import app_icon, refresh_icons, set_action_icon
 from etools.ui.runtime import OpRunner, SignalRelay, TaskManager
@@ -26,7 +26,10 @@ from etools.ui.shell import ToolShell
 from etools.ui.styles import apply_combo_style, build_stylesheet, get_theme
 from etools.ui.tools import (
     CanPage,
+    DashboardPage,
     EthernetPage,
+    MapPage,
+    MqttPage,
     ProgramPage,
     ScriptPage,
     SerialPage,
@@ -133,6 +136,9 @@ class MainWindow(QMainWindow):
         self.program_page = ProgramPage()
         self.serial_page = SerialPage()
         self.ethernet_page = EthernetPage()
+        self.mqtt_page = MqttPage()
+        self.map_page = MapPage()
+        self.dashboard_page = DashboardPage()
         self.can_page = CanPage()
         self.terminal_page = TerminalPage()
         self.script_page = ScriptPage()
@@ -181,6 +187,9 @@ class MainWindow(QMainWindow):
             "program": self.program_page,
             "serial": self.serial_page,
             "ethernet": self.ethernet_page,
+            "mqtt": self.mqtt_page,
+            "map": self.map_page,
+            "dash": self.dashboard_page,
             "can": self.can_page,
             "terminal": self.terminal_page,
             "script": self.script_page,
@@ -189,6 +198,9 @@ class MainWindow(QMainWindow):
             "program": program_actions,
             "serial": lambda: self.serial_page.toolbar_actions(),
             "ethernet": lambda: self.ethernet_page.toolbar_actions(),
+            "mqtt": lambda: self.mqtt_page.toolbar_actions(),
+            "map": lambda: self.map_page.toolbar_actions(),
+            "dash": lambda: self.dashboard_page.toolbar_actions(),
             "can": lambda: self.can_page.toolbar_actions(),
             "terminal": terminal_actions,
             "script": lambda: self.script_page.toolbar_actions(),
@@ -239,6 +251,7 @@ class MainWindow(QMainWindow):
         return {
             "serial": self.serial_page,
             "ethernet": self.ethernet_page,
+            "mqtt": self.mqtt_page,
             "can": self.can_page,
             "terminal": self.terminal_page,
         }.get(tool)
@@ -308,7 +321,7 @@ class MainWindow(QMainWindow):
 
     def _build_menu(self) -> None:
         """Application menu bar only — tool actions live on each tool toolbar."""
-        from PySide6.QtGui import QAction, QActionGroup
+        from PySide6.QtGui import QAction
 
         def act(text: str, icon_name: str | None = None, shortcut: str = "") -> QAction:
             a = QAction(text, self)
@@ -349,58 +362,16 @@ class MainWindow(QMainWindow):
         )
 
         m_view = mb.addMenu(tr("menu.view"))
-        a_labels = act(tr("tool.labels"))
-        a_labels.setCheckable(True)
-        a_labels.setChecked(bool(get_config().extra.get("rail_labels", False)))
-        a_labels.toggled.connect(self._toggle_rail_labels)
-        m_view.addAction(a_labels)
-        m_theme = m_view.addMenu(tr("menu.theme"))
-        current_theme_name = (get_config().theme or "dark").lower()
-        a_theme_dark = act(tr("act.theme_dark"), "theme-dark", "")
-        a_theme_light = act(tr("act.theme_light"), "theme-light", "")
-        a_theme_system = act(tr("settings.theme_system"), "theme-light", "")
-        a_theme_dark.setCheckable(True)
-        a_theme_light.setCheckable(True)
-        a_theme_system.setCheckable(True)
-        a_theme_dark.setChecked(current_theme_name == "dark")
-        a_theme_light.setChecked(current_theme_name == "light")
-        a_theme_system.setChecked(current_theme_name == "system")
-        theme_group = QActionGroup(self)
-        theme_group.setExclusive(True)
-        theme_group.addAction(a_theme_dark)
-        theme_group.addAction(a_theme_light)
-        theme_group.addAction(a_theme_system)
-        m_theme.addAction(a_theme_dark)
-        m_theme.addAction(a_theme_light)
-        m_theme.addAction(a_theme_system)
-        m_view.addSeparator()
-        a_only_free = act(tr("serial.only_free"), "", "")
-        a_only_free.setCheckable(True)
-        serial_page = getattr(self, "serial_page", None)
-        a_only_free.setChecked(bool(getattr(serial_page, "only_free", True)))
-        a_only_free.setToolTip(tr("serial.only_free_tip"))
-        m_view.addAction(a_only_free)
-        self._a_only_free = a_only_free
-        a_only_free.toggled.connect(self._on_only_free_toggled)
         a_hex = act(tr("act.hex"), "hex", "Ctrl+H")
-        m_view.addAction(a_hex)
-        m_view.addSeparator()
-        m_lang = m_view.addMenu(tr("menu.language"))
-        a_lang_zh = act(tr("act.lang_zh"), "language", "")
-        a_lang_en = act(tr("act.lang_en"), "language", "")
-        a_lang_zh.setCheckable(True)
-        a_lang_en.setCheckable(True)
-        from etools.i18n import current_language
+        from etools.ui.widgets.traffic_view import TrafficView
 
-        cur_lang = current_language()
-        a_lang_zh.setChecked(cur_lang == LANG_ZH)
-        a_lang_en.setChecked(cur_lang == LANG_EN)
-        lang_group = QActionGroup(self)
-        lang_group.setExclusive(True)
-        lang_group.addAction(a_lang_zh)
-        lang_group.addAction(a_lang_en)
-        m_lang.addAction(a_lang_zh)
-        m_lang.addAction(a_lang_en)
+        a_eye = act(tr("mon.eye_care"))
+        a_eye.setCheckable(True)
+        a_eye.setChecked(TrafficView._load_eye_care())
+        a_eye.setToolTip(tr("mon.eye_care_tip"))
+        m_view.addAction(a_hex)
+        m_view.addAction(a_eye)
+        a_eye.toggled.connect(TrafficView.set_eye_care)
 
         m_help = mb.addMenu(tr("menu.help"))
         a_check_update = act(tr("act.check_update"), "refresh", "")
@@ -418,12 +389,7 @@ class MainWindow(QMainWindow):
         a_verify.triggered.connect(self._toolbar_verify)
         a_reset.triggered.connect(self._toolbar_reset)
         a_read_chip.triggered.connect(self._toolbar_read_chip)
-        a_theme_dark.triggered.connect(lambda: self._set_theme("dark"))
-        a_theme_light.triggered.connect(lambda: self._set_theme("light"))
-        a_theme_system.triggered.connect(lambda: self._set_theme("system"))
         a_hex.triggered.connect(lambda: self._goto_tab("Hex"))
-        a_lang_zh.triggered.connect(lambda: self._switch_language(LANG_ZH))
-        a_lang_en.triggered.connect(lambda: self._switch_language(LANG_EN))
         a_about.triggered.connect(self._show_about)
         a_check_update.triggered.connect(lambda: self._check_updates(silent=False))
         a_settings.triggered.connect(self._show_settings)
@@ -506,6 +472,9 @@ class MainWindow(QMainWindow):
         for page in (
             self.serial_page,
             self.ethernet_page,
+            self.mqtt_page,
+            self.map_page,
+            self.dashboard_page,
             self.can_page,
             self.terminal_page,
             self.script_page,
@@ -516,9 +485,6 @@ class MainWindow(QMainWindow):
         self.conn_badge.setText(tr("status.connected") if connected else tr("status.disconnected"))
         self.traffic_badge.set_clear_text(tr("status.clear_stats"))
         self.traffic_badge.set_tip(tr("status.stats_tip"))
-        if hasattr(self, "_a_only_free"):
-            self._a_only_free.setText(tr("serial.only_free"))
-            self._a_only_free.setToolTip(tr("serial.only_free_tip"))
         self._refresh_status_bar()
         self._refresh_task_summary()
         self._log(tr("log.lang_switched"))
@@ -585,17 +551,22 @@ class MainWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl(REPO_URL))
 
     def _show_settings(self) -> None:
+        from etools.i18n import current_language
         from etools.ui.widgets.settings_dialog import SettingsDialog
 
+        prev_theme = get_config().theme or "dark"
+        prev_lang = current_language()
         dlg = SettingsDialog(self)
         if dlg.exec():
+            self._toggle_rail_labels(dlg.rail_labels_checked())
+            page = getattr(self, "serial_page", None)
+            if page is not None:
+                page.set_only_free(dlg.only_free_checked())
             theme = dlg.selected_theme()
             lang = dlg.selected_language()
-            if theme != (get_config().theme or "dark"):
+            if theme != prev_theme:
                 self._set_theme(theme)
-            from etools.i18n import current_language
-
-            if lang != current_language():
+            if lang != prev_lang:
                 self._switch_language(lang)
             self._log(tr("settings.applied"))
 
@@ -622,6 +593,9 @@ class MainWindow(QMainWindow):
             ("tool.program", tr("tool.program"), go_tool("program")),
             ("tool.serial", tr("tool.serial"), go_tool("serial")),
             ("tool.ethernet", tr("tool.ethernet"), go_tool("ethernet")),
+            ("tool.mqtt", tr("tool.mqtt"), go_tool("mqtt")),
+            ("tool.map", tr("tool.map"), go_tool("map")),
+            ("tool.dash", tr("tool.dash"), go_tool("dash")),
             ("tool.can", tr("tool.can"), go_tool("can")),
             ("tool.terminal", tr("tool.terminal"), go_tool("terminal")),
             ("tool.script", tr("tool.script"), go_tool("script")),
@@ -661,6 +635,9 @@ class MainWindow(QMainWindow):
             for page in (
                 self.serial_page,
                 self.ethernet_page,
+                self.mqtt_page,
+                self.map_page,
+                self.dashboard_page,
                 self.can_page,
                 self.terminal_page,
                 self.sftp_panel,
@@ -689,11 +666,13 @@ class MainWindow(QMainWindow):
                     for page in (
                         self.serial_page,
                         self.ethernet_page,
+                        self.mqtt_page,
                         self.can_page,
                         self.terminal_page,
                     )
                 )
                 or self.ethernet_page._runner.busy
+                or self.mqtt_page._runner.busy
                 or self.terminal_page._runner.busy
             ):
                 raise RuntimeError(tr("project.disconnect"))
@@ -717,6 +696,9 @@ class MainWindow(QMainWindow):
             for page in (
                 self.serial_page,
                 self.ethernet_page,
+                self.mqtt_page,
+                self.map_page,
+                self.dashboard_page,
                 self.can_page,
                 self.terminal_page,
                 self.sftp_panel,
@@ -914,9 +896,13 @@ class MainWindow(QMainWindow):
         runners = [
             self._runner,
             self.ethernet_page._runner,
+            self.mqtt_page._runner,
             self.terminal_page._runner,
             self.sftp_panel._runner,
         ]
+        serial_runner = getattr(self.serial_page, "_runner", None)
+        if serial_runner is not None:
+            runners.append(serial_runner)
         update_running = self._update_thread is not None and self._update_thread.isRunning()
         if any(runner.busy for runner in runners) or update_running:
             self.setEnabled(False)
@@ -935,6 +921,13 @@ class MainWindow(QMainWindow):
                 self.shell.shutdown()
             if hasattr(self, "can_page"):
                 self.can_page.shutdown()
+            for page in (
+                getattr(self, "mqtt_page", None),
+                getattr(self, "map_page", None),
+                getattr(self, "dashboard_page", None),
+            ):
+                if page is not None:
+                    page.shutdown()
             self.rtt_panel.shutdown()
             self.swo_panel.shutdown()
             self.variable_monitor.shutdown()
@@ -962,6 +955,9 @@ class MainWindow(QMainWindow):
             "program": getattr(self, "program_page", None),
             "serial": getattr(self, "serial_page", None),
             "ethernet": getattr(self, "ethernet_page", None),
+            "mqtt": getattr(self, "mqtt_page", None),
+            "map": getattr(self, "map_page", None),
+            "dash": getattr(self, "dashboard_page", None),
             "can": getattr(self, "can_page", None),
             "terminal": getattr(self, "terminal_page", None),
             "script": getattr(self, "script_page", None),
@@ -982,6 +978,9 @@ class MainWindow(QMainWindow):
             ("program", getattr(self, "program_page", None)),
             ("serial", getattr(self, "serial_page", None)),
             ("ethernet", getattr(self, "ethernet_page", None)),
+            ("mqtt", getattr(self, "mqtt_page", None)),
+            ("map", getattr(self, "map_page", None)),
+            ("dash", getattr(self, "dashboard_page", None)),
             ("can", getattr(self, "can_page", None)),
             ("terminal", getattr(self, "terminal_page", None)),
             ("script", getattr(self, "script_page", None)),

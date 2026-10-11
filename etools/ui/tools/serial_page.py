@@ -321,23 +321,29 @@ class SerialPage(LinkToolPage):
         self._cyclic_timer.timeout.connect(self._on_cyclic_tick)
         self._cyclic_index = 0
 
-        # Format / send options — two calm rows instead of one packed grid.
-        fmt_row1 = QHBoxLayout()
-        fmt_row1.setSpacing(6)
+        # Mode and line ending sit on the send row. The rest stays folded.
         for lbl_w, field in (
             (self.lbl_mode, self.mode_combo),
-            (self.lbl_rx_mode, self.rx_mode),
             (self.lbl_ending, self.ending),
+        ):
+            lbl_w.setFixedWidth(48)
+            field.setMinimumWidth(96)
+            field.setFixedHeight(28)
+
+        more_fmt = QHBoxLayout()
+        more_fmt.setSpacing(6)
+        for lbl_w, field in (
+            (self.lbl_rx_mode, self.rx_mode),
             (self.lbl_checksum, self.checksum),
         ):
             lbl_w.setFixedWidth(48)
             field.setMinimumWidth(128)
             field.setFixedHeight(28)
-            fmt_row1.addWidget(lbl_w)
-            fmt_row1.addWidget(field)
-        fmt_row1.addWidget(self.rx_verify)
-        fmt_row1.addWidget(self.checksum_preview)
-        fmt_row1.addStretch(1)
+            more_fmt.addWidget(lbl_w)
+            more_fmt.addWidget(field)
+        more_fmt.addWidget(self.rx_verify)
+        more_fmt.addWidget(self.checksum_preview)
+        more_fmt.addStretch(1)
 
         act_row = QHBoxLayout()
         act_row.setSpacing(8)
@@ -350,7 +356,23 @@ class SerialPage(LinkToolPage):
         act_row.addWidget(self.ymodem_recv_btn)
         act_row.addStretch(1)
 
+        self.send_more_toggle = QCheckBox(tr("serial.send_options"))
+        self.send_more_toggle.setChecked(False)
+        self.send_more = QWidget()
+        self.send_more.setVisible(False)
+        self.send_more_toggle.toggled.connect(self.send_more.setVisible)
+        more_lay = QVBoxLayout(self.send_more)
+        more_lay.setContentsMargins(0, 0, 0, 0)
+        more_lay.setSpacing(4)
+        more_lay.addLayout(more_fmt)
+        more_lay.addLayout(cyclic_row)
+        more_lay.addLayout(act_row)
+
         send_row.setSpacing(6)
+        send_row.addWidget(self.lbl_mode)
+        send_row.addWidget(self.mode_combo)
+        send_row.addWidget(self.lbl_ending)
+        send_row.addWidget(self.ending)
         send_row.addWidget(self.send_edit, 1)
         send_row.addWidget(self.send_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         xfer_row = QHBoxLayout()
@@ -359,13 +381,16 @@ class SerialPage(LinkToolPage):
         xfer_row.addWidget(self.xfer_cancel_btn)
         meta_wrap = QVBoxLayout()
         meta_wrap.setSpacing(4)
-        meta_wrap.addLayout(fmt_row1)
-        meta_wrap.addLayout(cyclic_row)
-        meta_wrap.addLayout(act_row)
         meta_wrap.addLayout(send_row)
+        meta_wrap.addWidget(self.send_more_toggle)
+        meta_wrap.addWidget(self.send_more)
         meta_wrap.addLayout(xfer_row)
         self.install_send_preview(meta_wrap)
         mon_lay.addWidget(self.traffic, 1)
+        from etools.ui.widgets.studio_plot import StudioPlotPanel
+
+        self.studio = StudioPlotPanel()
+        mon_lay.addWidget(self.studio)
         mon_lay.addWidget(self.preset_toggle)
         mon_lay.addWidget(self.preset_content)
         mon_lay.addSpacing(4)
@@ -554,6 +579,7 @@ class SerialPage(LinkToolPage):
         self.dtr.setText(tr("serial.dtr"))
         self.rts.setText(tr("serial.rts"))
         self.open_btn.setText(tr("serial.close") if self._opened else tr("serial.open"))
+        self.send_more_toggle.setText(tr("serial.send_options"))
         self.mon_box.setTitle(tr("serial.monitor"))
         self.work_tabs.setTabText(0, tr("serial.monitor"))
         self.work_tabs.setTabText(1, tr("serial.terminal"))
@@ -561,6 +587,7 @@ class SerialPage(LinkToolPage):
         self.terminal_break.setText(tr("serial.terminal.break"))
         self.terminal_clear.setText(tr("mon.clear"))
         self.traffic.retranslate()
+        self.studio.retranslate()
         self.traffic.set_placeholder(tr("serial.placeholder"))
         self.send_edit.setPlaceholderText(tr("serial.send_ph"))
         self.send_btn.setText(tr("serial.send"))
@@ -1262,9 +1289,18 @@ class SerialPage(LinkToolPage):
             del self._script_rx[:-65536]
         self._maybe_verify_rx(data)
         self.traffic.append_rx(data)
+        if hasattr(self, "studio"):
+            self.studio.feed(data)
+        from etools.core.frame_hub import frame_hub
+
+        frame_hub.set_names("serial", self.studio.names.text())
+        frame_hub.publish("serial", data)
         self._terminal_write(decode_payload(data, self._encoding_name()))
 
     # -- Lua / bridge helpers ------------------------------------------
+
+    def lua_opened(self) -> bool:
+        return bool(self._opened)
 
     def lua_send_text(self, text: str, force_hex: bool = False) -> bool:
         return self._send_payload(text, record_history=True, force_hex=force_hex)
@@ -1449,5 +1485,10 @@ class SerialPage(LinkToolPage):
         self._cyclic_timer.stop()
         self._script_timer.stop()
         self._script_running = False
+        self._xfer_cancel = True
+        runner = getattr(self, "_runner", None)
+        if runner is not None:
+            runner.cancel()
+            runner.shutdown()
         self.persist_prefs()
         self._link.close()

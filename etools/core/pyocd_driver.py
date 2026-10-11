@@ -30,8 +30,11 @@ from etools.core.probe import ProbeDriver
 from etools.core.probe_errors import (
     ProbeDisconnected,
     ProbeOperationError,
+    ProbeTargetAbsent,
     classify_probe_error,
+    target_is_absent,
 )
+from etools.i18n import tr
 from etools.logger import get_logger
 
 log = get_logger("pyocd")
@@ -214,6 +217,13 @@ class PyOCDDriver(ProbeDriver):
             except Exception:
                 pass
             self._set_state(ConnectionState.ERROR)
+            if target_is_absent(exc):
+                msg = tr("probe.no_mcu")
+                log.warning("target did not answer: %s", exc)
+                self.emit_progress(
+                    ProgressInfo(stage=ProgressStage.ERROR, percent=0, message=msg, is_error=True)
+                )
+                return self._fail(msg, ProbeTargetAbsent(str(exc)))
             msg = f"Session open failed: {exc}"
             log.exception("session open failed")
             self.emit_progress(

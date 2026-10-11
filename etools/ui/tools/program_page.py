@@ -91,10 +91,10 @@ class ProgramPage(ToolPage):
         tabs_spec = [
             ("tabHex", self.hex_preview),
             ("tabFlash", self.flash_panel),
-            ("tabDevices", self.device_manager),
             ("tabRtt", self.rtt_panel),
             ("tabSwo", self.swo_panel),
             ("tabMonitor", self.variable_monitor),
+            ("tabDevices", self.device_manager),
         ]
         for obj_name, widget in tabs_spec:
             page = QWidget()

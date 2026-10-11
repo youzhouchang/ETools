@@ -88,7 +88,12 @@ class _Sampler(QObject):
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._run,
-            args=(target, list(variables), max(20, int(interval_ms)) / 1000.0),
+            args=(
+                target,
+                list(variables),
+                max(20, int(interval_ms)) / 1000.0,
+                getattr(session, "_etools_io_lock", None),
+            ),
             name="VariableSampler",
             daemon=True,
         )
@@ -103,7 +108,13 @@ class _Sampler(QObject):
             thread.join(timeout=1.5)
         self._thread = None
 
-    def _run(self, target: Any, variables: list[ElfVariable], interval: float) -> None:
+    def _run(
+        self,
+        target: Any,
+        variables: list[ElfVariable],
+        interval: float,
+        io_lock: Any = None,
+    ) -> None:
         try:
             while not self._stop.is_set():
                 started = time.monotonic()
@@ -118,7 +129,13 @@ class _Sampler(QObject):
                         # Sampling is for scalar values; cap reads so a large
                         # linker object cannot stall the probe for one tick.
                         read_size = min(max(1, int(variable.size)), 8)
-                        raw = bytes(target.read_memory_block8(variable.address, read_size))
+                        if io_lock is None:
+                            raw = bytes(target.read_memory_block8(variable.address, read_size))
+                        else:
+                            with io_lock:
+                                raw = bytes(
+                                    target.read_memory_block8(variable.address, read_size)
+                                )
                         sample[_variable_key(variable)] = (_decode_value(raw, variable), raw)
                     except Exception as exc:
                         sample[_variable_key(variable)] = (None, None)
@@ -135,17 +152,31 @@ def _variable_key(variable: ElfVariable) -> str:
 
 
 class _Waveform(QWidget):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        title: str = "波形监视",
+        empty: str = "选择变量并开始采样",
+        min_height: int = 240,
+    ) -> None:
         super().__init__(parent)
+        self._title = title
+        self._empty = empty
         self._series: dict[str, deque[float]] = {}
         self._dirty = False
         self._paint_timer = QTimer(self)
         self._paint_timer.setInterval(PAINT_INTERVAL_MS)
         self._paint_timer.timeout.connect(self._render_tick)
         self._paint_timer.start()
-        self.setMinimumHeight(240)
+        self.setMinimumHeight(min_height)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
         self.setObjectName("waveform")
+
+    def set_caption(self, title: str, empty: str) -> None:
+        self._title = title
+        self._empty = empty
+        self._dirty = True
 
     def clear(self) -> None:
         self._series.clear()
@@ -198,7 +229,7 @@ class _Waveform(QWidget):
         painter.drawRoundedRect(canvas, 7, 7)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(text)
-        painter.drawText(canvas.left() + 14, canvas.top() + 22, "波形监视")
+        painter.drawText(canvas.left() + 14, canvas.top() + 22, self._title)
         painter.setPen(dim)
         painter.drawText(
             canvas.left() + 92,
@@ -207,7 +238,7 @@ class _Waveform(QWidget):
         )
         if not self._series:
             painter.setPen(dim)
-            painter.drawText(plot, Qt.AlignmentFlag.AlignCenter, "选择变量并开始采样")
+            painter.drawText(plot, Qt.AlignmentFlag.AlignCenter, self._empty)
             return
         painter.setPen(QPen(dim, 1, Qt.PenStyle.DotLine))
         for column in range(1, 7):

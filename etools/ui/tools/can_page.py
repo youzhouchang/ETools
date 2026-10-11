@@ -74,6 +74,8 @@ class CanPage(LinkToolPage):
         self._opened = False
         self._hb_nodes: dict[int, tuple[int, float]] = {}  # node -> (state, last_monotonic)
         self._lua_frames: list[dict[str, Any]] = []
+        self._dbc = None
+        self._sig_rows: dict[tuple[int, bool, str], int] = {}
         self._eds: EdsFile | None = None
         self._trace_writer: TraceWriter | None = None
         self._play_timer: QTimer | None = None
@@ -209,6 +211,22 @@ class CanPage(LinkToolPage):
         eds_host.setLayout(eds_row)
         self.lbl_eds = self.form_row(tr("can.eds"), eds_host)
 
+        self.dbc_path = QLineEdit()
+        self.dbc_path.setFixedHeight(28)
+        self.dbc_path.setPlaceholderText("vehicle.dbc")
+        self.dbc_browse = QPushButton(tr("can.dbc_load"))
+        self.dbc_browse.setObjectName("ghost")
+        self.dbc_browse.setFixedHeight(28)
+        self.dbc_browse.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        dbc_row = QHBoxLayout()
+        dbc_row.setContentsMargins(0, 0, 0, 0)
+        dbc_row.setSpacing(4)
+        dbc_row.addWidget(self.dbc_path, 1)
+        dbc_row.addWidget(self.dbc_browse)
+        dbc_host = QWidget()
+        dbc_host.setLayout(dbc_row)
+        self.lbl_dbc = self.form_row(tr("can.dbc"), dbc_host)
+
         # ---- main: monitor + send + open nodes ------------------------
         mon_box = self.main_group(tr("can.monitor"))
         mon_lay = mon_box.layout()
@@ -279,6 +297,28 @@ class CanPage(LinkToolPage):
         pdo_lay.addWidget(self.pdo_table)
         mon_lay.addWidget(pdo_box)
 
+        self.sig_box = QGroupBox(tr("can.signals"))
+        self.sig_box.setObjectName("mainGroup")
+        sig_lay = QVBoxLayout(self.sig_box)
+        sig_lay.setContentsMargins(8, 8, 8, 8)
+        self.sig_table = QTableWidget(0, 4)
+        self.sig_table.setHorizontalHeaderLabels(
+            [
+                tr("can.sig_msg"),
+                tr("can.sig_name"),
+                tr("can.sig_value"),
+                tr("can.sig_unit"),
+            ]
+        )
+        self.sig_table.horizontalHeader().setStretchLastSection(True)
+        self.sig_table.verticalHeader().setVisible(False)
+        self.sig_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.sig_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self.sig_table.setMinimumHeight(120)
+        sig_lay.addWidget(self.sig_table)
+        self.sig_box.setVisible(False)
+        mon_lay.addWidget(self.sig_box)
+
         # ---- wiring ---------------------------------------------------
         self.conn_btn.clicked.connect(self._on_toggle)
         self.send_btn.clicked.connect(self._on_send)
@@ -291,6 +331,7 @@ class CanPage(LinkToolPage):
         self.sdo_read_btn.clicked.connect(self._on_sdo_read)
         self.sdo_write_btn.clicked.connect(self._on_sdo_write)
         self.eds_browse.clicked.connect(self._on_load_eds)
+        self.dbc_browse.clicked.connect(self._on_load_dbc)
         self.rec_btn.clicked.connect(self._on_toggle_record)
         self.play_btn.clicked.connect(self._on_play_trace)
 
@@ -338,6 +379,12 @@ class CanPage(LinkToolPage):
         )
         self.lbl_eds.setText(tr("can.eds"))
         self.eds_browse.setText(tr("can.eds_load"))
+        self.lbl_dbc.setText(tr("can.dbc"))
+        self.dbc_browse.setText(tr("can.dbc_load"))
+        self.sig_box.setTitle(tr("can.signals"))
+        self.sig_table.setHorizontalHeaderLabels(
+            [tr("can.sig_msg"), tr("can.sig_name"), tr("can.sig_value"), tr("can.sig_unit")]
+        )
         self.lbl_trace.setText(tr("can.trace"))
         self.rec_btn.setText(
             tr("can.rec_stop") if self._trace_writer else tr("can.rec_start")
@@ -431,15 +478,40 @@ class CanPage(LinkToolPage):
             return False
         return True
 
-    def lua_sdo_read(self, node: int, index: int, subindex: int = 0) -> str:
+    def lua_sdo_read(self, node: int, index: int, subindex: int = 0) -> bool:
+        """Send an expedited SDO read. The bridge waits for the response frame."""
         if not self._opened:
-            return ""
+            return False
         try:
             cob, payload = sdo_read_request(int(node), int(index), int(subindex))
+            self._lua_frames = [
+                frame for frame in self._lua_frames if int(frame.get("id", -1)) != cob
+            ]
             self._link.send(cob, payload)
         except Exception:  # noqa: BLE001
-            return ""
-        return ""
+            return False
+        return True
+
+    def lua_take_sdo(self, node: int, index: int, subindex: int = 0) -> dict[str, Any] | None:
+        from etools.core.hextext import parse_hex_input
+
+        cob = 0x580 + (int(node) & 0x7F)
+        want_index = int(index) & 0xFFFF
+        want_sub = int(subindex) & 0xFF
+        for position, frame in enumerate(self._lua_frames):
+            if int(frame.get("id", -1)) != cob:
+                continue
+            try:
+                raw = parse_hex_input(str(frame.get("data") or ""))
+            except ValueError:
+                continue
+            if (
+                len(raw) >= 4
+                and int.from_bytes(raw[1:3], "little") == want_index
+                and raw[3] == want_sub
+            ):
+                return self._lua_frames.pop(position)
+        return None
 
     def lua_sdo_write(
         self, node: int, index: int, subindex: int, value: str
@@ -504,6 +576,71 @@ class CanPage(LinkToolPage):
         self.traffic.append_status(
             tr("can.eds_loaded", name=eds.product_name or path, n=len(eds.entries))
         )
+
+    def _on_load_dbc(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("can.dbc_load"), self.dbc_path.text().strip(), "DBC (*.dbc);;All (*.*)"
+        )
+        if not path:
+            return
+        self.load_dbc_file(path)
+
+    def load_dbc_file(self, path: str) -> None:
+        from etools.core.dbc import load_dbc
+
+        try:
+            dbc = load_dbc(path)
+        except Exception as exc:  # noqa: BLE001
+            self.traffic.append_status(tr("can.err", err=str(exc)))
+            return
+        self._dbc = dbc
+        self.dbc_path.setText(path)
+        self._fill_signal_table()
+        self.persist_prefs()
+        count = sum(len(msg.signals) for msg in dbc.messages.values())
+        self.traffic.append_status(tr("can.dbc_loaded", name=path, n=count))
+
+    def _fill_signal_table(self) -> None:
+        self._sig_rows.clear()
+        rows: list[tuple[int, bool, str, str, str]] = []
+        if self._dbc is not None:
+            for message in self._dbc.messages.values():
+                for signal in message.signals:
+                    rows.append(
+                        (
+                            message.frame_id,
+                            message.extended,
+                            message.name,
+                            signal.name,
+                            signal.unit,
+                        )
+                    )
+        self.sig_table.setRowCount(len(rows))
+        for row, (frame_id, extended, message, name, unit) in enumerate(rows):
+            self._sig_rows[(frame_id, extended, name)] = row
+            self.sig_table.setItem(row, 0, QTableWidgetItem(message))
+            self.sig_table.setItem(row, 1, QTableWidgetItem(name))
+            self.sig_table.setItem(row, 2, QTableWidgetItem(""))
+            self.sig_table.setItem(row, 3, QTableWidgetItem(unit))
+        self.sig_box.setVisible(bool(rows))
+
+    def _apply_dbc(self, frame_id: int, data: bytes, *, is_extended: bool = False) -> None:
+        if self._dbc is None:
+            return
+        decoded = self._dbc.decode(frame_id, data, is_extended=is_extended)
+        if not decoded:
+            return
+        for item in decoded:
+            row = self._sig_rows.get((item.frame_id, item.extended, item.name))
+            if row is None:
+                continue
+            cell = self.sig_table.item(row, 2)
+            if cell is None:
+                cell = QTableWidgetItem()
+                self.sig_table.setItem(row, 2, cell)
+            cell.setText(f"{item.value:.6g}")
 
     def _refresh_pdo_table(self) -> None:
         self.pdo_table.setRowCount(0)
@@ -678,6 +815,13 @@ class CanPage(LinkToolPage):
             self.frame_data.setText(str(prefs["frame_data"]))
         if prefs.get("ext_id") is not None:
             self.ext_check.setChecked(bool(prefs["ext_id"]))
+        dbc_path = str(prefs.get("dbc_path") or "")
+        if dbc_path:
+            self.load_dbc_file(dbc_path)
+        else:
+            self._dbc = None
+            self.dbc_path.clear()
+            self._fill_signal_table()
 
     def persist_prefs(self) -> None:
         data = self.iface.currentData()
@@ -693,6 +837,7 @@ class CanPage(LinkToolPage):
                 "frame_id": self.frame_id.text().strip(),
                 "frame_data": self.frame_data.text().strip(),
                 "ext_id": self.ext_check.isChecked(),
+                "dbc_path": self.dbc_path.text().strip(),
             },
         )
 
@@ -913,6 +1058,8 @@ class CanPage(LinkToolPage):
             self.traffic.append_rx(data, peer=peer)
         self._push_lua_frame(arb, data, ext=ext, rtr=rtr)
         self._trace_rx(arb, data, ext=ext, rtr=rtr)
+        if not rtr:
+            self._apply_dbc(arb, data, is_extended=ext)
         hb = parse_heartbeat(msg)
         if hb is not None:
             node, state, _name = hb

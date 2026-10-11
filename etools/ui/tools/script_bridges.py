@@ -70,6 +70,9 @@ class SerialLuaBridge:
         self._page = page
         self._pump = pump
 
+    def opened(self) -> bool:
+        return bool(self._pump.submit(lambda: self._page.lua_opened()))
+
     def send(self, text: str) -> bool:
         return self._pump.submit(lambda: self._page.lua_send_text(text))
 
@@ -101,6 +104,9 @@ class NetLuaBridge:
         self._page = page
         self._pump = pump
 
+    def opened(self) -> bool:
+        return bool(self._pump.submit(lambda: self._page.lua_opened()))
+
     def send(self, text: str) -> bool:
         return self._pump.submit(lambda: self._page.lua_send_text(text))
 
@@ -108,14 +114,33 @@ class NetLuaBridge:
         data = self._pump.submit(lambda: self._page.lua_take_rx(int(max_bytes)))
         return bytes(data or b"").decode("latin-1", errors="replace")
 
+    def expect(self, needle: str, timeout_ms: int = 2000) -> bool:
+        deadline = time.monotonic() + max(1, int(timeout_ms)) / 1000.0
+        needle_b = needle.encode("utf-8", errors="replace")
+        buf = bytearray()
+        while time.monotonic() < deadline:
+            chunk = self._pump.submit(lambda: self._page.lua_take_rx(4096), timeout=5.0)
+            buf.extend(chunk or b"")
+            if needle_b in buf:
+                return True
+            time.sleep(0.03)
+        return False
+
 
 class TermLuaBridge:
     def __init__(self, page, pump: _QueueBridge) -> None:
         self._page = page
         self._pump = pump
 
+    def opened(self) -> bool:
+        return bool(self._pump.submit(lambda: self._page.lua_opened()))
+
     def send(self, text: str) -> bool:
         return self._pump.submit(lambda: self._page.lua_send_text(text))
+
+    def recv(self, max_bytes: int = 4096) -> str:
+        data = self._pump.submit(lambda: self._page.lua_take_rx(int(max_bytes)))
+        return bytes(data or b"").decode("utf-8", errors="replace")
 
 
 class CanLuaBridge:
@@ -137,9 +162,32 @@ class CanLuaBridge:
         return self._pump.submit(lambda: self._page.lua_nmt(str(command), int(node)))
 
     def sdo_read(self, node: int, index: int, subindex: int = 0) -> str:
-        return self._pump.submit(
+        """Send an expedited read and return the response value as hex."""
+        sent = self._pump.submit(
             lambda: self._page.lua_sdo_read(int(node), int(index), int(subindex))
         )
+        if not sent:
+            return ""
+        from etools.core.canopen import parse_sdo_response
+        from etools.core.hextext import parse_hex_input
+
+        deadline = time.monotonic() + 1.5
+        while time.monotonic() < deadline:
+            frame = self._pump.submit(
+                lambda: self._page.lua_take_sdo(int(node), int(index), int(subindex)),
+                timeout=5.0,
+            )
+            if frame:
+                try:
+                    raw = parse_hex_input(str(frame.get("data") or ""))
+                except ValueError:
+                    return ""
+                result = parse_sdo_response(raw)
+                if not result.ok:
+                    return ""
+                return bytes(result.data).hex(" ").upper()
+            time.sleep(0.03)
+        return ""
 
     def sdo_write(self, node: int, index: int, subindex: int, value: str) -> bool:
         return self._pump.submit(
@@ -163,31 +211,38 @@ class CanLuaBridge:
 
 
 class FlashLuaBridge:
-    """Lua ``flash.*`` backed by FlashService / PyOCD driver."""
+    """Lua ``flash.*`` backed by FlashService / the pyOCD driver.
+
+    Calls run on the Lua thread. ``FlashService`` serializes them with the
+    UI worker, and progress is queued back to the interface, so a long
+    program or erase does not freeze the window.
+    """
 
     def __init__(self, service, pump: _QueueBridge) -> None:
         self._service = service
         self._pump = pump
 
     def connected(self) -> bool:
-        return bool(self._pump.submit(lambda: self._service.connected))
+        return bool(self._service.connected)
 
     def erase_all(self) -> bool:
-        result = self._pump.submit(lambda: self._service.erase_all())
-        return bool(getattr(result, "ok", False))
+        return bool(getattr(self._service.erase_all(), "ok", False))
 
     def erase_range(self, address: int, size: int) -> bool:
-        result = self._pump.submit(lambda: self._service.erase_range(int(address), int(size)))
+        result = self._service.erase_range(int(address), int(size))
         return bool(getattr(result, "ok", False))
 
     def program(self, path: str, verify: bool = True) -> bool:
-        result = self._pump.submit(lambda: self._service.program_file(path, verify=bool(verify)))
+        result = self._service.program_file(path, verify=bool(verify))
         return bool(getattr(result, "ok", False))
 
     def read_mem(self, address: int, size: int) -> str:
-        raw = self._pump.submit(lambda: self._service.read_memory_bytes(int(address), int(size)))
+        try:
+            raw = self._service.read_memory_bytes(int(address), int(size))
+        except Exception:  # noqa: BLE001
+            return ""
         return " ".join(f"{b:02X}" for b in bytes(raw or b""))
 
     def reset(self, halt: bool = False) -> bool:
-        result = self._pump.submit(lambda: self._service.reset_target(halt=bool(halt)))
+        result = self._service.reset_target(halt=bool(halt))
         return bool(getattr(result, "ok", False))

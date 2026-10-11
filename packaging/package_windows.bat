@@ -53,7 +53,7 @@ echo Using Python: %PY%
 echo.
 echo [1/6] Installing packaging dependencies...
 %PY% -m pip install -U pip >nul
-%PY% -m pip install pyinstaller PySide6 pyocd hidapi pyserial paramiko || (echo pip install failed & exit /b 1)
+%PY% -m pip install -e ".[packaging]" || (echo pip install failed & exit /b 1)
 
 if "%CLEAN%"=="1" (
   echo.

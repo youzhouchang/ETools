@@ -166,6 +166,18 @@ QPushButton#ghost:hover {{
     color: {text};
     border-color: {accent};
 }}
+QToolButton#keyBrowse {{
+    border: none;
+    background: transparent;
+    padding: 0 6px;
+    color: {text_dim};
+    font-size: 11px;
+}}
+QToolButton#keyBrowse:hover {{
+    color: {text};
+    background: {bg_input};
+    border-radius: 4px;
+}}
 
 QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox, QPlainTextEdit {{
     background: {bg_input};

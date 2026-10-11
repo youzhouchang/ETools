@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -51,6 +51,10 @@ class TerminalPage(ToolPage):
     def _build(self) -> None:
         self._ssh = SshLink()
         self._opened = False
+        self._shell_rx = bytearray()
+        self._shell_timer = QTimer(self)
+        self._shell_timer.setInterval(40)
+        self._shell_timer.timeout.connect(self._poll_shell)
         self._runner = OpRunner(self)
         self._history: list[str] = []
         self._history_idx = -1
@@ -105,14 +109,9 @@ class TerminalPage(ToolPage):
         self.key_edit.setTextMargins(0, 0, 56, 0)
         self.key_edit.setPlaceholderText(tr("term.keyfile_ph"))
         self.key_browse = QToolButton(self.key_edit)
+        self.key_browse.setObjectName("keyBrowse")
         self.key_browse.setText(tr("term.key_browse"))
         self.key_browse.setFixedHeight(22)
-        self.key_browse.setStyleSheet(
-            "QToolButton { border: none; background: transparent;"
-            " padding: 0 6px; color: #8A96A8; font-size: 11px; }"
-            "QToolButton:hover { color: #1F2933; background: rgba(0,0,0,0.08);"
-            " border-radius: 4px; }"
-        )
         self.key_browse.clicked.connect(self._browse_key)
         self.lbl_key = self.form_row(tr("term.keyfile"), self.key_edit)
         self.key_edit.installEventFilter(self)
@@ -129,6 +128,8 @@ class TerminalPage(ToolPage):
         term_lay = term_box.layout()
         self.term = TerminalView()
         self.term.setObjectName("logView")
+        self.term.send_bytes.connect(self._on_shell_bytes)
+        self.term.viewport().installEventFilter(self)
         self.term.document().setMaximumBlockCount(10000)
         term_lay.addWidget(self.term, 3)
 
@@ -203,6 +204,9 @@ class TerminalPage(ToolPage):
 
         if obj is getattr(self, "key_edit", None) and event.type() == QEvent.Type.Resize:
             self._place_key_browse()
+        term = getattr(self, "term", None)
+        if term is not None and obj is term.viewport() and event.type() == QEvent.Type.Resize:
+            self._sync_pty_size()
         if obj is getattr(self, "cmd", None) and event.type() == QEvent.Type.KeyPress:
             if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
                 self._browse_history(event.key() == Qt.Key.Key_Up)
@@ -296,11 +300,28 @@ class TerminalPage(ToolPage):
     def clear_view(self) -> None:
         self.term.clear()
 
+    def lua_opened(self) -> bool:
+        return bool(self._opened)
+
+    def lua_take_rx(self, max_bytes: int = 4096) -> bytes:
+        n = max(0, int(max_bytes))
+        data = bytes(self._shell_rx[:n])
+        del self._shell_rx[:n]
+        return data
+
     def lua_send_text(self, text: str) -> bool:
         """Run one SSH command from Lua (terminal tool)."""
         if not self._opened:
             return False
         text = str(text)
+        if self._ssh.shell_open:
+            try:
+                payload = text if text.endswith("\n") else text + "\n"
+                self._ssh.shell_write(payload.encode("utf-8", errors="replace"))
+                return True
+            except Exception as exc:  # noqa: BLE001
+                self._log(tr("term.err", err=str(exc)))
+                return False
         try:
             status, out, err = self._ssh.exec_command(text)
             self._log(f"$ {text}")
@@ -517,6 +538,7 @@ class TerminalPage(ToolPage):
         if self._runner.busy:
             return
         if self._opened:
+            self._stop_shell()
             self._ssh.close()
             self._opened = False
             self.notify_state()
@@ -551,6 +573,10 @@ class TerminalPage(ToolPage):
             self._repaint_btn()
             self._log(tr("term.opened", user=result[0], host=result[1]))
             self.ssh_link_changed.emit(self._ssh)
+            if self._ssh.shell_open:
+                self._start_shell()
+            else:
+                self._log(tr("term.shell_fail"))
 
         def fail(msg: str) -> None:
             self.conn_btn.setEnabled(True)
@@ -576,13 +602,73 @@ class TerminalPage(ToolPage):
                     password=password,
                     key_filename=keyfile,
                     accept_new_host_key=accept_new,
+                    expected_fingerprint=fingerprint if accept_new else "",
                 )
+                try:
+                    self._ssh.open_shell()
+                except Exception:
+                    # One-shot commands still work when the remote refuses a PTY.
+                    pass
                 return user, host
 
             self._runner.start(work, ok, fail)
 
         self._log(tr("connection.connecting"))
         self._runner.start(lambda: inspect_host_key(host, port), inspected, fail)
+
+    def _start_shell(self) -> None:
+        self._shell_rx.clear()
+        self.term._interactive = True
+        self.term.setReadOnly(False)
+        self._sync_pty_size()
+        self._shell_timer.start()
+
+    def _stop_shell(self) -> None:
+        self._shell_timer.stop()
+        self.term._interactive = False
+        self.term.setReadOnly(True)
+
+    def _sync_pty_size(self) -> None:
+        if not self._ssh.shell_open:
+            return
+        metrics = self.term.fontMetrics()
+        width = max(1, metrics.horizontalAdvance("M"))
+        height = max(1, metrics.lineSpacing())
+        cols = max(20, self.term.viewport().width() // width)
+        rows = max(8, self.term.viewport().height() // height)
+        try:
+            self._ssh.shell_resize(cols, rows)
+        except Exception:
+            pass
+
+    def _poll_shell(self) -> None:
+        try:
+            data = self._ssh.shell_read()
+        except Exception as exc:  # noqa: BLE001
+            self._stop_shell()
+            self._ssh.close()
+            self._opened = False
+            self.notify_state()
+            self._set_ready(False)
+            self.conn_btn.setText(tr("term.connect"))
+            self._repaint_btn()
+            self.ssh_link_changed.emit(None)
+            self._log(tr("term.err", err=str(exc)))
+            return
+        if not data:
+            return
+        self._shell_rx.extend(data)
+        if len(self._shell_rx) > 65536:
+            del self._shell_rx[:-65536]
+        self.term.append_text(data.decode("utf-8", errors="replace"))
+
+    def _on_shell_bytes(self, data: bytes) -> None:
+        if not self._ssh.shell_open:
+            return
+        try:
+            self._ssh.shell_write(data)
+        except Exception as exc:  # noqa: BLE001
+            self._log(tr("term.err", err=str(exc)))
 
     def _on_exec(self) -> None:
         if not self._opened or self._runner.busy:
@@ -594,6 +680,10 @@ class TerminalPage(ToolPage):
             self._history.append(text)
             del self._history[:-_HISTORY_MAX]
         self._history_idx = -1
+        if self._ssh.shell_open:
+            self.cmd.clear()
+            self._on_shell_bytes(text.encode("utf-8", errors="replace") + b"\r")
+            return
 
         def work():
             return text, self._ssh.exec_command(text)
@@ -618,6 +708,7 @@ class TerminalPage(ToolPage):
 
     def shutdown(self) -> None:
         self.persist_prefs()
+        self._stop_shell()
         self._runner.shutdown()
         self._ssh.close()
         self.sftp_panel.shutdown()

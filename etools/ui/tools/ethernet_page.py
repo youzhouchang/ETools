@@ -103,6 +103,10 @@ class EthernetPage(LinkToolPage):
         self.traffic = TrafficView()
         self.view = self.traffic.view
         sess_lay.addWidget(self.traffic, 1)
+        from etools.ui.widgets.studio_plot import StudioPlotPanel
+
+        self.studio = StudioPlotPanel()
+        sess_lay.addWidget(self.studio)
 
         send_row = QHBoxLayout()
         send_row.setSpacing(8)
@@ -140,29 +144,32 @@ class EthernetPage(LinkToolPage):
         self.history_btn = QPushButton(tr("serial.history"))
         self.history_btn.setObjectName("ghost")
         self.history_btn.setFixedHeight(28)
-        send_options = QHBoxLayout()
-        send_options.setSpacing(12)
-        pairs = (
-            (self.lbl_mode, self.mode_combo),
-            (self.lbl_rx_mode, self.rx_mode),
-            (self.lbl_ending, self.ending),
-            (self.lbl_encoding, self.encoding),
-        )
-        for lbl, field in pairs:
-            # Label glued to its combo; gap only between pairs.
-            field.setFixedWidth(136)
+        for field in (self.mode_combo, self.ending, self.rx_mode, self.encoding):
+            field.setFixedWidth(120)
             field.setFixedHeight(28)
-            pair = QHBoxLayout()
-            pair.setSpacing(4)
-            pair.addWidget(lbl)
-            pair.addWidget(field)
-            send_options.addLayout(pair)
-        send_options.addStretch(1)
         self.send_btn.setFixedHeight(30)
-        send_row.setSpacing(8)
+        send_row.setSpacing(6)
+        send_row.addWidget(self.lbl_mode)
+        send_row.addWidget(self.mode_combo)
+        send_row.addWidget(self.lbl_ending)
+        send_row.addWidget(self.ending)
         send_row.addWidget(self.send_edit, 1)
-        send_row.addWidget(self.history_btn)
         send_row.addWidget(self.send_btn)
+
+        self.send_more_toggle = QCheckBox(tr("serial.send_options"))
+        self.send_more_toggle.setChecked(False)
+        self.send_more = QWidget()
+        self.send_more.setVisible(False)
+        self.send_more_toggle.toggled.connect(self.send_more.setVisible)
+        more_row = QHBoxLayout(self.send_more)
+        more_row.setContentsMargins(0, 0, 0, 0)
+        more_row.setSpacing(8)
+        more_row.addWidget(self.lbl_rx_mode)
+        more_row.addWidget(self.rx_mode)
+        more_row.addWidget(self.lbl_encoding)
+        more_row.addWidget(self.encoding)
+        more_row.addWidget(self.history_btn)
+        more_row.addStretch(1)
 
         self.preset_toggle = QCheckBox(tr("serial.presets"))
         self.preset_toggle.setToolTip(tr("serial.presets_toggle_tip"))
@@ -193,10 +200,11 @@ class EthernetPage(LinkToolPage):
             self._preset_btns.append(btn)
             btn.clicked.connect(lambda _c=False, idx=i: self._on_preset_send(idx))
             edit.editingFinished.connect(self.persist_prefs)
+        sess_lay.addLayout(send_row)
+        sess_lay.addWidget(self.send_more_toggle)
+        sess_lay.addWidget(self.send_more)
         sess_lay.addWidget(self.preset_toggle)
         sess_lay.addWidget(self.preset_content)
-        sess_lay.addLayout(send_options)
-        sess_lay.addLayout(send_row)
         self.install_send_preview(sess_lay)
 
         self.conn_btn.clicked.connect(self._on_toggle)
@@ -258,6 +266,7 @@ class EthernetPage(LinkToolPage):
         self.lbl_local_port.setText(tr("net.local_port"))
         self.lbl_peer.setText(tr("net.peer"))
         self.history_btn.setText(tr("serial.history"))
+        self.send_more_toggle.setText(tr("serial.send_options"))
         for i, edit in enumerate(self._preset_edits):
             edit.setPlaceholderText(tr("serial.presets_ph", n=i + 1))
         for btn in self._preset_btns:
@@ -268,6 +277,7 @@ class EthernetPage(LinkToolPage):
             self.conn_btn.setText(tr("net.listen") if mode == _PROTO_SERVER else tr("net.connect"))
         self.sess_box.setTitle(tr("net.session"))
         self.traffic.retranslate()
+        self.studio.retranslate()
         self.traffic.set_placeholder(tr("net.placeholder"))
         self.send_edit.setPlaceholderText(tr("net.send_ph"))
         self.send_btn.setText(tr("net.send"))
@@ -340,6 +350,9 @@ class EthernetPage(LinkToolPage):
         self.traffic.clear()
 
     # -- Lua bridge helpers --------------------------------------------
+
+    def lua_opened(self) -> bool:
+        return bool(self._opened)
 
     def lua_send_text(self, text: str) -> bool:
         if not self._opened:
@@ -661,6 +674,12 @@ class EthernetPage(LinkToolPage):
         if len(self._lua_rx) > 65536:
             del self._lua_rx[:-65536]
         self.traffic.append_rx(data, peer=peer)
+        if hasattr(self, "studio"):
+            self.studio.feed(data)
+        from etools.core.frame_hub import frame_hub
+
+        frame_hub.set_names("ethernet", self.studio.names.text())
+        frame_hub.publish("ethernet", data)
 
     def _on_rx_mode_changed(self, _index: int = 0) -> None:
         self.traffic.set_display_mode(str(self.rx_mode.currentData() or "ascii"))

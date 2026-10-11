@@ -39,6 +39,7 @@ class _RttReader(QObject):
         self._timer.setInterval(50)
         self._timer.timeout.connect(self._poll)
         self._cb: Any = None
+        self._io_lock: Any = None
         self._running = False
 
     @property
@@ -75,8 +76,14 @@ class _RttReader(QObject):
             else:
                 addr = int(address)
                 sz = int(size or 0)
-            cb = RTTControlBlock.from_target(session.target, address=addr, size=sz)
-            cb.start()
+            self._io_lock = getattr(session, "_etools_io_lock", None)
+            if self._io_lock is None:
+                cb = RTTControlBlock.from_target(session.target, address=addr, size=sz)
+                cb.start()
+            else:
+                with self._io_lock:
+                    cb = RTTControlBlock.from_target(session.target, address=addr, size=sz)
+                    cb.start()
             ups = getattr(cb, "up_channels", None) or []
             if not ups:
                 self.status.emit(tr("rtt.no_channel"))
@@ -96,6 +103,7 @@ class _RttReader(QObject):
         self._timer.stop()
         self._running = False
         self._cb = None
+        self._io_lock = None
 
     def write_down(self, channel: int, data: bytes) -> None:
         if not self._cb:
@@ -103,7 +111,15 @@ class _RttReader(QObject):
         try:
             downs = getattr(self._cb, "down_channels", None) or []
             if 0 <= channel < len(downs):
-                downs[channel].write(data)
+                if self._io_lock is None:
+                    downs[channel].write(data)
+                else:
+                    if not self._io_lock.acquire(blocking=False):
+                        return
+                    try:
+                        downs[channel].write(data)
+                    finally:
+                        self._io_lock.release()
         except Exception:
             log.exception("RTT write down failed")
 
@@ -113,7 +129,15 @@ class _RttReader(QObject):
         try:
             ups = getattr(self._cb, "up_channels", None) or []
             for i, ch in enumerate(ups):
-                raw = ch.read()
+                if self._io_lock is None:
+                    raw = ch.read()
+                else:
+                    if not self._io_lock.acquire(blocking=False):
+                        return
+                    try:
+                        raw = ch.read()
+                    finally:
+                        self._io_lock.release()
                 if raw:
                     payload = bytes(raw)
                     self.raw_received.emit(i, payload)

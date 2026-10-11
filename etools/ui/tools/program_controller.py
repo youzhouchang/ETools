@@ -99,8 +99,8 @@ class ProgramController:
         extra = info.format_bytes
         if extra:
             text = f"{text}  ({extra})"
-        if info.stage != ProgressStage.IDLE or info.is_error:
-            self._log(text, info.is_error)
+        if info.stage != ProgressStage.IDLE and not info.is_error:
+            self._log(text, False)
 
         flash_stages = (
             ProgressStage.PROGRAM,
@@ -240,12 +240,21 @@ class ProgramController:
                     self._start_refresh_info()
                 self._auto_preview_chip(details)
             else:
-                self.host.probe_panel.set_error(result.message)
+                from etools.core.probe_errors import ProbeTargetAbsent
+
+                absent = isinstance(getattr(result, "error", None), ProbeTargetAbsent)
+                if absent:
+                    self.host.probe_panel.set_target_absent(result.message)
+                else:
+                    self.host.probe_panel.set_error(result.message)
                 self.host.flash_panel.set_ops_enabled(False)
                 self.host.hex_preview.set_chip_read_enabled(False)
                 self.host.target_info_panel.clear()
-                self._set_status(tr("status.failed"), "err")
-                self._log(result.message, True)
+                self._set_status(
+                    result.message if absent else tr("status.failed"),
+                    "warn" if absent else "err",
+                )
+                self._log(result.message, not absent)
                 self._hide_progress()
 
         def on_err(msg: str) -> None:

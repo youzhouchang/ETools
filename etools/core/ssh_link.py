@@ -7,6 +7,7 @@ import hashlib
 import socket
 import threading
 from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -72,17 +73,22 @@ def inspect_host_key(host: str, port: int = 22) -> tuple[str, str]:
 
 
 class SshLink:
-    """Run one-shot commands over SSH (paramiko)."""
+    """SSH client: an interactive shell plus one-shot commands and SFTP."""
 
     def __init__(self) -> None:
         self._client = None
-        self._lock = threading.Lock()
+        self._shell = None
+        self._lock = threading.RLock()
         self._on_error: Callable[[str], None] | None = None
         self._accept_new_host_key = False
 
     @property
     def is_connected(self) -> bool:
         return self._client is not None
+
+    @property
+    def shell_open(self) -> bool:
+        return self._shell is not None
 
     def set_error_handler(self, on_error: Callable[[str], None] | None) -> None:
         self._on_error = on_error
@@ -96,6 +102,7 @@ class SshLink:
         key_filename: str | None = None,
         timeout: float = 10.0,
         accept_new_host_key: bool = False,
+        expected_fingerprint: str = "",
     ) -> None:
         try:
             import paramiko
@@ -110,7 +117,18 @@ class SshLink:
         if known_hosts.exists():
             client.load_host_keys(str(known_hosts))
 
-        if accept_new_host_key:
+        if accept_new_host_key and expected_fingerprint:
+            expected = expected_fingerprint
+
+            class FingerprintPolicy(paramiko.MissingHostKeyPolicy):
+                def missing_host_key(self, ssh_client, hostname, key) -> None:
+                    actual = host_key_fingerprint(key)
+                    if actual != expected:
+                        raise HostKeyMismatchError(host, int(port), actual)
+                    ssh_client._host_keys.add(hostname, key.get_name(), key)
+
+            client.set_missing_host_key_policy(FingerprintPolicy())
+        elif accept_new_host_key:
             client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         else:
             client.set_missing_host_key_policy(paramiko.RejectPolicy())
@@ -155,6 +173,67 @@ class SshLink:
             except Exception:
                 pass
 
+    def open_shell(self, width: int = 120, height: int = 32) -> None:
+        """Open an interactive PTY. Further keystrokes go through shell_write."""
+        with self._lock:
+            if self._client is None:
+                raise RuntimeError("SSH not connected")
+            self._close_shell_unlocked()
+            channel = self._client.invoke_shell(
+                term="xterm-256color",
+                width=max(20, int(width)),
+                height=max(8, int(height)),
+            )
+            self._shell = channel
+
+    def shell_resize(self, width: int, height: int) -> None:
+        if not self._lock.acquire(blocking=False):
+            return
+        try:
+            if self._shell is None:
+                return
+            self._shell.resize_pty(width=max(20, int(width)), height=max(8, int(height)))
+        finally:
+            self._lock.release()
+
+    def shell_write(self, data: bytes) -> None:
+        if not self._lock.acquire(blocking=False):
+            raise RuntimeError("SSH transport is busy")
+        try:
+            if self._shell is None:
+                raise RuntimeError("SSH shell is not open")
+            self._shell.sendall(bytes(data))
+        finally:
+            self._lock.release()
+
+    def shell_read(self, max_bytes: int = 4096) -> bytes:
+        if not self._lock.acquire(blocking=False):
+            return b""
+        try:
+            channel = self._shell
+            if channel is None:
+                return b""
+            exit_ready = getattr(channel, "exit_status_ready", lambda: False)
+            if bool(getattr(channel, "closed", False)) or exit_ready():
+                raise ConnectionError("SSH shell closed")
+            if not channel.recv_ready():
+                return b""
+            return channel.recv(max(1, int(max_bytes)))
+        finally:
+            self._lock.release()
+
+    def close_shell(self) -> None:
+        with self._lock:
+            self._close_shell_unlocked()
+
+    def _close_shell_unlocked(self) -> None:
+        channel, self._shell = self._shell, None
+        if channel is not None:
+            try:
+                channel.close()
+            except Exception:
+                pass
+
     def exec_command(self, command: str, timeout: float = 30.0) -> tuple[int, str, str]:
         """Return (exit_status, stdout, stderr)."""
         with self._lock:
@@ -167,19 +246,23 @@ class SshLink:
             status = stdout.channel.recv_exit_status()
             return status, out, err
 
+    @contextmanager
     def _sftp(self):
         with self._lock:
             if self._client is None:
                 raise RuntimeError("SSH not connected")
-            return self._client.open_sftp()
+            sftp = self._client.open_sftp()
+            try:
+                yield sftp
+            finally:
+                sftp.close()
 
     def sftp_listdir(self, remote_path: str) -> list[tuple[str, str, int]]:
         """List a remote directory. Returns [(name, kind, size), ...].
 
         kind is "dir" or "file"; size is 0 for dirs.
         """
-        sftp = self._sftp()
-        try:
+        with self._sftp() as sftp:
             out: list[tuple[str, str, int]] = []
             for attr in sftp.listdir_attr(remote_path or "."):
                 name = attr.filename
@@ -191,39 +274,27 @@ class SshLink:
                 out.append((name, kind, size))
             out.sort(key=lambda x: (0 if x[1] == "dir" else 1, x[0].lower()))
             return out
-        finally:
-            sftp.close()
 
     def sftp_upload(self, local_path: str, remote_path: str, callback=None) -> None:
-        sftp = self._sftp()
-        try:
+        with self._sftp() as sftp:
             sftp.put(local_path, remote_path, callback=callback)
-        finally:
-            sftp.close()
 
     def sftp_download(self, remote_path: str, local_path: str, callback=None) -> None:
-        sftp = self._sftp()
-        try:
+        with self._sftp() as sftp:
             sftp.get(remote_path, local_path, callback=callback)
-        finally:
-            sftp.close()
 
     def sftp_mkdir(self, remote_path: str) -> None:
-        sftp = self._sftp()
-        try:
+        with self._sftp() as sftp:
             sftp.mkdir(remote_path)
-        finally:
-            sftp.close()
 
     def sftp_remove(self, remote_path: str) -> None:
-        sftp = self._sftp()
-        try:
+        with self._sftp() as sftp:
             sftp.remove(remote_path)
-        finally:
-            sftp.close()
 
     def close(self) -> None:
-        client, self._client = self._client, None
+        with self._lock:
+            self._close_shell_unlocked()
+            client, self._client = self._client, None
         if client is not None:
             try:
                 client.close()
