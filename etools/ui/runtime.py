@@ -74,11 +74,14 @@ class Worker(QObject):
 class OpRunner(QObject):
     """Owns one background QThread at a time.
 
+    ``busy_changed`` fires on the GUI thread when a job starts or finishes.
     Completion handlers must be QObject slots living on the GUI thread.
     Connecting QueuedConnection to a bare Python closure is unreliable
     (no receiver thread affinity) and can run cleanup on the worker
-    thread → QThread.wait() on itself → crash (0xC0000409).
+    thread, then QThread.wait() on itself.
     """
+
+    busy_changed = Signal(bool)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -118,6 +121,7 @@ class OpRunner(QObject):
         self._thread = thread
         self._worker = worker
         thread.start()
+        self.busy_changed.emit(True)
         return True
 
     def _slot_finished(self, result) -> None:
@@ -155,6 +159,7 @@ class OpRunner(QObject):
             thread.deleteLater()
         if worker is not None:
             worker.deleteLater()
+        self.busy_changed.emit(False)
 
     def shutdown(self) -> bool:
         thread = self._thread

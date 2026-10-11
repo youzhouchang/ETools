@@ -16,6 +16,10 @@ EXPECTED_TOOL_MODULES = (
     "program_page.py",
     "serial_page.py",
     "ethernet_page.py",
+    "mqtt_page.py",
+    "map_page.py",
+    "dashboard_page.py",
+    "can_page.py",
     "terminal_page.py",
     "sftp_panel.py",
 )
@@ -36,6 +40,10 @@ def test_ui_tools_importable():
         "ProgramPage",
         "SerialPage",
         "EthernetPage",
+        "MqttPage",
+        "MapPage",
+        "DashboardPage",
+        "CanPage",
         "TerminalPage",
         "SftpPanel",
     ):
@@ -55,3 +63,13 @@ def test_setuptools_finds_all_packages():
         "etools.ui.forms",
     ):
         assert pkg in found, f"setuptools missing package: {pkg}"
+
+
+def test_packaging_installs_project_dependencies():
+    linux = (ROOT / "packaging" / "package_linux.sh").read_text(encoding="utf-8")
+    windows = (ROOT / "packaging" / "package_windows.bat").read_text(encoding="utf-8")
+    spec = (ROOT / "packaging" / "etools.spec").read_text(encoding="utf-8")
+    assert '.[packaging]' in linux
+    assert '.[packaging]' in windows
+    assert 'collect_submodules("can")' in spec
+    assert 'collect_submodules("lupa")' in spec

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -33,6 +34,8 @@ def _form_layout() -> QFormLayout:
 
 class ToolPage(QWidget):
     """Vertical tool: left context rail + main work area, split like Program."""
+
+    state_changed = Signal()
 
     tool_id = "tool"
     tool_title = ""
@@ -77,6 +80,20 @@ class ToolPage(QWidget):
         root.addWidget(self.splitter)
 
         self._build()
+        self._watch_button_state()
+
+    def notify_state(self) -> None:
+        """Tell the shell that connection, busy, or button state changed."""
+        self.state_changed.emit()
+
+    def _watch_button_state(self) -> None:
+        for button in self.findChildren(QAbstractButton):
+            button.installEventFilter(self)
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        if event.type() == QEvent.Type.EnabledChange and isinstance(watched, QAbstractButton):
+            self.notify_state()
+        return super().eventFilter(watched, event)
 
     def set_left_width(self, width: int) -> None:
         """Set default left width. Window resize keeps it; user may still drag."""
@@ -157,9 +174,7 @@ class ToolPage(QWidget):
         self._update_send_preview()
 
     def _update_send_preview(self, *_args) -> None:
-        from etools.core.checksum import append_checksum
         from etools.i18n import tr
-        from etools.ui.widgets.traffic_view import parse_hex_input
 
         text = self.send_edit.text()
         if not text:
@@ -167,13 +182,18 @@ class ToolPage(QWidget):
             self.send_edit.setToolTip("")
             return
         try:
+            from etools.ui.tools.link_controller import LinkController
+
             mode = str(self.mode_combo.currentData())
-            data = parse_hex_input(text) if mode == "hex" else text.encode(self._encoding_name())
             checksum = getattr(self, "checksum", None)
-            if checksum is not None:
-                data = append_checksum(data, str(checksum.currentData() or "none"))
             ending = str(self.ending.currentData() or "none")
-            data += {"none": b"", "lf": b"\n", "cr": b"\r", "crlf": b"\r\n"}[ending]
+            data = LinkController.encode_payload(
+                text,
+                mode=mode,
+                encoding=self._encoding_name(),
+                ending=ending,
+                checksum=str(checksum.currentData() or "none") if checksum is not None else "none",
+            )
             peer_combo = getattr(self, "peer_combo", None)
             peer = peer_combo.currentText() if peer_combo else self.port_combo.currentText()
             self.send_preview.setText(
@@ -288,3 +308,26 @@ class ToolPage(QWidget):
             parent_layout.addWidget(lab)
         else:
             self.ctx_layout.addWidget(lab)
+
+
+class LinkToolPage(ToolPage):
+    """Tool page whose open/closed flag lives in a :class:`LinkController`."""
+
+    def _ensure_link(self):
+        link = getattr(self, "_link_ctl", None)
+        if link is None:
+            from etools.ui.tools.link_controller import LinkController
+
+            link = LinkController(self)
+            link.state_changed.connect(self.notify_state)
+            self._link_ctl = link
+            self.link = link
+        return link
+
+    @property
+    def _opened(self) -> bool:
+        return self._ensure_link().opened
+
+    @_opened.setter
+    def _opened(self, value: bool) -> None:
+        self._ensure_link().set_opened(bool(value))

@@ -49,10 +49,14 @@ hiddenimports = [
     "hid",
     "elftools",
     "elftools.elf.elffile",
+    "can",
+    "lupa",
 ]
 # Pull every pyOCD submodule so frozen imports don't miss plugins/targets
 hiddenimports += collect_submodules("pyocd")
 hiddenimports += collect_submodules("cmsis_pack_manager")
+hiddenimports += collect_submodules("can")
+hiddenimports += collect_submodules("lupa")
 
 a = Analysis(
     [str(project_root / "packaging" / "entry.py")],

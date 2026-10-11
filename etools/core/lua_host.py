@@ -9,10 +9,10 @@ Host tables exposed to Lua:
     app.log(msg) / app.sleep(ms) / app.version
     util.hex(data) / util.unhex(s) / util.checksum(data, algo)
     util.append_checksum(data, algo) / util.verify_checksum(frame, algo)
-    serial.send(text) / serial.send_hex(hexstr) / serial.write(bytes_str)
+    serial.opened() / serial.send(text) / serial.send_hex(hexstr) / serial.write(bytes_str)
     serial.recv(max_bytes) / serial.expect(needle, timeout_ms)
-    net.send(text) / net.recv(max_bytes)
-    term.send(text)
+    net.opened() / net.send(text) / net.recv(max_bytes) / net.expect(needle, timeout_ms)
+    term.opened() / term.send(text) / term.recv(max_bytes)
     flash.erase_all() / flash.erase_range(addr, size)
     flash.program(path[, verify]) / flash.read_mem(addr, size) -> hex
     flash.reset([halt]) / flash.connected
@@ -181,7 +181,7 @@ class LuaHost:
             return " ".join(f"{b:02X}" for b in raw)
 
         def unhex(text) -> str:
-            from etools.ui.widgets.traffic_view import parse_hex_input
+            from etools.core.hextext import parse_hex_input
 
             return self._to_bytes(parse_hex_input(str(text))).decode("latin-1")
 
@@ -225,18 +225,32 @@ class LuaHost:
         serial["expect"] = lambda needle, timeout=2000: self._bridge_call(
             "serial", "expect", str(needle), int(timeout)
         )
+        serial["opened"] = lambda: self._flag("serial", "opened")
         host["serial"] = serial
 
     def _install_net(self, lua, host) -> None:
         net = lua.eval("{}")
         net["send"] = lambda text: self._bridge_call("net", "send", str(text))
         net["recv"] = lambda n=4096: self._bridge_call("net", "recv", int(n))
+        net["expect"] = lambda needle, timeout=2000: self._bridge_call(
+            "net", "expect", str(needle), int(timeout)
+        )
+        net["opened"] = lambda: self._flag("net", "opened")
         host["net"] = net
 
     def _install_term(self, lua, host) -> None:
         term = lua.eval("{}")
         term["send"] = lambda text: self._bridge_call("term", "send", str(text))
+        term["recv"] = lambda n=4096: self._bridge_call("term", "recv", int(n))
+        term["opened"] = lambda: self._flag("term", "opened")
         host["term"] = term
+
+    def _flag(self, name: str, method: str) -> bool:
+        bridge = self._bridges.get(name)
+        fn = getattr(bridge, method, None) if bridge is not None else None
+        if fn is None:
+            return False
+        return bool(fn())
 
     def _install_can(self, lua, host) -> None:
         can = lua.eval("{}")

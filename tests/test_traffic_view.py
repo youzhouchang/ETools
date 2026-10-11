@@ -126,23 +126,25 @@ def test_traffic_view_merge_frames(qapp):
     assert len(view._records) == 2
 
 
-def test_traffic_view_csv_export(tmp_path, qapp, monkeypatch):
+def test_traffic_view_text_export(tmp_path, qapp, monkeypatch):
     from etools.ui.widgets import traffic_view as tv_mod
 
     view = tv_mod.TrafficView()
     view.append_rx(b"AA", peer="1.2.3.4:1")
     view.append_tx(b"BB")
-    out = tmp_path / "t.csv"
+    out = tmp_path / "t.txt"
     monkeypatch.setattr(
         tv_mod.QFileDialog,
         "getSaveFileName",
-        staticmethod(lambda *a, **k: (str(out), "CSV (*.csv)")),
+        staticmethod(lambda *a, **k: (str(out), "Log (*.txt)")),
     )
-    view.export_csv()
+    view.export_text()
     text = out.read_text(encoding="utf-8")
-    assert "stamp,direction,peer,hex,text" in text
-    assert "AA" in text.upper() or "41 41" in text.upper()
-    assert "BB" in text.upper() or "42 42" in text.upper()
+    assert "RX" in text
+    assert "1.2.3.4:1" in text
+    assert "41 41" in text
+    assert "42 42" in text
+    assert "stamp,direction" not in text
 
 
 def test_interpret_bytes():
@@ -152,6 +154,25 @@ def test_interpret_bytes():
     assert "u16 = [513, 1027]" in text
     assert "u32 = [67305985]" in text
     assert "u8  = [1, 2, 3, 4]" in text
+
+
+def test_traffic_more_panel_stays_above_the_log(qapp):
+    from etools.ui.styles import build_stylesheet
+    from etools.ui.widgets.traffic_view import TrafficView
+
+    previous = qapp.styleSheet()
+    qapp.setStyleSheet(build_stylesheet("light"))
+    try:
+        view = TrafficView()
+        view.resize(800, 480)
+        view.show()
+        qapp.processEvents()
+        view.more_toggle.setChecked(True)
+        qapp.processEvents()
+        button_bottom = view.save_btn.mapTo(view, view.save_btn.rect().bottomLeft()).y()
+        assert view.view.geometry().top() - button_bottom >= 12
+    finally:
+        qapp.setStyleSheet(previous)
 
 
 def test_filter_highlight_selections(qapp):

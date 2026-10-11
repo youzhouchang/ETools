@@ -91,10 +91,10 @@ class ProgramPage(ToolPage):
         tabs_spec = [
             ("tabHex", self.hex_preview),
             ("tabFlash", self.flash_panel),
-            ("tabDevices", self.device_manager),
             ("tabRtt", self.rtt_panel),
             ("tabSwo", self.swo_panel),
             ("tabMonitor", self.variable_monitor),
+            ("tabDevices", self.device_manager),
         ]
         for obj_name, widget in tabs_spec:
             page = QWidget()
@@ -143,6 +143,7 @@ class ProgramPage(ToolPage):
         if t_form is not None:
             t_form.setContentsMargins(10, 0, 10, 8)
         self.retranslate()
+        self.flash_panel.availability_changed.connect(self.notify_state)
 
     @staticmethod
     def _compact_form_layout(panel) -> None:

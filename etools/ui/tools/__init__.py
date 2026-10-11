@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from etools.ui.tools.base import ToolPage
 from etools.ui.tools.can_page import CanPage
+from etools.ui.tools.dashboard_page import DashboardPage
 from etools.ui.tools.ethernet_page import EthernetPage
+from etools.ui.tools.map_page import MapPage
+from etools.ui.tools.mqtt_page import MqttPage
 from etools.ui.tools.program_page import ProgramPage
 from etools.ui.tools.script_page import ScriptPage
 from etools.ui.tools.serial_page import SerialPage
@@ -16,6 +19,9 @@ __all__ = [
     "ProgramPage",
     "SerialPage",
     "EthernetPage",
+    "MqttPage",
+    "MapPage",
+    "DashboardPage",
     "CanPage",
     "TerminalPage",
     "ScriptPage",

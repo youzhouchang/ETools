@@ -101,6 +101,45 @@ def test_netlink_tcp_server_multi_client():
     assert any(k == "on" for k, _ in events)
 
 
+def test_ssh_shell_roundtrip():
+    link = SshLink()
+
+    class Channel:
+        def __init__(self) -> None:
+            self.buf = b"prompt"
+            self.sent = b""
+            self.size = (0, 0)
+
+        def recv_ready(self) -> bool:
+            return bool(self.buf)
+
+        def recv(self, n: int) -> bytes:
+            data, self.buf = self.buf[:n], b""
+            return data
+
+        def sendall(self, data: bytes) -> None:
+            self.sent += data
+
+        def resize_pty(self, width: int = 0, height: int = 0) -> None:
+            self.size = (width, height)
+
+        def close(self) -> None:
+            self.closed = True
+
+    channel = Channel()
+    link._client = object()
+    link._shell = channel
+    assert link.shell_open
+    link.shell_write(b"ls\r")
+    link.shell_resize(80, 24)
+    assert channel.sent == b"ls\r"
+    assert channel.size == (80, 24)
+    assert link.shell_read() == b"prompt"
+    link.close()
+    assert not link.shell_open
+    assert not link.is_connected
+
+
 def test_ssh_link_not_connected():
     s = SshLink()
     assert not s.is_connected

@@ -146,7 +146,10 @@ class _SwvReader:
         self._ports = set(ports)
         self._stop.clear()
         self._thread = threading.Thread(
-            target=self._run, name="SWVReader", daemon=True, args=(probe, parser)
+            target=self._run,
+            name="SWVReader",
+            daemon=True,
+            args=(probe, parser, getattr(session, "_etools_io_lock", None)),
         )
         self._thread.start()
         self._bridge.status.emit(
@@ -163,20 +166,37 @@ class _SwvReader:
         try:
             probe = getattr(self._session, "probe", None)
             if probe is not None:
-                probe.swo_stop()
+                io_lock = getattr(self._session, "_etools_io_lock", None)
+                if io_lock is None:
+                    probe.swo_stop()
+                else:
+                    with io_lock:
+                        probe.swo_stop()
         except Exception:
             pass
 
-    def _run(self, probe: Any, parser: Any) -> None:
+    def _run(self, probe: Any, parser: Any, io_lock: Any = None) -> None:
         try:
             try:
-                probe.swo_stop()
+                if io_lock is None:
+                    probe.swo_stop()
+                else:
+                    with io_lock:
+                        probe.swo_stop()
             except Exception:
                 pass
-            probe.swo_start(self._swo_clock)
+            if io_lock is None:
+                probe.swo_start(self._swo_clock)
+            else:
+                with io_lock:
+                    probe.swo_start(self._swo_clock)
             while not self._stop.is_set():
                 try:
-                    data = probe.swo_read()
+                    if io_lock is None:
+                        data = probe.swo_read()
+                    else:
+                        with io_lock:
+                            data = probe.swo_read()
                 except Exception as exc:
                     self._bridge.status.emit(f"SWO 读取错误：{exc}")
                     break
@@ -190,7 +210,11 @@ class _SwvReader:
                     self._stop.wait(0.01)
         finally:
             try:
-                probe.swo_stop()
+                if io_lock is None:
+                    probe.swo_stop()
+                else:
+                    with io_lock:
+                        probe.swo_stop()
             except Exception:
                 pass
 

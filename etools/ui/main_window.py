@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtCore import QObject, QSignalBlocker, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
@@ -17,10 +15,10 @@ from PySide6.QtWidgets import (
 
 from etools import __app_name__, __version__
 from etools.config import get_config, save_config
-from etools.core.models import ProbeInfo, ProgressInfo, ProgressStage, TargetInfo
+from etools.core.models import ProbeInfo, ProgressInfo, TargetInfo
 from etools.core.operations import FlashService
 from etools.core.pyocd_driver import PyOCDDriver
-from etools.i18n import LANG_EN, LANG_ZH, set_language, tr
+from etools.i18n import set_language, tr
 from etools.logger import get_logger
 from etools.ui.icons import app_icon, refresh_icons, set_action_icon
 from etools.ui.runtime import OpRunner, SignalRelay, TaskManager
@@ -28,12 +26,16 @@ from etools.ui.shell import ToolShell
 from etools.ui.styles import apply_combo_style, build_stylesheet, get_theme
 from etools.ui.tools import (
     CanPage,
+    DashboardPage,
     EthernetPage,
+    MapPage,
+    MqttPage,
     ProgramPage,
     ScriptPage,
     SerialPage,
     TerminalPage,
 )
+from etools.ui.tools.program_controller import ProgramController
 
 log = get_logger("ui.main")
 
@@ -134,6 +136,9 @@ class MainWindow(QMainWindow):
         self.program_page = ProgramPage()
         self.serial_page = SerialPage()
         self.ethernet_page = EthernetPage()
+        self.mqtt_page = MqttPage()
+        self.map_page = MapPage()
+        self.dashboard_page = DashboardPage()
         self.can_page = CanPage()
         self.terminal_page = TerminalPage()
         self.script_page = ScriptPage()
@@ -182,6 +187,9 @@ class MainWindow(QMainWindow):
             "program": self.program_page,
             "serial": self.serial_page,
             "ethernet": self.ethernet_page,
+            "mqtt": self.mqtt_page,
+            "map": self.map_page,
+            "dash": self.dashboard_page,
             "can": self.can_page,
             "terminal": self.terminal_page,
             "script": self.script_page,
@@ -190,6 +198,9 @@ class MainWindow(QMainWindow):
             "program": program_actions,
             "serial": lambda: self.serial_page.toolbar_actions(),
             "ethernet": lambda: self.ethernet_page.toolbar_actions(),
+            "mqtt": lambda: self.mqtt_page.toolbar_actions(),
+            "map": lambda: self.map_page.toolbar_actions(),
+            "dash": lambda: self.dashboard_page.toolbar_actions(),
             "can": lambda: self.can_page.toolbar_actions(),
             "terminal": terminal_actions,
             "script": lambda: self.script_page.toolbar_actions(),
@@ -233,12 +244,14 @@ class MainWindow(QMainWindow):
             self.shell.tool_changed.connect(self._on_tool_changed)
 
         self.apply_theme(get_config().theme or "dark")
+        self.program = ProgramController(self)
 
     def _active_page(self):
         tool = self.shell.current_tool
         return {
             "serial": self.serial_page,
             "ethernet": self.ethernet_page,
+            "mqtt": self.mqtt_page,
             "can": self.can_page,
             "terminal": self.terminal_page,
         }.get(tool)
@@ -308,7 +321,7 @@ class MainWindow(QMainWindow):
 
     def _build_menu(self) -> None:
         """Application menu bar only — tool actions live on each tool toolbar."""
-        from PySide6.QtGui import QAction, QActionGroup
+        from PySide6.QtGui import QAction
 
         def act(text: str, icon_name: str | None = None, shortcut: str = "") -> QAction:
             a = QAction(text, self)
@@ -349,58 +362,16 @@ class MainWindow(QMainWindow):
         )
 
         m_view = mb.addMenu(tr("menu.view"))
-        a_labels = act(tr("tool.labels"))
-        a_labels.setCheckable(True)
-        a_labels.setChecked(bool(get_config().extra.get("rail_labels", False)))
-        a_labels.toggled.connect(self._toggle_rail_labels)
-        m_view.addAction(a_labels)
-        m_theme = m_view.addMenu(tr("menu.theme"))
-        current_theme_name = (get_config().theme or "dark").lower()
-        a_theme_dark = act(tr("act.theme_dark"), "theme-dark", "")
-        a_theme_light = act(tr("act.theme_light"), "theme-light", "")
-        a_theme_system = act(tr("settings.theme_system"), "theme-light", "")
-        a_theme_dark.setCheckable(True)
-        a_theme_light.setCheckable(True)
-        a_theme_system.setCheckable(True)
-        a_theme_dark.setChecked(current_theme_name == "dark")
-        a_theme_light.setChecked(current_theme_name == "light")
-        a_theme_system.setChecked(current_theme_name == "system")
-        theme_group = QActionGroup(self)
-        theme_group.setExclusive(True)
-        theme_group.addAction(a_theme_dark)
-        theme_group.addAction(a_theme_light)
-        theme_group.addAction(a_theme_system)
-        m_theme.addAction(a_theme_dark)
-        m_theme.addAction(a_theme_light)
-        m_theme.addAction(a_theme_system)
-        m_view.addSeparator()
-        a_only_free = act(tr("serial.only_free"), "", "")
-        a_only_free.setCheckable(True)
-        serial_page = getattr(self, "serial_page", None)
-        a_only_free.setChecked(bool(getattr(serial_page, "only_free", True)))
-        a_only_free.setToolTip(tr("serial.only_free_tip"))
-        m_view.addAction(a_only_free)
-        self._a_only_free = a_only_free
-        a_only_free.toggled.connect(self._on_only_free_toggled)
         a_hex = act(tr("act.hex"), "hex", "Ctrl+H")
-        m_view.addAction(a_hex)
-        m_view.addSeparator()
-        m_lang = m_view.addMenu(tr("menu.language"))
-        a_lang_zh = act(tr("act.lang_zh"), "language", "")
-        a_lang_en = act(tr("act.lang_en"), "language", "")
-        a_lang_zh.setCheckable(True)
-        a_lang_en.setCheckable(True)
-        from etools.i18n import current_language
+        from etools.ui.widgets.traffic_view import TrafficView
 
-        cur_lang = current_language()
-        a_lang_zh.setChecked(cur_lang == LANG_ZH)
-        a_lang_en.setChecked(cur_lang == LANG_EN)
-        lang_group = QActionGroup(self)
-        lang_group.setExclusive(True)
-        lang_group.addAction(a_lang_zh)
-        lang_group.addAction(a_lang_en)
-        m_lang.addAction(a_lang_zh)
-        m_lang.addAction(a_lang_en)
+        a_eye = act(tr("mon.eye_care"))
+        a_eye.setCheckable(True)
+        a_eye.setChecked(TrafficView._load_eye_care())
+        a_eye.setToolTip(tr("mon.eye_care_tip"))
+        m_view.addAction(a_hex)
+        m_view.addAction(a_eye)
+        a_eye.toggled.connect(TrafficView.set_eye_care)
 
         m_help = mb.addMenu(tr("menu.help"))
         a_check_update = act(tr("act.check_update"), "refresh", "")
@@ -418,12 +389,7 @@ class MainWindow(QMainWindow):
         a_verify.triggered.connect(self._toolbar_verify)
         a_reset.triggered.connect(self._toolbar_reset)
         a_read_chip.triggered.connect(self._toolbar_read_chip)
-        a_theme_dark.triggered.connect(lambda: self._set_theme("dark"))
-        a_theme_light.triggered.connect(lambda: self._set_theme("light"))
-        a_theme_system.triggered.connect(lambda: self._set_theme("system"))
         a_hex.triggered.connect(lambda: self._goto_tab("Hex"))
-        a_lang_zh.triggered.connect(lambda: self._switch_language(LANG_ZH))
-        a_lang_en.triggered.connect(lambda: self._switch_language(LANG_EN))
         a_about.triggered.connect(self._show_about)
         a_check_update.triggered.connect(lambda: self._check_updates(silent=False))
         a_settings.triggered.connect(self._show_settings)
@@ -506,6 +472,9 @@ class MainWindow(QMainWindow):
         for page in (
             self.serial_page,
             self.ethernet_page,
+            self.mqtt_page,
+            self.map_page,
+            self.dashboard_page,
             self.can_page,
             self.terminal_page,
             self.script_page,
@@ -516,9 +485,6 @@ class MainWindow(QMainWindow):
         self.conn_badge.setText(tr("status.connected") if connected else tr("status.disconnected"))
         self.traffic_badge.set_clear_text(tr("status.clear_stats"))
         self.traffic_badge.set_tip(tr("status.stats_tip"))
-        if hasattr(self, "_a_only_free"):
-            self._a_only_free.setText(tr("serial.only_free"))
-            self._a_only_free.setToolTip(tr("serial.only_free_tip"))
         self._refresh_status_bar()
         self._refresh_task_summary()
         self._log(tr("log.lang_switched"))
@@ -585,17 +551,22 @@ class MainWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl(REPO_URL))
 
     def _show_settings(self) -> None:
+        from etools.i18n import current_language
         from etools.ui.widgets.settings_dialog import SettingsDialog
 
+        prev_theme = get_config().theme or "dark"
+        prev_lang = current_language()
         dlg = SettingsDialog(self)
         if dlg.exec():
+            self._toggle_rail_labels(dlg.rail_labels_checked())
+            page = getattr(self, "serial_page", None)
+            if page is not None:
+                page.set_only_free(dlg.only_free_checked())
             theme = dlg.selected_theme()
             lang = dlg.selected_language()
-            if theme != (get_config().theme or "dark"):
+            if theme != prev_theme:
                 self._set_theme(theme)
-            from etools.i18n import current_language
-
-            if lang != current_language():
+            if lang != prev_lang:
                 self._switch_language(lang)
             self._log(tr("settings.applied"))
 
@@ -622,6 +593,9 @@ class MainWindow(QMainWindow):
             ("tool.program", tr("tool.program"), go_tool("program")),
             ("tool.serial", tr("tool.serial"), go_tool("serial")),
             ("tool.ethernet", tr("tool.ethernet"), go_tool("ethernet")),
+            ("tool.mqtt", tr("tool.mqtt"), go_tool("mqtt")),
+            ("tool.map", tr("tool.map"), go_tool("map")),
+            ("tool.dash", tr("tool.dash"), go_tool("dash")),
             ("tool.can", tr("tool.can"), go_tool("can")),
             ("tool.terminal", tr("tool.terminal"), go_tool("terminal")),
             ("tool.script", tr("tool.script"), go_tool("script")),
@@ -661,6 +635,9 @@ class MainWindow(QMainWindow):
             for page in (
                 self.serial_page,
                 self.ethernet_page,
+                self.mqtt_page,
+                self.map_page,
+                self.dashboard_page,
                 self.can_page,
                 self.terminal_page,
                 self.sftp_panel,
@@ -689,11 +666,13 @@ class MainWindow(QMainWindow):
                     for page in (
                         self.serial_page,
                         self.ethernet_page,
+                        self.mqtt_page,
                         self.can_page,
                         self.terminal_page,
                     )
                 )
                 or self.ethernet_page._runner.busy
+                or self.mqtt_page._runner.busy
                 or self.terminal_page._runner.busy
             ):
                 raise RuntimeError(tr("project.disconnect"))
@@ -717,6 +696,9 @@ class MainWindow(QMainWindow):
             for page in (
                 self.serial_page,
                 self.ethernet_page,
+                self.mqtt_page,
+                self.map_page,
+                self.dashboard_page,
                 self.can_page,
                 self.terminal_page,
                 self.sftp_panel,
@@ -771,52 +753,22 @@ class MainWindow(QMainWindow):
         BatchProgramDialog(program_fn, self).exec()
 
     def _toolbar_open_firmware(self) -> None:
-        from PySide6.QtWidgets import QFileDialog
-
-        from etools.core.models import FIRMWARE_EXTENSIONS
-
-        path, _ = QFileDialog.getOpenFileName(self, tr("act.open"), "", FIRMWARE_EXTENSIONS)
-        if not path:
-            return
-        self.flash_panel.fw_edit.setText(path)
-        self.flash_panel.remember_firmware(path)
-        self.hex_preview.load_file(path)
-        self._goto_tab("Hex")
-        self._log(tr("log.firmware_opened", name=Path(path).name))
+        return self.program._toolbar_open_firmware()
 
     def _toolbar_program(self) -> None:
-        path = self.flash_panel.firmware_path()
-        if not path:
-            self._toolbar_open_firmware()
-            path = self.flash_panel.firmware_path()
-            if not path:
-                return
-        self._start_program(path, self.flash_panel.verify_check.isChecked())
+        return self.program._toolbar_program()
 
     def _toolbar_erase(self) -> None:
-        ret = QMessageBox.warning(
-            self,
-            tr("confirm.erase_all_title"),
-            tr("confirm.erase_all_text"),
-            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel,
-        )
-        if ret == QMessageBox.StandardButton.Ok:
-            self._start_erase()
+        return self.program._toolbar_erase()
 
     def _toolbar_verify(self) -> None:
-        path = self.flash_panel.firmware_path()
-        if path:
-            self._start_verify(path)
+        return self.program._toolbar_verify()
 
     def _toolbar_reset(self) -> None:
-        self._start_reset()
+        return self.program._toolbar_reset()
 
     def _toolbar_read_chip(self) -> None:
-        self._goto_tab("Hex")
-        addr = int(self.hex_preview.addr_spin.value())
-        size = self.hex_preview._read_size_bytes()
-        self._start_read_chip(addr, size)
+        return self.program._toolbar_read_chip()
 
     def apply_theme(self, name: str) -> None:
         theme = get_theme(name)
@@ -835,90 +787,29 @@ class MainWindow(QMainWindow):
             apply_combo_style(combo, theme)
 
     def _wire(self) -> None:
-        self.probe_panel.connect_requested.connect(self._start_connect)
-        self.probe_panel.disconnect_requested.connect(self._do_disconnect)
-
-        self.flash_panel.program_requested.connect(self._start_program)
-        self.flash_panel.erase_requested.connect(self._start_erase)
-        self.flash_panel.erase_range_requested.connect(self._start_erase_range)
-        self.flash_panel.read_requested.connect(self._start_read)
-        self.flash_panel.verify_requested.connect(self._start_verify)
-        self.flash_panel.reset_requested.connect(self._start_reset)
-
-        self.target_info_panel.refresh_btn.clicked.connect(self._start_refresh_info)
-
-        self.hex_preview.read_chip_requested.connect(self._start_read_chip)
-        self.hex_preview.fill_requested.connect(self._start_fill_ram)
-        self.flash_panel.fw_edit.textChanged.connect(self._on_firmware_path_changed)
-        self.device_manager.catalog_changed.connect(self._on_catalog_changed)
+        return self.program._wire()
 
     def _hotplug_tick(self) -> None:
-        if self._runner.busy:
-            return
-        self._start_scan(silent=True)
+        return self.program._hotplug_tick()
 
     # ------------------------------------------------------------------
     # Progress / logging (UI thread)
     # ------------------------------------------------------------------
 
     def _on_progress_info(self, info: ProgressInfo) -> None:
-        text = info.message or info.stage.value
-        extra = info.format_bytes
-        if extra:
-            text = f"{text}  ({extra})"
-        if info.stage != ProgressStage.IDLE or info.is_error:
-            self._log(text, info.is_error)
-
-        flash_stages = (
-            ProgressStage.PROGRAM,
-            ProgressStage.ERASE,
-            ProgressStage.READ,
-            ProgressStage.VERIFY,
-            ProgressStage.CONNECT,
-        )
-        if info.stage == ProgressStage.DONE:
-            self._show_progress(100, text)
-        elif info.is_error or info.stage == ProgressStage.ERROR:
-            self._hide_progress()
-        elif info.stage in flash_stages:
-            if info.indeterminate:
-                self.progress.setRange(0, 0)
-                self.progress_label.setText(text)
-                self.progress_label.show()
-                self.progress.show()
-            else:
-                self._show_progress(info.percent, text)
+        return self.program._on_progress_info(info)
 
     def _show_progress(self, percent: int, label: str = "") -> None:
-        self.progress.setRange(0, 100)
-        self.progress.setValue(max(0, min(100, percent)))
-        self.progress.show()
-        if label:
-            self.progress_label.setText(label)
-            self.progress_label.show()
-        else:
-            self.progress_label.hide()
+        return self.program._show_progress(percent, label)
 
     def _hide_progress(self) -> None:
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        self.progress_label.hide()
-        self.progress.show()
+        return self.program._hide_progress()
 
     def _log(self, message: str, is_error: bool = False) -> None:
-        self.log_panel.append(message, is_error)
-        if is_error:
-            log.error(message)
-        else:
-            log.info(message)
+        return self.program._log(message, is_error)
 
     def _set_status(self, text: str, kind: str = "warn") -> None:
-        obj = {"ok": "statusOk", "err": "statusErr", "warn": "statusWarn"}.get(kind, "statusWarn")
-        self.conn_badge.setText(text)
-        self.conn_badge.setObjectName(obj)
-        st = self.conn_badge.style()
-        st.unpolish(self.conn_badge)
-        st.polish(self.conn_badge)
+        return self.program._set_status(text, kind)
 
     @property
     def runner(self):
@@ -938,296 +829,59 @@ class MainWindow(QMainWindow):
         self._set_busy(busy)
 
     def _run_async(self, fn, on_ok, on_err=None, *, quiet_busy: bool = False) -> bool:
-        if self.workflow_active:
-            return False
-
-        def ok(result) -> None:
-            self._set_busy(False)
-            on_ok(result)
-
-        def err(msg: str) -> None:
-            self._set_busy(False)
-            if not quiet_busy:
-                self._log(msg, True)
-            self._hide_progress()
-            if on_err:
-                on_err(msg)
-
-        if not self._runner.start(fn, ok, err):
-            return False
-        if not quiet_busy:
-            self._set_busy(True)
-        return True
+        return self.program._run_async(fn, on_ok, on_err, quiet_busy=quiet_busy)
 
     def _set_busy(self, busy: bool) -> None:
-        self.flash_panel.set_busy(busy)
-        for key, action in getattr(self, "_flash_menu_actions", {}).items():
-            action.setEnabled(getattr(self.flash_panel, key + "_btn").isEnabled())
+        return self.program._set_busy(busy)
 
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
 
     def _start_scan(self, silent: bool = False) -> None:
-        if self._runner.busy:
-            return
-        if not silent:
-            self._log(tr("log.scan_probes"))
-            self.probe_panel.set_scanning_hint(True)
-
-        def on_ok(probes) -> None:
-            probes = probes or []
-            ids = tuple(p.unique_id for p in probes)
-            if ids != self._last_probe_ids:
-                self._last_probe_ids = ids
-                if probes:
-                    self._log(tr("log.probe_list", n=len(probes)))
-                else:
-                    if not silent:
-                        self._log(tr("log.probe_none"), True)
-            self.probe_panel.set_probes(probes)
-
-        def on_err(msg: str) -> None:
-            self.probe_panel.set_probes([])
-            if not silent:
-                self._log(tr("log.probe_scan_err", err=msg), True)
-
-        self._run_async(self.service.scan_probes, on_ok, on_err, quiet_busy=silent)
+        return self.program._start_scan(silent)
 
     def _start_connect(self, probe: ProbeInfo, target: TargetInfo) -> None:
-        self._log(
-            tr(
-                "log.connecting",
-                probe=probe.display_name,
-                target=target.target_override,
-            )
-        )
-        self.probe_panel.set_connecting()
-        self._set_status(tr("status.probe_connecting"), "warn")
-        self._show_progress(0, tr("status.probe_connecting"))
-
-        def on_ok(result) -> None:
-            if result.ok:
-                self.probe_panel.set_connected(True, result.detail or result.message)
-                self.flash_panel.set_ops_enabled(True)
-                self.hex_preview.set_chip_read_enabled(True)
-                self.rtt_panel.set_connected(True)
-                self.swo_panel.set_connected(True)
-                self.variable_monitor.set_connected(True)
-                details_for_flash = getattr(result, "data", None)
-                if details_for_flash is not None and getattr(details_for_flash, "flash_size", 0):
-                    self.hex_preview._flash_size_hint = int(details_for_flash.flash_size)
-                else:
-                    self.hex_preview._flash_size_hint = 0
-                self._set_status(tr("log.connected", target=target.target_override), "ok")
-                self._log(result.message)
-                details = getattr(result, "data", None)
-                if details is not None:
-                    self.target_info_panel.apply(details)
-                else:
-                    self._start_refresh_info()
-                self._auto_preview_chip(details)
-            else:
-                self.probe_panel.set_error(result.message)
-                self.flash_panel.set_ops_enabled(False)
-                self.hex_preview.set_chip_read_enabled(False)
-                self.target_info_panel.clear()
-                self._set_status(tr("status.failed"), "err")
-                self._log(result.message, True)
-                self._hide_progress()
-
-        def on_err(msg: str) -> None:
-            self.probe_panel.set_error(msg)
-            self.flash_panel.set_ops_enabled(False)
-            self.hex_preview.set_chip_read_enabled(False)
-            self.target_info_panel.clear()
-            self._set_status(tr("status.failed"), "err")
-
-        self._run_async(lambda: self.service.connect(probe, target), on_ok, on_err)
+        return self.program._start_connect(probe, target)
 
     def _auto_preview_chip(self, details: object | None) -> None:
-        addr = 0x0800_0000
-        size = 0x1000
-        if details is not None:
-            base = int(getattr(details, "flash_base", 0) or 0)
-            flash_size = int(getattr(details, "flash_size", 0) or 0)
-            if base:
-                addr = base
-            if flash_size:
-                size = min(0x1000, flash_size)
-        try:
-            self.hex_preview.addr_spin.setValue(addr)
-            self.hex_preview.size_spin.setValue(size)
-        except Exception:
-            log.debug("sync hex spins failed", exc_info=True)
-        self._log(tr("log.hex_loading", addr=f"{addr:08X}", size=f"{size:,}"))
-        self._start_read_chip(addr, size)
+        return self.program._auto_preview_chip(details)
 
     def _do_disconnect(self) -> None:
-        try:
-            self.service.disconnect()
-        except Exception as exc:
-            self._log(tr("log.disconnect_err", err=str(exc)), True)
-        self.probe_panel.set_connected(False)
-        self.flash_panel.set_ops_enabled(False)
-        self.hex_preview.set_chip_read_enabled(False)
-        self.rtt_panel.set_connected(False)
-        self.swo_panel.set_connected(False)
-        self.variable_monitor.set_connected(False)
-        self.target_info_panel.clear()
-        self._set_status(tr("status.disconnected"), "warn")
-        self._hide_progress()
-        self._log(tr("log.disconnected"))
+        return self.program._do_disconnect()
 
     def _on_catalog_changed(self) -> None:
-        self.probe_panel.reload_targets()
-        self._log(tr("log.devices_updated"))
+        return self.program._on_catalog_changed()
 
     def _on_firmware_path_changed(self, path: str) -> None:
-        path = path.strip()
-        if not path or not Path(path).is_file():
-            return
-        try:
-            self.hex_preview.load_file(path)
-            if Path(path).suffix.lower() in {".elf", ".axf", ".alf"}:
-                self.variable_monitor.load_path(path)
-            self._log(tr("log.hex_loaded", name=Path(path).name))
-        except Exception:
-            log.exception("hex preview load")
+        return self.program._on_firmware_path_changed(path)
 
     def _start_read_chip(self, addr: int, size: int) -> None:
-        self._show_progress(0, tr("log.chip_read", addr=f"0x{addr:08X}"))
-
-        def work():
-            data = self.service.read_memory_bytes(addr, size)
-            return addr, data
-
-        def on_ok(result) -> None:
-            a, data = result
-            self.hex_preview.load_bytes(a, data, source=None)
-            self._show_progress(100, tr("log.chip_read_done", size=f"{len(data):,}"))
-
-        def on_err(msg: str) -> None:
-            self._log(msg, True)
-            self._hide_progress()
-
-        self._run_async(work, on_ok, on_err)
+        return self.program._start_read_chip(addr, size)
 
     def _start_program(self, path: str, verify: bool = True) -> None:
-        self._show_progress(0, tr("log.programming"))
-
-        def on_ok(result) -> None:
-            self._set_busy(False)
-            self._log(result.message, not result.ok)
-            if result.ok:
-                self._show_progress(100, result.message or "OK")
-            else:
-                self._hide_progress()
-
-        def on_err(msg: str) -> None:
-            self._set_busy(False)
-            self._log(msg, True)
-            self._hide_progress()
-
-        if not self._run_async(
-            lambda: self.service.program_file(path, verify=verify), on_ok, on_err
-        ):
-            self._log(tr("log.busy"), True)
+        return self.program._start_program(path, verify)
 
     def _start_erase(self) -> None:
-        self._show_progress(0, tr("log.erasing"))
-
-        def on_ok(result) -> None:
-            self._set_busy(False)
-            self._log(result.message, not result.ok)
-            self._hide_progress()
-
-        def on_err(msg: str) -> None:
-            self._set_busy(False)
-            self._log(msg, True)
-            self._hide_progress()
-
-        self._run_async(self.service.erase_all, on_ok, on_err)
+        return self.program._start_erase()
 
     def _start_erase_range(self, address: int, size: int) -> None:
-        self._show_progress(0, tr("log.erasing_range"))
-
-        def on_ok(result) -> None:
-            self._set_busy(False)
-            self._log(result.message, not result.ok)
-            self._hide_progress()
-
-        def on_err(msg: str) -> None:
-            self._set_busy(False)
-            self._log(msg, True)
-            self._hide_progress()
-
-        self._run_async(lambda: self.service.erase_range(address, size), on_ok, on_err)
+        return self.program._start_erase_range(address, size)
 
     def _start_read(self, address: int, size: int, out_path: str) -> None:
-        self._show_progress(0, tr("log.reading"))
-
-        def on_ok(result) -> None:
-            self._set_busy(False)
-            self._log(result.message, not result.ok)
-            self._hide_progress()
-
-        def on_err(msg: str) -> None:
-            self._set_busy(False)
-            self._log(msg, True)
-            self._hide_progress()
-
-        self._run_async(lambda: self.service.read_flash(address, size, out_path), on_ok, on_err)
+        return self.program._start_read(address, size, out_path)
 
     def _start_verify(self, path: str) -> None:
-        self._show_progress(0, tr("log.verifying"))
-
-        def on_ok(result) -> None:
-            self._set_busy(False)
-            self._log(result.message, not result.ok)
-            self._hide_progress()
-
-        def on_err(msg: str) -> None:
-            self._set_busy(False)
-            self._log(msg, True)
-            self._hide_progress()
-
-        self._run_async(lambda: self.service.verify_file(path), on_ok, on_err)
+        return self.program._start_verify(path)
 
     def _start_reset(self) -> None:
-        def on_ok(result) -> None:
-            self._set_busy(False)
-            self._log(result.message, not result.ok)
-
-        def on_err(msg: str) -> None:
-            self._set_busy(False)
-            self._log(msg, True)
-
-        self._run_async(lambda: self.service.reset_target(halt=False), on_ok, on_err)
+        return self.program._start_reset()
 
     def _start_refresh_info(self) -> None:
-        def on_ok(details) -> None:
-            self.target_info_panel.apply(details)
-
-        def on_err(msg: str) -> None:
-            self._log(msg, True)
-
-        self._run_async(self.service.target_details, on_ok, on_err, quiet_busy=True)
+        return self.program._start_refresh_info()
 
     def _start_fill_ram(self, addr: int, size: int, value: int) -> None:
-        self._show_progress(0, tr("log.filling"))
-
-        def on_ok(result) -> None:
-            self._set_busy(False)
-            self._log(result.message, not result.ok)
-            self._hide_progress()
-
-        def on_err(msg: str) -> None:
-            self._set_busy(False)
-            self._log(msg, True)
-            self._hide_progress()
-
-        self._run_async(lambda: self.service.fill_memory(addr, size, value), on_ok, on_err)
+        return self.program._start_fill_ram(addr, size, value)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if self.workflow_active:
@@ -1242,9 +896,13 @@ class MainWindow(QMainWindow):
         runners = [
             self._runner,
             self.ethernet_page._runner,
+            self.mqtt_page._runner,
             self.terminal_page._runner,
             self.sftp_panel._runner,
         ]
+        serial_runner = getattr(self.serial_page, "_runner", None)
+        if serial_runner is not None:
+            runners.append(serial_runner)
         update_running = self._update_thread is not None and self._update_thread.isRunning()
         if any(runner.busy for runner in runners) or update_running:
             self.setEnabled(False)
@@ -1258,12 +916,18 @@ class MainWindow(QMainWindow):
             return
         try:
             self._status_timer.stop()
-            self.shell._state_timer.stop()
             self._save_geometry()
             if hasattr(self, "shell"):
                 self.shell.shutdown()
             if hasattr(self, "can_page"):
                 self.can_page.shutdown()
+            for page in (
+                getattr(self, "mqtt_page", None),
+                getattr(self, "map_page", None),
+                getattr(self, "dashboard_page", None),
+            ):
+                if page is not None:
+                    page.shutdown()
             self.rtt_panel.shutdown()
             self.swo_panel.shutdown()
             self.variable_monitor.shutdown()
@@ -1291,6 +955,9 @@ class MainWindow(QMainWindow):
             "program": getattr(self, "program_page", None),
             "serial": getattr(self, "serial_page", None),
             "ethernet": getattr(self, "ethernet_page", None),
+            "mqtt": getattr(self, "mqtt_page", None),
+            "map": getattr(self, "map_page", None),
+            "dash": getattr(self, "dashboard_page", None),
             "can": getattr(self, "can_page", None),
             "terminal": getattr(self, "terminal_page", None),
             "script": getattr(self, "script_page", None),
@@ -1311,6 +978,9 @@ class MainWindow(QMainWindow):
             ("program", getattr(self, "program_page", None)),
             ("serial", getattr(self, "serial_page", None)),
             ("ethernet", getattr(self, "ethernet_page", None)),
+            ("mqtt", getattr(self, "mqtt_page", None)),
+            ("map", getattr(self, "map_page", None)),
+            ("dash", getattr(self, "dashboard_page", None)),
             ("can", getattr(self, "can_page", None)),
             ("terminal", getattr(self, "terminal_page", None)),
             ("script", getattr(self, "script_page", None)),

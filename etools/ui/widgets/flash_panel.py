@@ -28,6 +28,7 @@ from etools.ui.ui_loader import embed_form
 class FlashPanel(QFrame):
     """Firmware path and flash operations."""
 
+    availability_changed = Signal()
     program_requested = Signal(str, bool)
     erase_requested = Signal()
     erase_range_requested = Signal(int, int)
@@ -204,6 +205,7 @@ class FlashPanel(QFrame):
             self.read_btn,
         ):
             w.setEnabled(enabled)
+        self.availability_changed.emit()
 
     def _on_program(self) -> None:
         path = self.firmware_path()

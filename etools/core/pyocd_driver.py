@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from etools.core.hexdump import parse_elf, parse_ihex, parse_srec
 from etools.core.models import (
     PROBE_CLASS_MAP,
     STM32_FLASHSIZE_CANDIDATES,
@@ -26,6 +27,14 @@ from etools.core.models import (
     TargetInfo,
 )
 from etools.core.probe import ProbeDriver
+from etools.core.probe_errors import (
+    ProbeDisconnected,
+    ProbeOperationError,
+    ProbeTargetAbsent,
+    classify_probe_error,
+    target_is_absent,
+)
+from etools.i18n import tr
 from etools.logger import get_logger
 
 log = get_logger("pyocd")
@@ -154,7 +163,7 @@ class PyOCDDriver(ProbeDriver):
             from pyocd.core.helpers import ConnectHelper
         except ImportError as exc:
             self._set_state(ConnectionState.ERROR)
-            return OperationResult(ok=False, message=f"pyOCD not available: {exc}")
+            return self._fail(f"pyOCD not available: {exc}", exc)
 
         options: dict[str, Any] = {
             "target_override": target.target_override,
@@ -189,7 +198,7 @@ class PyOCDDriver(ProbeDriver):
             self.emit_progress(
                 ProgressInfo(stage=ProgressStage.ERROR, percent=0, message=msg, is_error=True)
             )
-            return OperationResult(ok=False, message=msg)
+            return self._fail(msg, exc)
 
         if session is None:
             self._set_state(ConnectionState.ERROR)
@@ -197,7 +206,7 @@ class PyOCDDriver(ProbeDriver):
             self.emit_progress(
                 ProgressInfo(stage=ProgressStage.ERROR, percent=0, message=msg, is_error=True)
             )
-            return OperationResult(ok=False, message=msg)
+            return self._fail(msg)
 
         try:
             if not session.is_open:
@@ -208,12 +217,19 @@ class PyOCDDriver(ProbeDriver):
             except Exception:
                 pass
             self._set_state(ConnectionState.ERROR)
+            if target_is_absent(exc):
+                msg = tr("probe.no_mcu")
+                log.warning("target did not answer: %s", exc)
+                self.emit_progress(
+                    ProgressInfo(stage=ProgressStage.ERROR, percent=0, message=msg, is_error=True)
+                )
+                return self._fail(msg, ProbeTargetAbsent(str(exc)))
             msg = f"Session open failed: {exc}"
             log.exception("session open failed")
             self.emit_progress(
                 ProgressInfo(stage=ProgressStage.ERROR, percent=0, message=msg, is_error=True)
             )
-            return OperationResult(ok=False, message=msg)
+            return self._fail(msg, exc)
 
         dur = time.perf_counter() - t0
         self._session = session
@@ -462,7 +478,7 @@ class PyOCDDriver(ProbeDriver):
             self.emit_progress(
                 ProgressInfo(stage=ProgressStage.ERROR, percent=0, message=msg, is_error=True)
             )
-            return OperationResult(ok=False, message=str(exc))
+            return self._fail(str(exc), exc)
 
         dur = time.perf_counter() - t0
         self.emit_progress(
@@ -474,7 +490,7 @@ class PyOCDDriver(ProbeDriver):
         """Erase flash blocks covering [address, address+size)."""
         session = self._require_session()
         if size <= 0:
-            return OperationResult(ok=False, message="Invalid erase range")
+            return self._fail("Invalid erase range")
         start = int(address)
         end = start + int(size)
         self.emit_progress(
@@ -501,7 +517,7 @@ class PyOCDDriver(ProbeDriver):
                     stage=ProgressStage.ERROR, percent=0, message=str(exc), is_error=True
                 )
             )
-            return OperationResult(ok=False, message=str(exc))
+            return self._fail(str(exc), exc)
         dur = time.perf_counter() - t0
         self.emit_progress(
             ProgressInfo(
@@ -520,7 +536,7 @@ class PyOCDDriver(ProbeDriver):
         session = self._require_session()
         path = Path(firmware_path)
         if not path.exists():
-            return OperationResult(ok=False, message=f"Firmware not found: {path}")
+            return self._fail(f"Firmware not found: {path}")
 
         size = path.stat().st_size
         self.emit_progress(
@@ -571,7 +587,7 @@ class PyOCDDriver(ProbeDriver):
             self.emit_progress(
                 ProgressInfo(stage=ProgressStage.ERROR, percent=0, message=msg, is_error=True)
             )
-            return OperationResult(ok=False, message=str(exc))
+            return self._fail(str(exc), exc)
 
         dur = time.perf_counter() - t0
         if verify:
@@ -654,16 +670,13 @@ class PyOCDDriver(ProbeDriver):
         """
         session = self._require_session()
         if size <= 0 or size > 256 * 1024:
-            return OperationResult(ok=False, message="Invalid fill size (1 … 256 KiB)")
+            return self._fail("Invalid fill size (1 … 256 KiB)")
         value = int(value) & 0xFF
         target = session.target
         if not self._region_is_ram(target, address, size):
-            return OperationResult(
-                ok=False,
-                message=(
-                    f"0x{address:08X}+{size:,} 不在 RAM 区域；"
-                    "填充仅支持 RAM，Flash 请用烧录流程"
-                ),
+            return self._fail(
+                f"0x{address:08X}+{size:,} 不在 RAM 区域；"
+                "填充仅支持 RAM，Flash 请用烧录流程"
             )
 
         self.emit_progress(
@@ -704,7 +717,7 @@ class PyOCDDriver(ProbeDriver):
             self.emit_progress(
                 ProgressInfo(stage=ProgressStage.ERROR, percent=0, message=msg, is_error=True)
             )
-            return OperationResult(ok=False, message=str(exc))
+            return self._fail(str(exc), exc)
 
         dur = time.perf_counter() - t0
         self.emit_progress(
@@ -747,7 +760,7 @@ class PyOCDDriver(ProbeDriver):
     def read(self, address: int, size: int, out_path: str) -> OperationResult:
         self._require_session()
         if size <= 0 or size > 16 * 1024 * 1024:
-            return OperationResult(ok=False, message="Invalid read size (1 … 16 MiB)")
+            return self._fail("Invalid read size (1 … 16 MiB)")
 
         self.emit_progress(
             ProgressInfo(
@@ -767,7 +780,7 @@ class PyOCDDriver(ProbeDriver):
             self.emit_progress(
                 ProgressInfo(stage=ProgressStage.ERROR, percent=0, message=msg, is_error=True)
             )
-            return OperationResult(ok=False, message=str(exc))
+            return self._fail(str(exc), exc)
 
         dur = time.perf_counter() - t0
         self.emit_progress(
@@ -790,7 +803,7 @@ class PyOCDDriver(ProbeDriver):
         session = self._require_session()
         path = Path(firmware_path)
         if not path.exists():
-            return OperationResult(ok=False, message=f"Firmware not found: {path}")
+            return self._fail(f"Firmware not found: {path}")
 
         self.emit_progress(
             ProgressInfo(stage=ProgressStage.VERIFY, percent=-1, message=f"Verifying {path.name} …")
@@ -804,7 +817,7 @@ class PyOCDDriver(ProbeDriver):
             self.emit_progress(
                 ProgressInfo(stage=ProgressStage.ERROR, percent=0, message=msg, is_error=True)
             )
-            return OperationResult(ok=False, message=str(exc))
+            return self._fail(str(exc), exc)
 
         dur = time.perf_counter() - t0
         if ok:
@@ -822,9 +835,7 @@ class PyOCDDriver(ProbeDriver):
                 is_error=True,
             )
         )
-        return OperationResult(
-            ok=False, message=detail or "Verify failed", duration_s=dur, detail=detail
-        )
+        return self._fail(detail or "Verify failed", duration_s=dur, detail=detail)
 
     def _verify_image(self, session: Any, path: Path) -> tuple[bool, str]:
         """Compare flash against the file's address/data segments."""
@@ -873,105 +884,18 @@ class PyOCDDriver(ProbeDriver):
         return [(base, data)]
 
     def _parse_hex(self, text: str) -> list[tuple[int, bytes]]:
-        segments: list[tuple[int, bytes]] = []
-        base = 0
-        current_addr: int | None = None
-        buf = bytearray()
-
-        def flush() -> None:
-            nonlocal current_addr, buf
-            if current_addr is not None and buf:
-                segments.append((current_addr, bytes(buf)))
-            current_addr = None
-            buf = bytearray()
-
-        for line in text.splitlines():
-            line = line.strip()
-            if not line.startswith(":"):
-                continue
-            raw = bytes.fromhex(line[1:])
-            length, addr_hi, addr_lo, rtype = raw[0], raw[1], raw[2], raw[3]
-            addr = (addr_hi << 8) | addr_lo
-            payload = raw[4 : 4 + length]
-            if rtype == 0x00:
-                abs_addr = base + addr
-                if current_addr is None or abs_addr != current_addr + len(buf):
-                    flush()
-                    current_addr = abs_addr
-                buf.extend(payload)
-            elif rtype == 0x04:
-                flush()
-                base = int.from_bytes(payload, "big") << 16
-            elif rtype == 0x02:
-                flush()
-                base = int.from_bytes(payload, "big") << 4
-            elif rtype == 0x01:
-                flush()
-                break
-            else:
-                flush()
-        flush()
-        return segments
+        return parse_ihex(text)
 
     def _parse_srec(self, text: str) -> list[tuple[int, bytes]]:
-        segments: list[tuple[int, bytes]] = []
-        current_addr: int | None = None
-        buf = bytearray()
-
-        def flush() -> None:
-            nonlocal current_addr, buf
-            if current_addr is not None and buf:
-                segments.append((current_addr, bytes(buf)))
-            current_addr = None
-            buf = bytearray()
-
-        for line in text.splitlines():
-            line = line.strip()
-            if not line or line[0] != "S":
-                continue
-            rtype = line[1]
-            if rtype == "0":
-                continue
-            if rtype in ("7", "8", "9"):
-                flush()
-                break
-            if rtype not in ("1", "2", "3"):
-                continue
-            raw = bytes.fromhex(line[2:])
-            count = raw[0]
-            if rtype == "1":
-                addr = int.from_bytes(raw[1:3], "big")
-                payload = raw[3:count]
-            elif rtype == "2":
-                addr = int.from_bytes(raw[1:4], "big")
-                payload = raw[4:count]
-            else:
-                addr = int.from_bytes(raw[1:5], "big")
-                payload = raw[5:count]
-            if current_addr is None or addr != current_addr + len(buf):
-                flush()
-                current_addr = addr
-            buf.extend(payload)
-        flush()
-        return segments
+        return parse_srec(text)
 
     def _parse_elf(self, path: Path) -> list[tuple[int, bytes]]:
         try:
-            from elftools.elf.elffile import ELFFile
-        except ImportError as exc:
-            raise RuntimeError("pyelftools is required for ELF verify") from exc
-
-        segments: list[tuple[int, bytes]] = []
-        with path.open("rb") as f:
-            elf = ELFFile(f)
-            for seg in elf.iter_segments():
-                if seg["p_type"] != "PT_LOAD":
-                    continue
-                data = seg.data()
-                if not data:
-                    continue
-                segments.append((seg["p_paddr"], data))
-        return segments
+            return parse_elf(path)
+        except RuntimeError as exc:
+            if "pyelftools" in str(exc):
+                raise RuntimeError("pyelftools is required for ELF verify") from exc
+            raise
 
     def reset(self, halt: bool = False) -> OperationResult:
         session = self._require_session()
@@ -987,9 +911,22 @@ class PyOCDDriver(ProbeDriver):
         except Exception as exc:
             log.exception("reset failed")
             self._emit(f"Reset failed: {exc}", True)
-            return OperationResult(ok=False, message=str(exc))
+            return self._fail(str(exc), exc)
+
+    def _fail(self, message: str, exc: BaseException | None = None, **extra) -> OperationResult:
+        """Attach a typed probe error without changing the user-visible message."""
+        if exc is not None:
+            error = classify_probe_error(exc, message)
+        elif any(
+            marker in message.lower()
+            for marker in ("unplugged", "not connected", "no matching probe")
+        ):
+            error = ProbeDisconnected(message)
+        else:
+            error = ProbeOperationError(message)
+        return OperationResult(ok=False, message=message, error=error, **extra)
 
     def _require_session(self):
         if self._session is None or not self.connected:
-            raise RuntimeError("Not connected to a target")
+            raise ProbeDisconnected("Not connected to a target")
         return self._session

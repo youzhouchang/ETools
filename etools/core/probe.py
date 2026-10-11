@@ -25,8 +25,8 @@ ProgressCallback = Callable[[ProgressInfo], None]
 class ProbeDriver(ABC):
     """Abstract debug-probe backend.
 
-    Long-running methods must emit ProgressInfo via the callback so the UI
-    thread stays responsive and can drive a progress bar.
+    ETools ships one implementation: ``PyOCDDriver``. Long-running methods
+    must emit ProgressInfo via the callback so the UI thread stays responsive.
     """
 
     def __init__(self) -> None:

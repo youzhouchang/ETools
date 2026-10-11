@@ -271,6 +271,13 @@ class ProbePanel(QFrame):
         self._repolish(self.connect_btn)
         self._repolish(self.status_label)
 
+    def set_target_absent(self, message: str) -> None:
+        """Probe is on the host, but the chip did not answer. Not a program failure."""
+        self.set_error(message)
+        self.status_label.setText(tr("probe.status_absent"))
+        self.status_label.setObjectName("statusWarn")
+        self._repolish(self.status_label)
+
     def set_connecting(self) -> None:
         self.status_label.setText(tr("probe.status_busy"))
         self.status_label.setObjectName("statusWarn")
