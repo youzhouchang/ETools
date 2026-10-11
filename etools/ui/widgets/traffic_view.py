@@ -204,7 +204,9 @@ class TrafficView(QWidget):
         self.ts_combo.addItem(tr("mon.ts.full"), TS_FULL)
         self.ts_combo.addItem(tr("mon.ts.off"), TS_OFF)
         self.wrap_check = QCheckBox(tr("mon.wrap"))
-        self.wrap_check.setChecked(True)
+        # Keep one received frame on one visual row by default. Users can
+        # enable wrapping explicitly for narrow panes or long text payloads.
+        self.wrap_check.setChecked(False)
         self.merge_spin = QSpinBox()
         self.merge_spin.setRange(0, 5000)
         self.merge_spin.setSuffix(" ms")
@@ -304,7 +306,7 @@ class TrafficView(QWidget):
         self.inspect_btn.clicked.connect(self._open_inspector)
         self.save_btn.clicked.connect(self.save_as)
         self.clear_btn.clicked.connect(self.clear)
-        self.view.setLineWrapMode(self.view.LineWrapMode.WidgetWidth)
+        self.view.setLineWrapMode(self.view.LineWrapMode.NoWrap)
         self._refresh_stats()
 
     def retranslate(self) -> None:

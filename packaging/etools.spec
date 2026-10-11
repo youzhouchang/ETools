@@ -46,6 +46,7 @@ hiddenimports = [
     "PySide6.QtUiTools",
     "PySide6.QtSvg",
     "pyocd",
+    "hid",
     "elftools",
     "elftools.elf.elffile",
 ]

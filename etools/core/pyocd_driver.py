@@ -84,13 +84,26 @@ class PyOCDDriver(ProbeDriver):
 
         found: list[ProbeInfo] = []
         try:
-            probes = ConnectHelper.get_all_connected_probes(
-                blocking=False, print_wait_message=False
+            probes = list(
+                ConnectHelper.get_all_connected_probes(
+                    blocking=False, print_wait_message=False
+                )
             )
         except Exception as exc:
             log.exception("probe scan failed")
-            self._emit(f"Probe scan failed: {exc}", True)
-            return found
+            probes = []
+            self._emit(f"Primary probe scan failed: {exc}", True)
+
+        # Keep CMSIS-DAP discovery usable across pyOCD releases and frozen
+        # builds where the aggregator plugin may not be registered correctly.
+        if not probes:
+            try:
+                from pyocd.probe.cmsis_dap_probe import CMSISDAPProbe
+
+                probes = list(CMSISDAPProbe.get_all_connected_probes())
+            except Exception as exc:
+                log.debug("CMSIS-DAP fallback scan failed", exc_info=True)
+                self._emit(f"CMSIS-DAP scan unavailable: {exc}", True)
 
         for p in probes:
             unique_id = str(getattr(p, "unique_id", "") or "")
