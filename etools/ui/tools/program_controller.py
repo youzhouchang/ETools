@@ -451,4 +451,3 @@ class ProgramController:
             self._hide_progress()
 
         self._run_async(lambda: self.host.service.fill_memory(addr, size, value), on_ok, on_err)
-

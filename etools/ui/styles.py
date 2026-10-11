@@ -267,4 +267,3 @@ def apply_combo_style(combo, theme: str | Theme) -> None:
 
 
 _QSS = "".join(SECTIONS)
-
