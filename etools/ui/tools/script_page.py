@@ -379,6 +379,7 @@ class ScriptPage(ToolPage):
         self.stop_btn.setEnabled(False)
         self.status.setText(tr("script.done") if ok else tr("script.failed"))
         self.console.appendPlainText(message)
+        self.notify_state()
 
     def _on_run(self) -> None:
         if not self.svc.available():
@@ -394,7 +395,9 @@ class ScriptPage(ToolPage):
         self.run_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.status.setText(tr("script.running"))
+        self.notify_state()
 
     def _on_stop(self) -> None:
         self.svc.stop()
         self.status.setText(tr("script.stopped"))
+        self.notify_state()

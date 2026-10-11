@@ -181,7 +181,7 @@ class LuaHost:
             return " ".join(f"{b:02X}" for b in raw)
 
         def unhex(text) -> str:
-            from etools.ui.widgets.traffic_view import parse_hex_input
+            from etools.core.hextext import parse_hex_input
 
             return self._to_bytes(parse_hex_input(str(text))).decode("latin-1")
 

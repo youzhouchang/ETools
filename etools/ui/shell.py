@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from PySide6.QtCore import QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QKeySequence, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -241,10 +241,8 @@ class ToolShell(QWidget):
             self._tool_buttons["program"].setChecked(True)
         self.set_current_tool("program")
         self.set_labels_visible(self._labels_visible)
-        self._state_timer = QTimer(self)
-        self._state_timer.setInterval(150)
-        self._state_timer.timeout.connect(self.refresh_action_states)
-        self._state_timer.start()
+        self._refreshing = False
+        self._bind_page_state()
         self.refresh_action_states()
 
     # -- public API ----------------------------------------------------
@@ -301,6 +299,24 @@ class ToolShell(QWidget):
         for key, tb in self._toolbars.items():
             tb.setWindowTitle(tr(f"tool.{key}"))
             self._rebuild_toolbar(key)
+        self.refresh_action_states()
+
+    def _bind_page_state(self) -> None:
+        """Refresh toolbar actions when a page reports a real state change."""
+        for page in self._pages.values():
+            if hasattr(page, "state_changed"):
+                page.state_changed.connect(self.refresh_action_states)
+            runner = getattr(page, "_runner", None)
+            if runner is not None and hasattr(runner, "busy_changed"):
+                runner.busy_changed.connect(lambda _busy: self.refresh_action_states())
+            flash = getattr(page, "flash_panel", None)
+            changed = getattr(flash, "availability_changed", None)
+            if changed is not None:
+                changed.connect(self.refresh_action_states)
+            svc = getattr(page, "svc", None)
+            done = getattr(svc, "done", None)
+            if done is not None:
+                done.connect(lambda *_args: self.refresh_action_states())
 
     def refresh_rail_icons(self, theme: Theme | None = None) -> None:
         t = theme or get_theme(get_config().theme)
@@ -369,6 +385,15 @@ class ToolShell(QWidget):
         self.set_rail_collapsed(self._rail_collapsed)
 
     def refresh_action_states(self) -> None:
+        if getattr(self, "_refreshing", False):
+            return
+        self._refreshing = True
+        try:
+            self._refresh_action_states()
+        finally:
+            self._refreshing = False
+
+    def _refresh_action_states(self) -> None:
         theme = get_theme()
         for key, page in self._pages.items():
             runner = getattr(page, "_runner", None)

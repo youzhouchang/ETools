@@ -519,6 +519,7 @@ class TerminalPage(ToolPage):
         if self._opened:
             self._ssh.close()
             self._opened = False
+            self.notify_state()
             self._set_ready(False)
             self.conn_btn.setText(tr("term.connect"))
             self._repaint_btn()
@@ -543,6 +544,7 @@ class TerminalPage(ToolPage):
 
         def ok(result) -> None:
             self._opened = True
+            self.notify_state()
             self._set_ready(True)
             self.conn_btn.setEnabled(True)
             self.conn_btn.setText(tr("term.disconnect"))

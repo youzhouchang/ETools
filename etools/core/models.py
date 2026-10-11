@@ -185,6 +185,7 @@ class OperationResult:
     bytes_processed: int = 0
     detail: str = ""
     data: Any = None  # optional payload (e.g. TargetDetails)
+    error: BaseException | None = None
 
 
 @dataclass

@@ -49,7 +49,7 @@ from etools.core.eds import EdsFile, parse_eds
 from etools.i18n import tr
 from etools.ui.shell import ToolActionSpec
 from etools.ui.tool_prefs import load_tool_prefs, save_tool_prefs
-from etools.ui.tools.base import ToolPage
+from etools.ui.tools.base import LinkToolPage
 from etools.ui.widgets.traffic_view import TrafficView, parse_hex_input
 
 
@@ -58,7 +58,7 @@ class _RxRelay(QObject):
     failed = Signal(str)
 
 
-class CanPage(ToolPage):
+class CanPage(LinkToolPage):
     tool_id = "can"
     tool_title_key = "tool.can"
 

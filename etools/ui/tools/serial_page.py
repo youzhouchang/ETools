@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from etools.core.checksum import ALGORITHMS, append_checksum, compute_checksum
+from etools.core.checksum import ALGORITHMS, compute_checksum
 from etools.core.serial_link import (
     PORT_BUSY,
     PORT_ERROR,
@@ -33,7 +33,7 @@ from etools.core.serial_link import (
 from etools.i18n import tr
 from etools.ui.shell import ToolActionSpec
 from etools.ui.tool_prefs import load_tool_prefs, save_tool_prefs
-from etools.ui.tools.base import ToolPage
+from etools.ui.tools.base import LinkToolPage
 from etools.ui.widgets.send_edit import SendEdit
 from etools.ui.widgets.terminal_view import TerminalView
 from etools.ui.widgets.traffic_view import ENCODINGS, TrafficView, decode_payload, parse_hex_input
@@ -59,13 +59,6 @@ _BAUDS = [
 #: How many ad-hoc baud rates to remember beyond the fixed presets.
 _CUSTOM_BAUD_MAX = 8
 
-_ENDINGS = {
-    "none": b"",
-    "lf": b"\n",
-    "cr": b"\r",
-    "crlf": b"\r\n",
-}
-
 _HISTORY_MAX = 30
 _PRESET_COUNT = 8
 
@@ -85,7 +78,7 @@ class _PortCombo(QComboBox):
         super().showPopup()
 
 
-class SerialPage(ToolPage):
+class SerialPage(LinkToolPage):
     tool_id = "serial"
     tool_title_key = "tool.serial"
 
@@ -921,19 +914,18 @@ class SerialPage(ToolPage):
         self.traffic.append_status(tr("serial.opened", port=port))
 
     def _encode_payload(self, text: str, *, force_hex: bool = False) -> bytes | None:
-        ending = _ENDINGS.get(str(self.ending.currentData() or "crlf"), b"\r\n")
-        algo = str(self.checksum.currentData() or "none")
+        mode = "hex" if force_hex or self.mode_combo.currentData() == "hex" else "ascii"
         try:
-            if force_hex or self.mode_combo.currentData() == "hex":
-                body = parse_hex_input(text)
-            else:
-                body = text.encode(self._encoding_name())
+            return self.link.encode_payload(
+                text,
+                mode=mode,
+                encoding=self._encoding_name(),
+                ending=str(self.ending.currentData() or "crlf"),
+                checksum=str(self.checksum.currentData() or "none"),
+            )
         except ValueError:
             self.traffic.append_status(tr("serial.err", err="bad hex"))
             return None
-        if algo != "none":
-            body = append_checksum(body, algo)
-        return body + ending
 
     def _send_payload(
         self, text: str, *, record_history: bool = False, force_hex: bool = False
@@ -1072,6 +1064,7 @@ class SerialPage(ToolPage):
             from etools.ui.runtime import OpRunner
 
             self._runner = OpRunner(self)
+            self._runner.busy_changed.connect(lambda _busy: self.notify_state())
             runner = self._runner
         if not runner.start(work, on_ok, on_err):
             link.end_transfer()

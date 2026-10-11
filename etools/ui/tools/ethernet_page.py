@@ -23,17 +23,10 @@ from etools.i18n import tr
 from etools.ui.runtime import OpRunner
 from etools.ui.shell import ToolActionSpec
 from etools.ui.tool_prefs import load_tool_prefs, save_tool_prefs
-from etools.ui.tools.base import ToolPage
+from etools.ui.tools.base import LinkToolPage
 from etools.ui.widgets.ip_edit import IPv4Edit
 from etools.ui.widgets.send_edit import SendEdit
-from etools.ui.widgets.traffic_view import ENCODINGS, TrafficView, parse_hex_input
-
-_ENDINGS = {
-    "none": b"",
-    "lf": b"\n",
-    "cr": b"\r",
-    "crlf": b"\r\n",
-}
+from etools.ui.widgets.traffic_view import ENCODINGS, TrafficView
 
 # 0 = TCP Client, 1 = TCP Server, 2 = UDP
 _PROTO_CLIENT = 0
@@ -54,7 +47,7 @@ class _RxRelay(QObject):
     peer = Signal(str, str)  # kind, peer
 
 
-class EthernetPage(ToolPage):
+class EthernetPage(LinkToolPage):
     tool_id = "ethernet"
     tool_title_key = "tool.ethernet"
 
@@ -349,18 +342,15 @@ class EthernetPage(ToolPage):
     # -- Lua bridge helpers --------------------------------------------
 
     def lua_send_text(self, text: str) -> bool:
-        from etools.ui.widgets.traffic_view import parse_hex_input
-
         if not self._opened:
             return False
-        end_key = self.ending.currentData() or "crlf"
-        end_map = {"crlf": b"\r\n", "lf": b"\n", "cr": b"\r", "none": b""}
-        ending_bytes = end_map.get(str(end_key), b"\r\n")
         try:
-            if self.mode_combo.currentData() == "hex":
-                data = parse_hex_input(text) + ending_bytes
-            else:
-                data = text.encode(self._encoding_name()) + ending_bytes
+            data = self.link.encode_payload(
+                text,
+                mode="hex" if self.mode_combo.currentData() == "hex" else "ascii",
+                encoding=self._encoding_name(),
+                ending=str(self.ending.currentData() or "crlf"),
+            )
         except ValueError:
             self.traffic.append_status(tr("net.err", err="bad hex"))
             return False
@@ -587,12 +577,13 @@ class EthernetPage(ToolPage):
         text = self.send_edit.text()
         if not text:
             return
-        ending = _ENDINGS.get(str(self.ending.currentData() or "crlf"), b"\r\n")
         try:
-            if self.mode_combo.currentData() == "hex":
-                data = parse_hex_input(text) + ending
-            else:
-                data = text.encode(self._encoding_name()) + ending
+            data = self.link.encode_payload(
+                text,
+                mode="hex" if self.mode_combo.currentData() == "hex" else "ascii",
+                encoding=self._encoding_name(),
+                ending=str(self.ending.currentData() or "crlf"),
+            )
         except ValueError:
             self.traffic.append_status(tr("net.err", err="bad hex"))
             return
@@ -614,12 +605,13 @@ class EthernetPage(ToolPage):
         text = self._preset_edits[index].text().strip()
         if not text:
             return
-        ending = _ENDINGS.get(str(self.ending.currentData() or "crlf"), b"\r\n")
         try:
-            if self.mode_combo.currentData() == "hex":
-                data = parse_hex_input(text) + ending
-            else:
-                data = text.encode(self._encoding_name()) + ending
+            data = self.link.encode_payload(
+                text,
+                mode="hex" if self.mode_combo.currentData() == "hex" else "ascii",
+                encoding=self._encoding_name(),
+                ending=str(self.ending.currentData() or "crlf"),
+            )
         except ValueError:
             self.traffic.append_status(tr("net.err", err="bad hex"))
             return

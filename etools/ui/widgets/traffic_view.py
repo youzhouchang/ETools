@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from etools.core.hextext import parse_hex_input as parse_hex_input  # noqa: F401
 from etools.i18n import tr
 
 MAX_VIEW_CHARS = 400_000
@@ -61,22 +62,6 @@ def format_hex(data: bytes, base_offset: int = 0) -> str:
         ascii_part = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
         lines.append(f"{base_offset + off:08X}  {hex_part:<47}  {ascii_part}")
     return "\n".join(lines)
-
-
-def parse_hex_input(text: str) -> bytes:
-    """Parse 'DE AD BE' / 'DEADBE' / '0xde 0xad' into bytes."""
-    cleaned = []
-    for tok in text.replace(",", " ").replace(";", " ").split():
-        tok = tok.strip().lower()
-        if tok.startswith("0x"):
-            tok = tok[2:]
-        if not tok:
-            continue
-        if len(tok) % 2:
-            tok = "0" + tok
-        cleaned.append(tok)
-    raw = "".join(cleaned)
-    return bytes.fromhex(raw)
 
 
 def format_timestamp(mode: str, now: datetime | None = None) -> str:

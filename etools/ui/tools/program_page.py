@@ -143,6 +143,7 @@ class ProgramPage(ToolPage):
         if t_form is not None:
             t_form.setContentsMargins(10, 0, 10, 8)
         self.retranslate()
+        self.flash_panel.availability_changed.connect(self.notify_state)
 
     @staticmethod
     def _compact_form_layout(panel) -> None:
