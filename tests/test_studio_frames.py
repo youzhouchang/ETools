@@ -1,5 +1,7 @@
 """Serial Studio quick-plot frame parser."""
 
+import struct
+
 from etools.core.studio_frames import StudioFrameParser
 
 
@@ -35,3 +37,19 @@ def test_split_utf8_json_key_is_preserved():
     split = raw.index("温".encode()) + 1
     assert parser.feed(raw[:split]) == []
     assert parser.feed(raw[split:]) == [{"温度": 21.0}]
+
+
+def test_key_value_lines_split_across_chunks():
+    parser = StudioFrameParser()
+    parser.set_mode("kv")
+    assert parser.feed(b"temp=21.5 hum=") == []
+    assert parser.feed(b"40\n") == [{"temp": 21.5, "hum": 40.0}]
+
+
+def test_hex_struct_template_and_split_header():
+    parser = StudioFrameParser()
+    parser.set_mode("hex")
+    parser.set_hex_template("AA 55 u16be:v f32le:x")
+    payload = bytes.fromhex("AA 55 00 0A") + struct.pack("<f", 1.5)
+    assert parser.feed(payload[:3]) == []
+    assert parser.feed(payload[3:]) == [{"v": 10.0, "x": 1.5}]

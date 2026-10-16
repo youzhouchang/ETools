@@ -675,11 +675,14 @@ class EthernetPage(LinkToolPage):
             del self._lua_rx[:-65536]
         self.traffic.append_rx(data, peer=peer)
         if hasattr(self, "studio"):
-            self.studio.feed(data)
-        from etools.core.frame_hub import frame_hub
+            frames = self.studio.feed(data)
+            from etools.core.frame_hub import frame_hub
 
-        frame_hub.set_names("ethernet", self.studio.names.text())
-        frame_hub.publish("ethernet", data)
+            frame_hub.set_mode("ethernet", self.studio.parse_mode_name())
+            frame_hub.set_names("ethernet", self.studio.names.text())
+            frame_hub.set_hex_template("ethernet", self.studio.hex_template_text())
+            if frames:
+                frame_hub.publish_frames("ethernet", frames)
 
     def _on_rx_mode_changed(self, _index: int = 0) -> None:
         self.traffic.set_display_mode(str(self.rx_mode.currentData() or "ascii"))

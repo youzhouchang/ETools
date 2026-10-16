@@ -156,6 +156,7 @@ PORTABLE_STAGE="${ROOT}/build/portable-stage"
 rm -rf "$PORTABLE_STAGE"
 mkdir -p "$PORTABLE_STAGE"
 cp -a "${APP_DIR}" "${PORTABLE_STAGE}/${APP_NAME}"
+echo "portable" > "${PORTABLE_STAGE}/${APP_NAME}/.etools-package-kind"
 
 # Desktop integration assets for portable installs (optional install_desktop.sh)
 PORTABLE_SHARE="${PORTABLE_STAGE}/${APP_NAME}/share"
@@ -231,6 +232,7 @@ mkdir -p "${DEB_ROOT}/usr/bin"
 
 # app payload
 cp -a "${APP_DIR}/." "${DEB_ROOT}/opt/etools/"
+echo "deb" > "${DEB_ROOT}/opt/etools/.etools-package-kind"
 
 # desktop entry + multi-size hicolor icons
 write_desktop_file "${DEB_ROOT}/usr/share/applications/etools.desktop" \
@@ -317,6 +319,7 @@ mkdir -p "${APPDIR}/usr/share/applications"
 mkdir -p "${APPDIR}/usr/lib"
 
 cp -a "${APP_DIR}/." "${APPDIR}/usr/lib/etools"
+echo "appimage" > "${APPDIR}/usr/lib/etools/.etools-package-kind"
 
 # Multi-size hicolor + scalable SVG inside AppDir
 install_hicolor_icons "${APPDIR}/usr"

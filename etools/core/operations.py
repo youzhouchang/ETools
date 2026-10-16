@@ -74,13 +74,13 @@ class FlashService:
         with self._lock:
             return self.driver.read(address, size, str(out_path))
 
-    def read_memory_bytes(self, address: int, size: int) -> bytes:
+    def read_memory_bytes(self, address: int, size: int, *, fresh: bool = False) -> bytes:
         """Read target memory without writing a file (for Hex preview)."""
         with self._lock:
             reader = getattr(self.driver, "read_memory_bytes", None)
             if reader is None:
                 raise RuntimeError("Driver does not support in-memory read")
-            return reader(address, size)
+            return reader(address, size, fresh=fresh)
 
     def fill_memory(self, address: int, size: int, value: int = 0xFF) -> OperationResult:
         """Fill RAM with a repeated byte (Flash is rejected by the driver)."""

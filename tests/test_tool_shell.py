@@ -269,6 +269,28 @@ def test_ssh_host_key_errors():
     assert m.port == 2222
 
 
+def test_program_tabs_match_their_panels(qapp):
+    from etools.i18n import tr
+    from etools.ui.tools.program_page import _TAB_SPEC, ProgramPage
+
+    page = ProgramPage()
+    panels = {
+        "tabHex": page.hex_preview,
+        "tabFlash": page.flash_panel,
+        "tabDevices": page.device_manager,
+        "tabRtt": page.rtt_panel,
+        "tabSwo": page.swo_panel,
+        "tabMonitor": page.variable_monitor,
+    }
+    assert page.main_tabs.count() == len(_TAB_SPEC)
+    for index, (obj_name, _icon, key) in enumerate(_TAB_SPEC):
+        tab = page.main_tabs.widget(index)
+        assert tab.objectName() == obj_name
+        assert page.main_tabs.tabText(index) == tr(key)
+        assert tab.layout().itemAt(0).widget() is panels[obj_name]
+    page.close()
+
+
 def test_shell_builds_and_switches(qapp):
     from etools.ui.shell import TOOL_ORDER, ToolShell
     from etools.ui.tools import (

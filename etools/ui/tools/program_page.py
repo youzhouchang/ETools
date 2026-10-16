@@ -33,8 +33,15 @@ from etools.ui.widgets.swo_panel import SwvPanel
 from etools.ui.widgets.target_info_panel import TargetInfoPanel
 from etools.ui.widgets.variable_monitor import VariableMonitorPanel
 
-_TAB_KEYS = ("hex", "program", "devices", "rtt", "swv", "monitor")
-_TAB_I18N = ("tab.hex", "tab.flash", "tab.devices", "tab.rtt", "tab.swo", "tab.monitor")
+# object name, tab icon key, i18n key — widget order must follow this list
+_TAB_SPEC = (
+    ("tabHex", "hex", "tab.hex"),
+    ("tabFlash", "program", "tab.flash"),
+    ("tabDevices", "devices", "tab.devices"),
+    ("tabRtt", "rtt", "tab.rtt"),
+    ("tabSwo", "swv", "tab.swo"),
+    ("tabMonitor", "monitor", "tab.monitor"),
+)
 
 
 class ProgramPage(ToolPage):
@@ -88,20 +95,20 @@ class ProgramPage(ToolPage):
         # Right: tabs + progress/log
         self.main_tabs = QTabWidget()
         self.main_tabs.setObjectName("mainTabs")
-        tabs_spec = [
-            ("tabHex", self.hex_preview),
-            ("tabFlash", self.flash_panel),
-            ("tabRtt", self.rtt_panel),
-            ("tabSwo", self.swo_panel),
-            ("tabMonitor", self.variable_monitor),
-            ("tabDevices", self.device_manager),
-        ]
-        for obj_name, widget in tabs_spec:
+        tab_widgets = {
+            "tabHex": self.hex_preview,
+            "tabFlash": self.flash_panel,
+            "tabDevices": self.device_manager,
+            "tabRtt": self.rtt_panel,
+            "tabSwo": self.swo_panel,
+            "tabMonitor": self.variable_monitor,
+        }
+        for obj_name, _icon, _key in _TAB_SPEC:
             page = QWidget()
             page.setObjectName(obj_name)
             lay = QVBoxLayout(page)
             lay.setContentsMargins(0, 0, 0, 0)
-            lay.addWidget(widget, 1)
+            lay.addWidget(tab_widgets[obj_name], 1)
             self.main_tabs.addTab(page, "")
 
         bottom = QWidget()
@@ -203,10 +210,10 @@ class ProgramPage(ToolPage):
 
     def retranslate(self) -> None:
         self.left_box.setTitle(tr("probe.group"))
-        for i, key in enumerate(_TAB_I18N):
+        for i, (_obj_name, icon, key) in enumerate(_TAB_SPEC):
             if i < self.main_tabs.count():
                 self.main_tabs.setTabText(i, tr(key))
-                set_tab_icon(self.main_tabs, i, _TAB_KEYS[i])
+                set_tab_icon(self.main_tabs, i, icon)
         for panel in (
             self.probe_panel,
             self.flash_panel,

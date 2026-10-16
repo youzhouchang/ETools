@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -30,6 +31,7 @@ from etools.core.serial_link import (
     SerialLink,
     list_serial_ports,
 )
+from etools.core.trigger_reply import MAX_RULES, TriggerEngine
 from etools.i18n import tr
 from etools.ui.shell import ToolActionSpec
 from etools.ui.tool_prefs import load_tool_prefs, save_tool_prefs
@@ -92,12 +94,23 @@ class SerialPage(LinkToolPage):
             on_error=self._relay.failed.emit,
         )
         self._opened = False
+        self._user_closed = True
         self._known_ports: tuple[str, ...] = ()
         self._history: list[str] = []
         self._history_idx = -1
         self._custom_bauds: list[str] = []
         self._only_free = True
         self._xfer_cancel = False
+        self._reconnect_delay_ms = 500
+        self._resume_cyclic = False
+        self._trigger = TriggerEngine()
+        self._reconfig_timer = QTimer(self)
+        self._reconfig_timer.setSingleShot(True)
+        self._reconfig_timer.setInterval(300)
+        self._reconfig_timer.timeout.connect(self._apply_live_params)
+        self._reconnect_timer = QTimer(self)
+        self._reconnect_timer.setSingleShot(True)
+        self._reconnect_timer.timeout.connect(self._try_reconnect)
 
         self.ctx_params = self.ctx_group(tr("serial.params"))
         self.port_combo = _PortCombo()
@@ -152,6 +165,11 @@ class SerialPage(LinkToolPage):
             self.encoding.addItem(label, value)
         self.encoding.setFixedHeight(28)
         self.lbl_encoding = self.form_row(tr("mon.encoding"), self.encoding)
+
+        self.auto_reconnect = QCheckBox(tr("serial.auto_reconnect"))
+        self.auto_reconnect.setToolTip(tr("serial.auto_reconnect_tip"))
+        self.auto_reconnect.setChecked(True)
+        self.lbl_reconnect = self.form_row("", self.auto_reconnect)
 
         self.open_btn = QPushButton()
         self.open_btn.setObjectName("accent")
@@ -268,9 +286,14 @@ class SerialPage(LinkToolPage):
         preset_lay = QVBoxLayout(self.preset_content)
         preset_lay.setContentsMargins(18, 4, 0, 0)
         preset_lay.setSpacing(4)
+        self.preset_shortcuts = QCheckBox(tr("serial.preset_shortcuts"))
+        self.preset_shortcuts.setToolTip(tr("serial.preset_shortcuts_tip"))
+        self.preset_shortcuts.setChecked(True)
+        preset_lay.addWidget(self.preset_shortcuts)
         self._preset_checks: list[QCheckBox] = []
         self._preset_edits: list[QLineEdit] = []
         self._preset_btns: list[QPushButton] = []
+        self._preset_shortcut_objs: list[QShortcut] = []
         for i in range(_PRESET_COUNT):
             row = QHBoxLayout()
             row.setSpacing(6)
@@ -295,6 +318,82 @@ class SerialPage(LinkToolPage):
             btn.clicked.connect(lambda _c=False, idx=i: self._on_preset_send(idx))
             edit.editingFinished.connect(self.persist_prefs)
             check.toggled.connect(lambda _c: self.persist_prefs())
+            shortcut = QShortcut(QKeySequence(f"Alt+{i + 1}"), self)
+            shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+            shortcut.activated.connect(lambda idx=i: self._on_preset_shortcut(idx))
+            self._preset_shortcut_objs.append(shortcut)
+
+        # Trigger / auto-reply rules.
+        self.trigger_toggle = QCheckBox(tr("serial.trigger"))
+        self.trigger_toggle.setToolTip(tr("serial.trigger_tip"))
+        self.trigger_toggle.setChecked(False)
+        self.trigger_content = QWidget()
+        self.trigger_content.setVisible(False)
+        self.trigger_toggle.toggled.connect(self.trigger_content.setVisible)
+        trigger_lay = QVBoxLayout(self.trigger_content)
+        trigger_lay.setContentsMargins(18, 4, 0, 0)
+        trigger_lay.setSpacing(4)
+        self._trigger_enables: list[QCheckBox] = []
+        self._trigger_modes: list[QComboBox] = []
+        self._trigger_patterns: list[QLineEdit] = []
+        self._trigger_replies: list[QLineEdit] = []
+        self._trigger_hex: list[QCheckBox] = []
+        self._trigger_cooldowns: list[QSpinBox] = []
+        self._trigger_onces: list[QCheckBox] = []
+        for _i in range(MAX_RULES):
+            row = QHBoxLayout()
+            row.setSpacing(4)
+            enable = QCheckBox()
+            enable.setFixedWidth(20)
+            enable.setToolTip(tr("serial.trigger_enable"))
+            mode = QComboBox()
+            mode.setFixedHeight(26)
+            mode.setFixedWidth(78)
+            for mid, key in (
+                ("text", "serial.trigger_mode.text"),
+                ("hex", "serial.trigger_mode.hex"),
+                ("regex", "serial.trigger_mode.regex"),
+            ):
+                mode.addItem(tr(key), mid)
+            pattern = QLineEdit()
+            pattern.setFixedHeight(26)
+            pattern.setPlaceholderText(tr("serial.trigger_pattern_ph"))
+            reply = QLineEdit()
+            reply.setFixedHeight(26)
+            reply.setPlaceholderText(tr("serial.trigger_reply_ph"))
+            hex_check = QCheckBox(tr("serial.mode.hex"))
+            hex_check.setFixedWidth(48)
+            cooldown = QSpinBox()
+            cooldown.setRange(0, 600_000)
+            cooldown.setValue(200)
+            cooldown.setSuffix(" ms")
+            cooldown.setFixedHeight(26)
+            cooldown.setFixedWidth(90)
+            once = QCheckBox(tr("serial.trigger_once"))
+            once.setFixedWidth(48)
+            row.addWidget(enable)
+            row.addWidget(mode)
+            row.addWidget(pattern, 2)
+            row.addWidget(reply, 2)
+            row.addWidget(hex_check)
+            row.addWidget(cooldown)
+            row.addWidget(once)
+            trigger_lay.addLayout(row)
+            self._trigger_enables.append(enable)
+            self._trigger_modes.append(mode)
+            self._trigger_patterns.append(pattern)
+            self._trigger_replies.append(reply)
+            self._trigger_hex.append(hex_check)
+            self._trigger_cooldowns.append(cooldown)
+            self._trigger_onces.append(once)
+            for widget in (enable, mode, hex_check, once):
+                if isinstance(widget, QCheckBox):
+                    widget.toggled.connect(lambda _c: self._sync_trigger_rules())
+                else:
+                    widget.currentIndexChanged.connect(lambda _i: self._sync_trigger_rules())
+            for widget in (pattern, reply):
+                widget.editingFinished.connect(self._sync_trigger_rules)
+            cooldown.valueChanged.connect(lambda _v: self._sync_trigger_rules())
 
         cyclic_row = QHBoxLayout()
         cyclic_row.setSpacing(10)
@@ -393,6 +492,8 @@ class SerialPage(LinkToolPage):
         mon_lay.addWidget(self.studio)
         mon_lay.addWidget(self.preset_toggle)
         mon_lay.addWidget(self.preset_content)
+        mon_lay.addWidget(self.trigger_toggle)
+        mon_lay.addWidget(self.trigger_content)
         mon_lay.addSpacing(4)
         mon_lay.addLayout(meta_wrap)
         self.work_tabs.addTab(mon_box, tr("serial.monitor"))
@@ -471,6 +572,13 @@ class SerialPage(LinkToolPage):
         self.script_stop.clicked.connect(self._on_script_stop)
         self.preset_import_btn.clicked.connect(self._import_presets)
         self.preset_export_btn.clicked.connect(self._export_presets)
+        self.auto_reconnect.toggled.connect(lambda _c: self.persist_prefs())
+        self.preset_shortcuts.toggled.connect(self._on_preset_shortcuts_toggled)
+        for widget in (self.baud, self.data, self.parity, self.stop, self.flow):
+            if isinstance(widget, QComboBox):
+                widget.currentIndexChanged.connect(self._schedule_live_reconfig)
+                if widget.isEditable():
+                    widget.editTextChanged.connect(self._schedule_live_reconfig)
 
         self._hotplug = QTimer(self)
         self._hotplug.setInterval(2000)
@@ -578,6 +686,8 @@ class SerialPage(LinkToolPage):
         self.lbl_encoding.setText(tr("mon.encoding"))
         self.dtr.setText(tr("serial.dtr"))
         self.rts.setText(tr("serial.rts"))
+        self.auto_reconnect.setText(tr("serial.auto_reconnect"))
+        self.auto_reconnect.setToolTip(tr("serial.auto_reconnect_tip"))
         self.open_btn.setText(tr("serial.close") if self._opened else tr("serial.open"))
         self.send_more_toggle.setText(tr("serial.send_options"))
         self.mon_box.setTitle(tr("serial.monitor"))
@@ -612,6 +722,8 @@ class SerialPage(LinkToolPage):
         self.xfer_cancel_btn.setText(tr("serial.xfer_cancel"))
         self.preset_toggle.setText(tr("serial.presets"))
         self.preset_toggle.setToolTip(tr("serial.presets_toggle_tip"))
+        self.preset_shortcuts.setText(tr("serial.preset_shortcuts"))
+        self.preset_shortcuts.setToolTip(tr("serial.preset_shortcuts_tip"))
         self.cyclic_check.setToolTip(tr("serial.cyclic_tip"))
         self.lbl_presets_io.setText(tr("serial.presets_io"))
         for i, edit in enumerate(self._preset_edits):
@@ -624,6 +736,22 @@ class SerialPage(LinkToolPage):
         self.lbl_interval.setText(tr("serial.cyclic_interval"))
         self.preset_import_btn.setText(tr("serial.presets_import"))
         self.preset_export_btn.setText(tr("serial.presets_export"))
+        self.trigger_toggle.setText(tr("serial.trigger"))
+        self.trigger_toggle.setToolTip(tr("serial.trigger_tip"))
+        for mode in self._trigger_modes:
+            mode.setItemText(0, tr("serial.trigger_mode.text"))
+            mode.setItemText(1, tr("serial.trigger_mode.hex"))
+            mode.setItemText(2, tr("serial.trigger_mode.regex"))
+        for enable in self._trigger_enables:
+            enable.setToolTip(tr("serial.trigger_enable"))
+        for pattern in self._trigger_patterns:
+            pattern.setPlaceholderText(tr("serial.trigger_pattern_ph"))
+        for reply in self._trigger_replies:
+            reply.setPlaceholderText(tr("serial.trigger_reply_ph"))
+        for hex_check in self._trigger_hex:
+            hex_check.setText(tr("serial.mode.hex"))
+        for once in self._trigger_onces:
+            once.setText(tr("serial.trigger_once"))
         self.work_tabs.setTabText(2, tr("serial.script"))
         self.script_run.setText(tr("serial.script.run"))
         self.script_stop.setText(tr("serial.script.stop"))
@@ -677,6 +805,7 @@ class SerialPage(LinkToolPage):
         self.traffic.clear()
 
     def _load_prefs(self) -> None:
+        self._loading_prefs = True
         prefs = load_tool_prefs(self.tool_id)
         custom = prefs.get("custom_bauds")
         if isinstance(custom, list):
@@ -742,9 +871,21 @@ class SerialPage(LinkToolPage):
             idx = self.encoding.findData(str(prefs["encoding"]))
             if idx >= 0:
                 self.encoding.setCurrentIndex(idx)
+        if prefs.get("auto_reconnect") is not None:
+            self.auto_reconnect.setChecked(bool(prefs["auto_reconnect"]))
+        if prefs.get("preset_shortcuts") is not None:
+            self.preset_shortcuts.setChecked(bool(prefs["preset_shortcuts"]))
+        if prefs.get("triggers") is not None:
+            self._trigger.load_rules(prefs.get("triggers"))
+            self._apply_trigger_rules_to_ui()
+        self._on_preset_shortcuts_toggled(self.preset_shortcuts.isChecked())
         self.traffic.set_encoding(self._encoding_name())
+        self._loading_prefs = False
 
     def persist_prefs(self) -> None:
+        if getattr(self, "_loading_prefs", False):
+            return
+        self._sync_trigger_rules(persist=False)
         save_tool_prefs(
             self.tool_id,
             {
@@ -766,6 +907,9 @@ class SerialPage(LinkToolPage):
                 "preset_cycle": [c.isChecked() for c in self._preset_checks],
                 "cyclic_interval": int(self.cyclic_interval.value()),
                 "encoding": self._encoding_name(),
+                "auto_reconnect": self.auto_reconnect.isChecked(),
+                "preset_shortcuts": self.preset_shortcuts.isChecked(),
+                "triggers": self._trigger.dump_rules(),
             },
         )
 
@@ -776,8 +920,16 @@ class SerialPage(LinkToolPage):
             self._known_ports = devices
             self._refresh_ports(probe=True)
             if vanished:
-                self._on_toggle()
-                self.traffic.append_status(tr("serial.port_lost"))
+                self._handle_unexpected_disconnect(tr("serial.port_lost"))
+        elif (
+            not self._opened
+            and not self._user_closed
+            and self.auto_reconnect.isChecked()
+            and self._selected_port()
+            and self._selected_port() in devices
+            and not self._reconnect_timer.isActive()
+        ):
+            self._schedule_reconnect(immediate=True)
 
     @property
     def only_free(self) -> bool:
@@ -819,16 +971,10 @@ class SerialPage(LinkToolPage):
         self.baud.blockSignals(False)
 
     def _set_params_enabled(self, enabled: bool) -> None:
-        """Lock port/line parameters while a connection is open (qtSerial-style)."""
-        for w in (
-            self.port_combo,
-            self.baud,
-            self.data,
-            self.parity,
-            self.stop,
-            self.flow,
-        ):
-            w.setEnabled(enabled)
+        """Port selection stays locked while open; line settings remain editable."""
+        self.port_combo.setEnabled(enabled)
+        for w in (self.baud, self.data, self.parity, self.stop, self.flow):
+            w.setEnabled(True)
 
     def _refresh_ports(self, *, probe: bool = True) -> None:
         only_free = self._only_free
@@ -903,21 +1049,23 @@ class SerialPage(LinkToolPage):
 
     def _on_toggle(self) -> None:
         if self._opened:
-            self._stop_cyclic()
-            if self._script_running:
-                self._on_script_stop()
-            self._link.close()
-            self._opened = False
-            self._set_send_enabled(False)
-            self._set_params_enabled(True)
-            self.open_btn.setText(tr("serial.open"))
-            self._repaint_btn()
-            self.traffic.append_status(tr("serial.closed"))
+            self._user_closed = True
+            self._resume_cyclic = False
+            self._cancel_reconnect()
+            self._mark_closed(status=tr("serial.closed"))
             return
+        self._user_closed = False
+        self._cancel_reconnect()
+        self._reconnect_delay_ms = 500
+        if not self._open_selected_port():
+            return
+
+    def _open_selected_port(self, *, quiet: bool = False) -> bool:
         port = self._selected_port()
         if not port:
-            self.traffic.append_status(tr("serial.open_no_port"))
-            return
+            if not quiet:
+                self.traffic.append_status(tr("serial.open_no_port"))
+            return False
         try:
             self._link.open(
                 port=port,
@@ -930,15 +1078,111 @@ class SerialPage(LinkToolPage):
             self._link.set_dtr(self.dtr.isChecked())
             self._link.set_rts(self.rts.isChecked())
         except Exception as exc:  # noqa: BLE001
-            self.traffic.append_status(tr("serial.err", err=str(exc)))
-            return
+            if not quiet:
+                self.traffic.append_status(tr("serial.err", err=str(exc)))
+            return False
         self._opened = True
+        self._user_closed = False
+        self._reconnect_delay_ms = 500
+        self._trigger.reset_runtime()
         self._set_send_enabled(True)
         self._set_params_enabled(False)
         self._remember_baud(self.baud.currentText())
         self.open_btn.setText(tr("serial.close"))
         self._repaint_btn()
         self.traffic.append_status(tr("serial.opened", port=port))
+        if self._resume_cyclic:
+            self._resume_cyclic = False
+            self.cyclic_check.blockSignals(True)
+            self.cyclic_check.setChecked(True)
+            self.cyclic_check.blockSignals(False)
+            self._on_cyclic_toggled(True)
+        return True
+
+    def _mark_closed(self, *, status: str | None = None, keep_cyclic: bool = False) -> None:
+        self._reconfig_timer.stop()
+        if keep_cyclic and self.cyclic_check.isChecked():
+            self._resume_cyclic = True
+        self._stop_cyclic()
+        if self._script_running:
+            self._on_script_stop()
+        self._link.close()
+        self._opened = False
+        self._set_send_enabled(False)
+        self._set_params_enabled(True)
+        self.open_btn.setText(tr("serial.open"))
+        self._repaint_btn()
+        if status:
+            self.traffic.append_status(status)
+
+    def _handle_unexpected_disconnect(self, reason: str) -> None:
+        self._user_closed = False
+        self._mark_closed(status=reason, keep_cyclic=True)
+        if self.auto_reconnect.isChecked():
+            self.traffic.append_status(tr("serial.reconnect_pending"))
+            self._schedule_reconnect()
+
+    def _cancel_reconnect(self) -> None:
+        self._reconnect_timer.stop()
+
+    def _schedule_reconnect(self, *, immediate: bool = False) -> None:
+        if self._user_closed or not self.auto_reconnect.isChecked() or self._opened:
+            return
+        delay = 0 if immediate else max(100, int(self._reconnect_delay_ms))
+        self._reconnect_timer.start(delay)
+
+    def _try_reconnect(self) -> None:
+        if self._user_closed or not self.auto_reconnect.isChecked() or self._opened:
+            return
+        port = self._selected_port()
+        if not port:
+            return
+        devices = {e.device for e in list_serial_ports()}
+        if port not in devices:
+            self._schedule_reconnect()
+            return
+        self.traffic.append_status(tr("serial.reconnect_try", port=port))
+        if self._open_selected_port(quiet=True):
+            self.traffic.append_status(tr("serial.reconnect_ok", port=port))
+            return
+        self._reconnect_delay_ms = min(8000, max(500, self._reconnect_delay_ms * 2))
+        self.traffic.append_status(
+            tr("serial.reconnect_wait", ms=self._reconnect_delay_ms)
+        )
+        self._schedule_reconnect()
+
+    def _schedule_live_reconfig(self, *_args) -> None:
+        if not self._opened:
+            return
+        self._reconfig_timer.start()
+
+    def _apply_live_params(self) -> None:
+        if not self._opened:
+            return
+        try:
+            self._link.reconfigure(
+                baudrate=int(self.baud.currentText() or 115200),
+                bytesize=int(self.data.currentText() or 8),
+                parity=self.parity.currentText() or "N",
+                stopbits=float(self.stop.currentText() or 1),
+                flow_control=str(self.flow.currentData() or "none"),
+            )
+            self._link.set_dtr(self.dtr.isChecked())
+            self._link.set_rts(self.rts.isChecked())
+            self._remember_baud(self.baud.currentText())
+            self.traffic.append_status(
+                tr(
+                    "serial.reconfigured",
+                    baud=self.baud.currentText(),
+                    data=self.data.currentText(),
+                    parity=self.parity.currentText(),
+                    stop=self.stop.currentText(),
+                )
+            )
+            self.persist_prefs()
+        except Exception as exc:  # noqa: BLE001
+            self.traffic.append_status(tr("serial.err", err=str(exc)))
+            self._handle_unexpected_disconnect(tr("serial.reconfigure_failed"))
 
     def _encode_payload(self, text: str, *, force_hex: bool = False) -> bytes | None:
         mode = "hex" if force_hex or self.mode_combo.currentData() == "hex" else "ascii"
@@ -1236,6 +1480,59 @@ class SerialPage(LinkToolPage):
             return
         self._send_payload(text, record_history=True)
 
+    def _on_preset_shortcut(self, index: int) -> None:
+        if not self.preset_shortcuts.isChecked() or not self._opened:
+            return
+        focus = self.focusWidget()
+        if focus in self._preset_edits or focus is self.script_edit:
+            return
+        if focus in self._trigger_patterns or focus in self._trigger_replies:
+            return
+        self._on_preset_send(index)
+
+    def _on_preset_shortcuts_toggled(self, on: bool) -> None:
+        for shortcut in self._preset_shortcut_objs:
+            shortcut.setEnabled(bool(on))
+        if getattr(self, "_loading_prefs", False):
+            return
+        self.persist_prefs()
+
+    def _sync_trigger_rules(self, *_args, persist: bool = True) -> None:
+        rules = []
+        for i in range(MAX_RULES):
+            rules.append(
+                {
+                    "enabled": self._trigger_enables[i].isChecked(),
+                    "mode": self._trigger_modes[i].currentData(),
+                    "pattern": self._trigger_patterns[i].text(),
+                    "reply": self._trigger_replies[i].text(),
+                    "reply_hex": self._trigger_hex[i].isChecked(),
+                    "cooldown_ms": int(self._trigger_cooldowns[i].value()),
+                    "once": self._trigger_onces[i].isChecked(),
+                }
+            )
+        self._trigger.load_rules(rules)
+        if persist and not getattr(self, "_loading_prefs", False):
+            self.persist_prefs()
+
+    def _apply_trigger_rules_to_ui(self) -> None:
+        for i, rule in enumerate(self._trigger.rules):
+            self._trigger_enables[i].blockSignals(True)
+            self._trigger_modes[i].blockSignals(True)
+            self._trigger_cooldowns[i].blockSignals(True)
+            self._trigger_enables[i].setChecked(rule.enabled)
+            idx = self._trigger_modes[i].findData(rule.mode)
+            if idx >= 0:
+                self._trigger_modes[i].setCurrentIndex(idx)
+            self._trigger_patterns[i].setText(rule.pattern)
+            self._trigger_replies[i].setText(rule.reply)
+            self._trigger_hex[i].setChecked(rule.reply_hex)
+            self._trigger_cooldowns[i].setValue(int(rule.cooldown_ms))
+            self._trigger_onces[i].setChecked(rule.once)
+            self._trigger_enables[i].blockSignals(False)
+            self._trigger_modes[i].blockSignals(False)
+            self._trigger_cooldowns[i].blockSignals(False)
+
     def _on_cyclic_toggled(self, on: bool) -> None:
         if on:
             if not self._opened:
@@ -1289,12 +1586,29 @@ class SerialPage(LinkToolPage):
             del self._script_rx[:-65536]
         self._maybe_verify_rx(data)
         self.traffic.append_rx(data)
+        frames: list[dict[str, float]] = []
         if hasattr(self, "studio"):
-            self.studio.feed(data)
-        from etools.core.frame_hub import frame_hub
+            frames = self.studio.feed(data)
+            from etools.core.frame_hub import frame_hub
 
-        frame_hub.set_names("serial", self.studio.names.text())
-        frame_hub.publish("serial", data)
+            frame_hub.set_mode("serial", self.studio.parse_mode_name())
+            frame_hub.set_names("serial", self.studio.names.text())
+            frame_hub.set_hex_template("serial", self.studio.hex_template_text())
+            if frames:
+                frame_hub.publish_frames("serial", frames)
+        for hit in self._trigger.feed(data, encoding=self._encoding_name()):
+            ok = self._send_payload(
+                hit.rule.reply,
+                record_history=False,
+                force_hex=bool(hit.rule.reply_hex),
+            )
+            self.traffic.append_status(
+                tr(
+                    "serial.trigger_fired",
+                    n=hit.index + 1,
+                    ok=tr("serial.trigger_sent") if ok else tr("serial.trigger_send_fail"),
+                )
+            )
         self._terminal_write(decode_payload(data, self._encoding_name()))
 
     # -- Lua / bridge helpers ------------------------------------------
@@ -1468,24 +1782,19 @@ class SerialPage(LinkToolPage):
         self.traffic.set_display_mode(str(self.rx_mode.currentData() or "ascii"))
 
     def _on_link_error(self, message: str) -> None:
-        self.traffic.append_status(tr("serial.err", err=message))
-        self._opened = False
-        self._stop_cyclic()
-        if self._script_running:
-            self._on_script_stop()
-        self._set_send_enabled(False)
-        self._set_params_enabled(True)
-        self.open_btn.setText(tr("serial.open"))
-        self._repaint_btn()
+        self._handle_unexpected_disconnect(tr("serial.err", err=message))
 
     def shutdown(self) -> None:
         self.traffic.stop_replay()
         self.traffic._close_auto_log()
         self._hotplug.stop()
+        self._cancel_reconnect()
+        self._reconfig_timer.stop()
         self._cyclic_timer.stop()
         self._script_timer.stop()
         self._script_running = False
         self._xfer_cancel = True
+        self._user_closed = True
         runner = getattr(self, "_runner", None)
         if runner is not None:
             runner.cancel()

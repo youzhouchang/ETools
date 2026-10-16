@@ -23,6 +23,7 @@ class ShortcutsDialog(QDialog):
 
         rows = [
             ("Ctrl+1 … Ctrl+5", "shortcuts.tools"),
+            ("Alt+1 … Alt+8", "shortcuts.serial_presets"),
             ("Ctrl+K", "palette.title"),
             ("Ctrl+O", "act.open"),
             ("Ctrl+Q", "act.quit"),

@@ -261,9 +261,6 @@ STM32_UID_CANDIDATES: list[int] = [
     0x1FFFF7AC,  # F1/F3
 ]
 
-# DBGMCU_IDCODE (STM32)
-STM32_IDCODE_ADDR = 0xE0042000
-
 # STM32 flash-size register (16-bit, size in KB) by family — first readable wins
 STM32_FLASHSIZE_CANDIDATES: list[int] = [
     0x1FFF7A22,  # F0/L0/G0/C0/WB/F2/F4

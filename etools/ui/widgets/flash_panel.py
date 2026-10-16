@@ -209,13 +209,13 @@ class FlashPanel(QFrame):
 
     def _on_program(self) -> None:
         path = self.firmware_path()
-        if not path:
-            return
         verify = self.verify_check.isChecked()
         cfg = get_config()
         cfg.verify_after_program = verify
         save_config()
-        self.remember_firmware(path)
+        if path:
+            self.remember_firmware(path)
+        # An open firmware tab can supply the file when this field is empty.
         self.program_requested.emit(path, verify)
 
     def _on_erase_clicked(self) -> None:
@@ -256,9 +256,7 @@ class FlashPanel(QFrame):
             self.erase_range_requested.emit(addr, size)
 
     def _on_verify(self) -> None:
-        path = self.firmware_path()
-        if path:
-            self.verify_requested.emit(path)
+        self.verify_requested.emit(self.firmware_path())
 
     def _on_read(self) -> None:
         addr = int(self.addr_edit.value())

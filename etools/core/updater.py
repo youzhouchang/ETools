@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -128,17 +130,35 @@ def app_dir() -> Path | None:
 
 
 def preferred_asset_kind() -> str:
-    """setup | portable — pick the package that matches how this build runs."""
+    """Return the package type used by the running application."""
     if not is_frozen():
-        return "setup"
+        return "source"
+    platform = detect_platform()
+    if platform == "linux":
+        if os.environ.get("APPIMAGE"):
+            return "appimage"
+        directory = app_dir()
+        marker = directory / ".etools-package-kind" if directory is not None else None
+        if marker is not None:
+            try:
+                marked_kind = marker.read_text(encoding="utf-8").strip().lower()
+            except OSError:
+                marked_kind = ""
+            if marked_kind in {"appimage", "deb", "portable"}:
+                return marked_kind
+        executable = str(Path(sys.executable).resolve()).lower()
+        if executable.startswith("/opt/etools/") or executable == "/usr/bin/etools":
+            return "deb"
+        return "portable"
     d = app_dir()
     if d is None:
-        return "setup"
+        return "source"
     path = str(d).lower().replace("/", "\\")
-    if "program files" in path:
+    if platform == "win" and "program files" in path:
         return "setup"
-    # Portable onedir sits anywhere else next to ETools.exe/_internal
-    return "portable"
+    if platform == "win":
+        return "portable"
+    return "source"
 
 
 def pick_best_asset(
@@ -146,9 +166,9 @@ def pick_best_asset(
 ) -> dict | None:
     """Choose the preferred installer/package for the current OS/runtime.
 
-    Windows installed: setup EXE; Windows portable: portable ZIP
-    Linux: AppImage > tar.gz > deb
-    macOS: dmg > zip
+    The selected asset must match the package type currently in use. This
+    prevents a deb install from being replaced with an AppImage, or an
+    installed Windows build from being replaced with a portable archive.
     """
     if not assets:
         return None
@@ -158,22 +178,20 @@ def pick_best_asset(
     def score(name: str) -> int:
         n = name.lower()
         if p == "win":
-            if n.endswith(".exe") and "setup" in n:
-                return 0 if k != "portable" else 2
-            if "portable" in n and n.endswith(".zip"):
-                return 0 if k == "portable" else 1
-            if n.endswith(".exe") or n.endswith(".msi"):
-                return 3
-            if n.endswith(".zip"):
-                return 4
+            if k in {"setup", "source"} and n.endswith(".exe") and "setup" in n:
+                return 0
+            if k == "portable" and "portable" in n and n.endswith(".zip"):
+                return 0
             return 100
         if p == "linux":
-            if n.endswith(".appimage"):
+            if k == "appimage" and n.endswith(".appimage"):
                 return 0
-            if n.endswith(".tar.gz") or n.endswith(".tgz"):
-                return 1
-            if n.endswith(".deb") or n.endswith(".rpm"):
-                return 2
+            if k == "portable" and (n.endswith(".tar.gz") or n.endswith(".tgz")):
+                return 0
+            if k == "deb" and n.endswith(".deb"):
+                return 0
+            if k == "source" and n.endswith(".deb"):
+                return 0
             return 100
         if p == "mac":
             if n.endswith(".dmg"):
@@ -189,13 +207,7 @@ def pick_best_asset(
         s = score(_asset_name(a))
         if s < best_score:
             best, best_score = a, s
-    if best_score >= 100:
-        # No OS-matched asset — fall back to the first one with a URL.
-        for a in assets:
-            if a.get("browser_download_url"):
-                return a
-        return assets[0] if assets else None
-    return best
+    return best if best_score < 100 else None
 
 
 def default_save_name(asset: dict) -> str:
@@ -258,21 +270,31 @@ def can_auto_install(path: Path | str | None = None) -> bool:
         return False
     p = Path(path) if path else None
     if p is None:
-        # Any preferred package for this runtime can usually auto-apply.
-        return detect_platform() in ("win", "linux")
+        return preferred_asset_kind() in {"setup", "portable", "appimage", "deb"}
     n = p.name.lower()
     plat = detect_platform()
     if plat == "win":
-        return n.endswith(".exe") or n.endswith(".zip")
+        kind = preferred_asset_kind()
+        return (kind == "setup" and n.endswith(".exe")) or (
+            kind == "portable" and n.endswith(".zip")
+        )
     if plat == "linux":
-        return n.endswith(".appimage")
+        kind = preferred_asset_kind()
+        if kind == "appimage":
+            return n.endswith(".appimage")
+        if kind == "portable":
+            return n.endswith(".tar.gz") or n.endswith(".tgz")
+        if kind == "deb":
+            return n.endswith(".deb") and bool(
+                shutil.which("pkexec") and shutil.which("apt-get")
+            )
     return False
 
 
 def apply_update(package: Path) -> str:
     """Launch auto-upgrade for a downloaded package. Caller should quit the app.
 
-    Returns a short kind: "installer" | "portable" | "appimage".
+    Returns a short kind: "installer" | "portable" | "appimage" | "deb".
     Raises OSError/RuntimeError on failure.
     """
     package = Path(package)
@@ -280,13 +302,20 @@ def apply_update(package: Path) -> str:
         raise FileNotFoundError(str(package))
     plat = detect_platform()
     name = package.name.lower()
+    kind = preferred_asset_kind()
 
-    if plat == "win" and name.endswith(".exe"):
+    if plat == "win" and kind == "setup" and name.endswith(".exe"):
         return _apply_windows_installer(package)
-    if plat == "win" and name.endswith(".zip"):
+    if plat == "win" and kind == "portable" and name.endswith(".zip"):
         return _apply_windows_portable_zip(package)
-    if plat == "linux" and name.endswith(".appimage"):
+    if plat == "linux" and kind == "appimage" and name.endswith(".appimage"):
         return _apply_linux_appimage(package)
+    if plat == "linux" and kind == "deb" and name.endswith(".deb"):
+        return _apply_linux_deb(package)
+    if plat == "linux" and kind == "portable" and (
+        name.endswith(".tar.gz") or name.endswith(".tgz")
+    ):
+        return _apply_linux_portable(package)
     raise RuntimeError(f"unsupported package: {package.name}")
 
 
@@ -369,9 +398,12 @@ def _apply_linux_appimage(new_image: Path) -> str:
     """Replace the running AppImage in place and relaunch."""
     import subprocess
 
-    current = Path(sys.executable).resolve()
-    if not current.name.endswith(".AppImage") and "appimage" not in str(current).lower():
+    current_path = os.environ.get("APPIMAGE", "")
+    if not current_path:
         raise RuntimeError("current binary is not an AppImage")
+    current = Path(current_path).expanduser().resolve()
+    if not current.is_file():
+        raise RuntimeError("current AppImage does not exist")
     target = current
     bak = current.with_suffix(current.suffix + ".bak")
     try:
@@ -397,3 +429,70 @@ def _apply_linux_appimage(new_image: Path) -> str:
     except OSError:
         pass
     return "appimage"
+
+
+def _spawn_linux_upgrade(script_body: str) -> None:
+    import subprocess
+
+    work = Path(tempfile.mkdtemp(prefix="ETools_upd_"))
+    script = work / "upgrade.sh"
+    script.write_text(script_body, encoding="utf-8")
+    script.chmod(0o700)
+    subprocess.Popen(
+        ["/bin/sh", str(script)],
+        cwd=str(work),
+        start_new_session=True,
+        close_fds=True,
+    )
+
+
+def _apply_linux_deb(package: Path) -> str:
+    """Install a deb with PolicyKit after this process exits, then relaunch."""
+    pkexec = shutil.which("pkexec")
+    apt_get = shutil.which("apt-get")
+    if not pkexec or not apt_get:
+        raise RuntimeError("pkexec or apt-get is not available")
+    pid = os.getpid()
+    package_q = shlex.quote(str(package.resolve()))
+    pkexec_q = shlex.quote(pkexec)
+    apt_get_q = shlex.quote(apt_get)
+    _spawn_linux_upgrade(
+        f"""#!/bin/sh
+while kill -0 {pid} 2>/dev/null; do sleep 1; done
+if {pkexec_q} {apt_get_q} install -y {package_q}; then
+  nohup /usr/bin/etools >/dev/null 2>&1 &
+fi
+rm -rf -- "$(dirname -- "$0")"
+"""
+    )
+    return "deb"
+
+
+def _apply_linux_portable(package: Path) -> str:
+    """Replace a portable onedir from its matching tar archive and relaunch."""
+    target = app_dir()
+    if target is None:
+        raise RuntimeError("not a frozen app")
+    if not os.access(target, os.W_OK):
+        raise RuntimeError(f"application directory is not writable: {target}")
+    pid = os.getpid()
+    exe_name = Path(sys.executable).name
+    package_q = shlex.quote(str(package.resolve()))
+    target_q = shlex.quote(str(target))
+    exe_q = shlex.quote(exe_name)
+    _spawn_linux_upgrade(
+        f"""#!/bin/sh
+set -eu
+WORK="$(dirname -- "$0")"
+while kill -0 {pid} 2>/dev/null; do sleep 1; done
+mkdir -p "$WORK/x"
+tar -xzf {package_q} -C "$WORK/x"
+SRC="$WORK/x/ETools"
+test -x "$SRC/{exe_q}"
+find {target_q} -mindepth 1 -maxdepth 1 -exec rm -rf -- {{}} +
+cp -a "$SRC/." {target_q}/
+nohup {target_q}/{exe_q} >/dev/null 2>&1 &
+rm -rf -- "$WORK"
+"""
+    )
+    return "portable"

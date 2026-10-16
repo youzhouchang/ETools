@@ -48,12 +48,11 @@ class TestProbeTypeHeuristics:
 
 class TestHexParser:
     def test_simple(self, driver: PyOCDDriver):
-        # :10 0000 00 + 16 data bytes + checksum; then EOF
         data = bytes(range(16))
-        # length=0x10, addr=0x0000, type=0x00
-        rec = b":10000000" + data.hex().upper().encode() + b"00\n"
-        rec += b":00000001FF\n"
-        segs = driver._parse_hex(rec.decode())
+        body = bytes([0x10, 0x00, 0x00, 0x00]) + data
+        checksum = (~sum(body) + 1) & 0xFF
+        rec = ":" + body.hex().upper() + f"{checksum:02X}\n:00000001FF\n"
+        segs = driver._parse_hex(rec)
         assert len(segs) == 1
         addr, payload = segs[0]
         assert addr == 0

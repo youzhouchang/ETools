@@ -42,9 +42,7 @@ class TargetInfoPanel(QFrame):
         self.val_cpu = val("valCpu")
         self.val_vendor = val("valVendor")
         self.val_uid = val("valUid")
-        self.val_devid = val("valDevId")
         self.val_flash = val("valFlash")
-        self.val_ram = val("valRam")
         self.val_volt = val("valVolt")
         self._keys: dict[str, QLabel] = {}
         for name, attr in (
@@ -52,9 +50,7 @@ class TargetInfoPanel(QFrame):
             ("keyCpu", "info.cpu"),
             ("keyVendor", "info.vendor"),
             ("keyUid", "info.uid"),
-            ("keyDevId", "info.devid"),
             ("keyFlash", "info.flash"),
-            ("keyRam", "info.ram"),
             ("keyVolt", "info.volt"),
         ):
             k = f.findChild(QLabel, name)
@@ -80,9 +76,7 @@ class TargetInfoPanel(QFrame):
             self.val_cpu,
             self.val_vendor,
             self.val_uid,
-            self.val_devid,
             self.val_flash,
-            self.val_ram,
             self.val_volt,
         ):
             w.setText("—")
@@ -99,16 +93,10 @@ class TargetInfoPanel(QFrame):
         if d.uid_ok and len(d.uid) == 24:
             uid = f"{d.uid[0:8]} {d.uid[8:16]} {d.uid[16:24]}"
         self.val_uid.setText(uid)
-        self.val_devid.setText(d.device_id or "—")
         flash = "—"
         if d.flash_size:
             base = f"0x{d.flash_base:08X}" if d.flash_base else ""
             flash = f"{base} · {d.flash_size_display}".strip(" ·")
         self.val_flash.setText(flash)
-        ram = "—"
-        if d.ram_size:
-            rbase = f"0x{d.ram_base:08X}" if d.ram_base else "?"
-            ram = f"{rbase} · {d.ram_size_display}"
-        self.val_ram.setText(ram)
         self.val_volt.setText(d.voltage_display)
         self.set_refresh_enabled(True)

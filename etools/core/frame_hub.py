@@ -26,15 +26,25 @@ class FrameHub:
         except ValueError:
             pass
 
+    def _parser(self, source: str) -> StudioFrameParser:
+        return self._parsers.setdefault(source, StudioFrameParser())
+
     def set_names(self, source: str, text: str) -> None:
-        parser = self._parsers.setdefault(source, StudioFrameParser())
-        parser.set_names(text)
+        self._parser(source).set_names(text)
+
+    def set_mode(self, source: str, mode: str) -> None:
+        self._parser(source).set_mode(mode)
+
+    def set_hex_template(self, source: str, text: str) -> None:
+        self._parser(source).set_hex_template(text)
 
     def publish(self, source: str, data: bytes) -> None:
         if not data:
             return
-        parser = self._parsers.setdefault(source, StudioFrameParser())
-        frames = parser.feed(data)
+        frames = self._parser(source).feed(data)
+        self.publish_frames(source, frames)
+
+    def publish_frames(self, source: str, frames: list[dict[str, float]]) -> None:
         if not frames:
             return
         listeners = list(self._listeners)

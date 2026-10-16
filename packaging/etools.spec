@@ -6,7 +6,7 @@
 from pathlib import Path
 import sys
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 block_cipher = None
 project_root = Path(SPECPATH).resolve().parent  # noqa: F821
@@ -36,6 +36,8 @@ if _png_icons.is_dir():
 # at runtime; missing sequences.lark makes import crash in frozen apps.
 datas += collect_data_files("pyocd", includes=["**/*"])
 datas += collect_data_files("cmsis_pack_manager", includes=["**/*"])
+# pyOCD discovers probe plugins through its distribution entry points.
+datas += copy_metadata("pyocd")
 
 binaries = []
 

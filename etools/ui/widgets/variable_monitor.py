@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from etools.core.elf import ElfImage, ElfVariable, load_elf
+from etools.core.spectrum import real_magnitude_spectrum
 from etools.core.trace_stream import (
     TYPE_FLOAT32,
     TYPE_FLOAT64,
@@ -37,6 +38,7 @@ log = get_logger("ui.variable_monitor")
 MAX_HISTORY = 900
 MAX_VARIABLES = 5000
 PAINT_INTERVAL_MS = 33
+VIEW_MODES = ("time", "freq", "bar")
 
 
 def _decode_value(raw: bytes, variable: ElfVariable) -> float | int | None:
@@ -163,6 +165,7 @@ class _Waveform(QWidget):
         super().__init__(parent)
         self._title = title
         self._empty = empty
+        self._view_mode = "time"
         self._series: dict[str, deque[float]] = {}
         self._dirty = False
         self._paint_timer = QTimer(self)
@@ -177,6 +180,12 @@ class _Waveform(QWidget):
         self._title = title
         self._empty = empty
         self._dirty = True
+
+    def set_view_mode(self, mode: str) -> None:
+        value = str(mode or "time").lower()
+        self._view_mode = value if value in VIEW_MODES else "time"
+        self._dirty = True
+        self.update()
 
     def clear(self) -> None:
         self._series.clear()
@@ -230,16 +239,28 @@ class _Waveform(QWidget):
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(text)
         painter.drawText(canvas.left() + 14, canvas.top() + 22, self._title)
+        mode_label = {"time": "时域", "freq": "频域", "bar": "柱状"}.get(
+            self._view_mode, "时域"
+        )
         painter.setPen(dim)
         painter.drawText(
             canvas.left() + 92,
             canvas.top() + 22,
-            f"{len(self._series)} 路 · {PAINT_INTERVAL_MS} FPS",
+            f"{len(self._series)} 路 · {mode_label}",
         )
         if not self._series:
             painter.setPen(dim)
             painter.drawText(plot, Qt.AlignmentFlag.AlignCenter, self._empty)
             return
+        if self._view_mode == "bar":
+            self._paint_bars(painter, canvas, plot, dim)
+            return
+        if self._view_mode == "freq":
+            self._paint_spectrum(painter, canvas, plot, dim)
+            return
+        self._paint_time(painter, canvas, plot, dim)
+
+    def _paint_time(self, painter: QPainter, canvas, plot, dim) -> None:
         painter.setPen(QPen(dim, 1, Qt.PenStyle.DotLine))
         for column in range(1, 7):
             xx = plot.left() + plot.width() * column / 7
@@ -297,6 +318,78 @@ class _Waveform(QWidget):
                     f"● {label}  {_format_value(samples[-1])}  "
                     f"[{_format_value(lo)}…{_format_value(hi)}]"
                 ),
+            )
+
+    def _paint_spectrum(self, painter: QPainter, canvas, plot, dim) -> None:
+        painter.setPen(QPen(dim, 1, Qt.PenStyle.DotLine))
+        for column in range(1, 7):
+            xx = plot.left() + plot.width() * column / 7
+            painter.drawLine(QPointF(xx, plot.top()), QPointF(xx, plot.bottom()))
+        colors = [
+            QColor("#54a0ff"),
+            QColor("#1dd1a1"),
+            QColor("#ff9f43"),
+            QColor("#ee5253"),
+            QColor("#a55eea"),
+        ]
+        for index, (key, values) in enumerate(self._series.items()):
+            mags = real_magnitude_spectrum(list(values), max_n=512)
+            if len(mags) < 2:
+                continue
+            lo, hi = 0.0, max(mags) or 1.0
+            color = colors[index % len(colors)]
+            points = [
+                QPointF(
+                    plot.left() + i * plot.width() / max(1, len(mags) - 1),
+                    plot.bottom() - (value - lo) / (hi - lo) * plot.height(),
+                )
+                for i, value in enumerate(mags)
+            ]
+            path = QPainterPath(points[0])
+            for point in points[1:]:
+                path.lineTo(point)
+            painter.setPen(QPen(color, 1.5))
+            painter.drawPath(path)
+            painter.setPen(color)
+            label = key.split("@", 1)[0]
+            painter.drawText(
+                canvas.left() + 14 + index * max(150, canvas.width() // max(1, len(self._series))),
+                canvas.top() + 38,
+                f"● {label}  peak {_format_value(hi)}",
+            )
+
+    def _paint_bars(self, painter: QPainter, canvas, plot, dim) -> None:
+        items = [(key, list(values)[-1]) for key, values in self._series.items() if values]
+        if not items:
+            painter.setPen(dim)
+            painter.drawText(plot, Qt.AlignmentFlag.AlignCenter, self._empty)
+            return
+        colors = [
+            QColor("#54a0ff"),
+            QColor("#1dd1a1"),
+            QColor("#ff9f43"),
+            QColor("#ee5253"),
+            QColor("#a55eea"),
+        ]
+        lo = min(0.0, min(v for _, v in items))
+        hi = max(v for _, v in items)
+        if hi == lo:
+            hi = lo + 1.0
+        count = len(items)
+        gap = max(4, plot.width() // max(20, count * 8))
+        bar_w = max(8, (plot.width() - gap * (count + 1)) // count)
+        for index, (key, value) in enumerate(items):
+            color = colors[index % len(colors)]
+            x = plot.left() + gap + index * (bar_w + gap)
+            height = (value - lo) / (hi - lo) * plot.height()
+            y = plot.bottom() - height
+            painter.fillRect(int(x), int(y), int(bar_w), int(height), color)
+            painter.setPen(color)
+            label = key.split("@", 1)[0]
+            painter.drawText(
+                int(x),
+                canvas.top() + 38,
+                f"{label}:{_format_value(value)}",
             )
 
 

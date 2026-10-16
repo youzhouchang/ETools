@@ -243,6 +243,7 @@ class HexPreviewPanel(QWidget):
         self.tabs.setTabToolTip(1, tr("hex.plus_tip"))
         self._menu_actions = actions
         self._selected_action = act_read
+        self._fit_read_button()
 
         # Default blank-chip look (erased flash is 0xFF)
         self.mem_view.load_bytes(
@@ -250,6 +251,20 @@ class HexPreviewPanel(QWidget):
             b"\xFF" * 0x400,
             source=tr("hex.blank_source"),
         )
+
+    def _fit_read_button(self) -> None:
+        """Size the split button and its menu for the longest action label."""
+        metrics = self.read_btn.fontMetrics()
+        text_width = max(
+            (metrics.horizontalAdvance(action.text()) for action in self._menu_actions),
+            default=0,
+        )
+        # QSS padding, checkmark gutter, and the menu-button arrow.
+        width = text_width + 72
+        self.read_btn.setMinimumWidth(width)
+        menu = self.read_btn.menu()
+        if menu is not None:
+            menu.setMinimumWidth(width)
 
     def _select_read_action(self, action) -> None:
         self._selected_action = action
@@ -279,6 +294,7 @@ class HexPreviewPanel(QWidget):
             a.setText(tr(k))
             if a.isChecked():
                 self.read_btn.setText(tr(k))
+        self._fit_read_button()
         for i in range(self.tabs.count()):
             if self.tabs.widget(i) is self.mem_view:
                 self.tabs.setTabText(i, tr("hex.mem"))
@@ -315,8 +331,23 @@ class HexPreviewPanel(QWidget):
         if path:
             self.load_file(path)
 
+    def current_firmware_path(self) -> str:
+        """Path of the open firmware tab, or empty on 内存信息 / +."""
+        index = self.tabs.currentIndex()
+        widget = self.tabs.widget(index)
+        if widget is None or widget is self.mem_view or self.tabs.tabText(index) == "+":
+            return ""
+        path = self.tabs.tabToolTip(index)
+        return path if path and Path(path).is_file() else ""
+
     def load_file(self, path: str | Path) -> bool:
         try:
+            resolved = str(Path(path).resolve())
+            for index in range(self.tabs.count()):
+                tip = self.tabs.tabToolTip(index)
+                if tip and tip in {resolved, str(path)}:
+                    self.tabs.setCurrentIndex(index)
+                    return True
             view = self._new_empty_doc()
             view.load_file(path)
             name = Path(path).name
@@ -324,7 +355,7 @@ class HexPreviewPanel(QWidget):
                 name = name[:15] + "…"
             idx = self.tabs.indexOf(view)
             self.tabs.setTabText(idx, name)
-            self.tabs.setTabToolTip(idx, str(path))
+            self.tabs.setTabToolTip(idx, resolved)
             self.tabs.setCurrentIndex(idx)
             # Keep toolbar address in sync with the image base
             if view._segments:

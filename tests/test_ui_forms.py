@@ -36,6 +36,19 @@ def test_load_probe_panel(qapp):
     assert p.target_combo.count() > 0
 
 
+def test_hex_read_button_fits_longest_action(qapp):
+    from etools.ui.widgets.hex_preview import HexPreviewPanel
+
+    panel = HexPreviewPanel()
+    metrics = panel.read_btn.fontMetrics()
+    longest = max(metrics.horizontalAdvance(action.text()) for action in panel._menu_actions)
+    assert panel.read_btn.minimumWidth() >= longest + 72
+    menu = panel.read_btn.menu()
+    assert menu is not None
+    assert menu.minimumWidth() >= longest + 72
+    panel.close()
+
+
 def test_load_flash_panel(qapp):
     from etools.ui.widgets.flash_panel import FlashPanel
 
@@ -44,12 +57,33 @@ def test_load_flash_panel(qapp):
     assert f.addr_edit.value() == 0x08000000
 
 
+def test_hex_firmware_tab_opens_once(qapp, tmp_path):
+    from etools.ui.widgets.hex_preview import HexPreviewPanel
+
+    panel = HexPreviewPanel()
+    path = tmp_path / "boot.hex"
+    path.write_text(":00000001FF\n", encoding="ascii")
+    assert panel.load_file(path)
+    assert panel.load_file(str(path))
+    titles = [panel.tabs.tabText(i) for i in range(panel.tabs.count())]
+    assert titles.count("boot.hex") == 1
+    assert panel.current_firmware_path() == str(path.resolve())
+    panel.tabs.setCurrentWidget(panel.mem_view)
+    assert panel.current_firmware_path() == ""
+    panel.close()
+
+
 def test_load_target_info_panel(qapp):
+    from PySide6.QtWidgets import QLabel
+
     from etools.ui.widgets.target_info_panel import TargetInfoPanel
 
     t = TargetInfoPanel()
     t.clear()
     assert t.val_uid.text() == "—"
+    # STM32 does not expose a reliable Device ID or RAM-size register.
+    assert t._form.findChild(QLabel, "valDevId") is None
+    assert t._form.findChild(QLabel, "valRam") is None
 
 
 def test_main_window_builds(qapp):

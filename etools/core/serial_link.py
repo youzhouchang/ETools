@@ -194,10 +194,22 @@ class SerialLink:
         self._on_rx: Callable[[bytes], None] | None = None
         self._on_error: Callable[[str], None] | None = None
         self._transfer_q: queue.Queue[bytes] | None = None
+        self._epoch = 0
+        self._port = ""
+        self._settings: dict[str, Any] = {}
 
     @property
     def is_open(self) -> bool:
         return self._ser is not None and getattr(self._ser, "is_open", False)
+
+    @property
+    def epoch(self) -> int:
+        """Increments on every open/close so stale reader callbacks can be ignored."""
+        return self._epoch
+
+    @property
+    def port(self) -> str:
+        return self._port
 
     def set_handlers(
         self,
@@ -251,6 +263,14 @@ class SerialLink:
             "O": serial.PARITY_ODD,
         }
         flow = str(flow_control or "none").lower()
+        settings = {
+            "port": port,
+            "baudrate": int(baudrate),
+            "bytesize": int(bytesize),
+            "parity": parity.upper(),
+            "stopbits": float(stopbits),
+            "flow_control": flow,
+        }
         self._ser = serial.Serial(
             port=port,
             baudrate=int(baudrate),
@@ -262,9 +282,38 @@ class SerialLink:
             dsrdtr=False,
             timeout=0.05,
         )
+        self._port = port
+        self._settings = settings
+        self._epoch += 1
         self._stop.clear()
-        self._reader = threading.Thread(target=self._read_loop, daemon=True)
+        self._reader = threading.Thread(
+            target=self._read_loop, args=(self._epoch,), daemon=True
+        )
         self._reader.start()
+
+    def reconfigure(
+        self,
+        *,
+        baudrate: int | None = None,
+        bytesize: int | None = None,
+        parity: str | None = None,
+        stopbits: float | None = None,
+        flow_control: str | None = None,
+    ) -> None:
+        """Close and reopen the current port with updated line settings."""
+        if not self._port:
+            raise RuntimeError("serial not open")
+        current = dict(self._settings)
+        self.open(
+            port=self._port,
+            baudrate=int(baudrate if baudrate is not None else current.get("baudrate", 115200)),
+            bytesize=int(bytesize if bytesize is not None else current.get("bytesize", 8)),
+            parity=str(parity if parity is not None else current.get("parity", "N")),
+            stopbits=float(stopbits if stopbits is not None else current.get("stopbits", 1)),
+            flow_control=str(
+                flow_control if flow_control is not None else current.get("flow_control", "none")
+            ),
+        )
 
     def write(self, data: bytes) -> None:
         if not self.is_open:
@@ -288,6 +337,7 @@ class SerialLink:
 
     def close(self) -> None:
         self._stop.set()
+        self._epoch += 1
         reader, self._reader = self._reader, None
         if reader is not None and reader.is_alive():
             reader.join(timeout=1.0)
@@ -297,9 +347,10 @@ class SerialLink:
                 ser.close()
             except Exception:
                 pass
+        # Keep last port/settings for reconnect / reconfigure callers.
 
-    def _read_loop(self) -> None:
-        while not self._stop.is_set():
+    def _read_loop(self, epoch: int) -> None:
+        while not self._stop.is_set() and epoch == self._epoch:
             ser = self._ser
             if ser is None:
                 break
@@ -310,6 +361,8 @@ class SerialLink:
                     data = ser.read(1)
                 if not data:
                     continue
+                if epoch != self._epoch:
+                    break
                 q = self._transfer_q
                 if q is not None:
                     q.put(data)
@@ -317,6 +370,6 @@ class SerialLink:
                 if self._on_rx:
                     self._on_rx(data)
             except Exception as exc:  # noqa: BLE001
-                if not self._stop.is_set() and self._on_error:
+                if not self._stop.is_set() and epoch == self._epoch and self._on_error:
                     self._on_error(str(exc))
                 break

@@ -38,10 +38,10 @@ class ProgramController:
         self._log(tr("log.firmware_opened", name=Path(path).name))
 
     def _toolbar_program(self) -> None:
-        path = self.host.flash_panel.firmware_path()
+        path = self._firmware_to_program()
         if not path:
             self._toolbar_open_firmware()
-            path = self.host.flash_panel.firmware_path()
+            path = self._firmware_to_program()
             if not path:
                 return
         self._start_program(path, self.host.flash_panel.verify_check.isChecked())
@@ -58,7 +58,7 @@ class ProgramController:
             self._start_erase()
 
     def _toolbar_verify(self) -> None:
-        path = self.host.flash_panel.firmware_path()
+        path = self._firmware_to_program()
         if path:
             self._start_verify(path)
 
@@ -137,6 +137,25 @@ class ProgramController:
         self.host.progress.setValue(0)
         self.host.progress_label.hide()
         self.host.progress.show()
+
+    def _notify(self, title: str, text: str, *, error: bool = False) -> None:
+        if error:
+            QMessageBox.warning(self.host, title, text)
+        else:
+            QMessageBox.information(self.host, title, text)
+
+    def _firmware_to_program(self, fallback: str = "") -> str:
+        """Program the firmware tab on screen, otherwise the path field."""
+        current = self.host.hex_preview.current_firmware_path()
+        chosen = current or (fallback or self.host.flash_panel.firmware_path()).strip()
+        if current and self.host.flash_panel.firmware_path() != current:
+            edit = self.host.flash_panel.fw_edit
+            edit.blockSignals(True)
+            edit.setText(current)
+            edit.blockSignals(False)
+            self.host.flash_panel.remember_firmware(current)
+            self.host.flash_panel._update_fw_info()
+        return chosen
 
     def _log(self, message: str, is_error: bool = False) -> None:
         self.host.log_panel.append(message, is_error)
@@ -326,29 +345,43 @@ class ProgramController:
         def on_ok(result) -> None:
             a, data = result
             self.host.hex_preview.load_bytes(a, data, source=None)
-            self._show_progress(100, tr("log.chip_read_done", size=f"{len(data):,}"))
+            done = tr("op.read_ok_text", size=f"{len(data):,}")
+            self._show_progress(100, done)
+            self._notify(tr("op.read_ok"), done)
 
         def on_err(msg: str) -> None:
             self._log(msg, True)
             self._hide_progress()
+            self._notify(tr("op.read_fail"), msg, error=True)
 
         self._run_async(work, on_ok, on_err)
 
     def _start_program(self, path: str, verify: bool = True) -> None:
+        path = self._firmware_to_program(path)
+        if not path:
+            return
         self._show_progress(0, tr("log.programming"))
+        name = Path(path).name
 
         def on_ok(result) -> None:
             self._set_busy(False)
             self._log(result.message, not result.ok)
             if result.ok:
-                self._show_progress(100, result.message or "OK")
+                self._show_progress(100, tr("op.program_ok"))
+                self._notify(tr("op.program_ok"), tr("op.program_ok_text", name=name))
             else:
                 self._hide_progress()
+                self._notify(
+                    tr("op.program_fail"),
+                    result.message or tr("op.program_fail"),
+                    error=True,
+                )
 
         def on_err(msg: str) -> None:
             self._set_busy(False)
             self._log(msg, True)
             self._hide_progress()
+            self._notify(tr("op.program_fail"), msg, error=True)
 
         if not self._run_async(
             lambda: self.host.service.program_file(path, verify=verify), on_ok, on_err
@@ -357,16 +390,16 @@ class ProgramController:
 
     def _start_erase(self) -> None:
         self._show_progress(0, tr("log.erasing"))
+        address, size = self._memory_window()
 
         def on_ok(result) -> None:
-            self._set_busy(False)
-            self._log(result.message, not result.ok)
-            self._hide_progress()
+            self._finish_erase(result, address, size)
 
         def on_err(msg: str) -> None:
             self._set_busy(False)
             self._log(msg, True)
             self._hide_progress()
+            self._notify(tr("op.erase_fail"), msg, error=True)
 
         self._run_async(self.host.service.erase_all, on_ok, on_err)
 
@@ -374,16 +407,56 @@ class ProgramController:
         self._show_progress(0, tr("log.erasing_range"))
 
         def on_ok(result) -> None:
-            self._set_busy(False)
-            self._log(result.message, not result.ok)
-            self._hide_progress()
+            self._finish_erase(result, address, size)
 
         def on_err(msg: str) -> None:
             self._set_busy(False)
             self._log(msg, True)
             self._hide_progress()
+            self._notify(tr("op.erase_fail"), msg, error=True)
 
         self._run_async(lambda: self.host.service.erase_range(address, size), on_ok, on_err)
+
+    def _memory_window(self) -> tuple[int, int]:
+        addr = int(self.host.hex_preview.addr_spin.value())
+        size = int(self.host.hex_preview.size_spin.value())
+        return addr, max(1, min(size, 256 * 1024))
+
+    def _finish_erase(self, result, address: int, size: int) -> None:
+        self._set_busy(False)
+        self._log(result.message, not result.ok)
+        if not result.ok:
+            self._hide_progress()
+            self._notify(tr("op.erase_fail"), result.message or tr("op.erase_fail"), error=True)
+            return
+        self._show_progress(100, tr("log.erase_done"))
+        self.host._goto_tab("Hex")
+        self._reload_erased_memory(int(address), int(size))
+
+    def _reload_erased_memory(self, address: int, size: int) -> None:
+        size = max(1, min(int(size), 256 * 1024))
+
+        def work():
+            data = self.host.service.read_memory_bytes(address, size, fresh=True)
+            return address, data
+
+        def on_ok(result) -> None:
+            addr, data = result
+            self.host.hex_preview.load_bytes(addr, data, source=tr("log.erase_done"))
+            self._show_progress(100, tr("log.erase_done"))
+            QMessageBox.information(
+                self.host, tr("log.erase_done"), tr("log.erase_done_text")
+            )
+
+        def on_err(msg: str) -> None:
+            QMessageBox.warning(
+                self.host,
+                tr("log.erase_done"),
+                tr("log.erase_refresh_failed", err=msg),
+            )
+
+        if not self._run_async(work, on_ok, on_err):
+            self._log(tr("log.busy"), True)
 
     def _start_read(self, address: int, size: int, out_path: str) -> None:
         self._show_progress(0, tr("log.reading"))
@@ -392,28 +465,46 @@ class ProgramController:
             self._set_busy(False)
             self._log(result.message, not result.ok)
             self._hide_progress()
+            if result.ok:
+                self._notify(tr("op.read_ok"), tr("op.read_saved", path=out_path))
+            else:
+                self._notify(tr("op.read_fail"), result.message or tr("op.read_fail"), error=True)
 
         def on_err(msg: str) -> None:
             self._set_busy(False)
             self._log(msg, True)
             self._hide_progress()
+            self._notify(tr("op.read_fail"), msg, error=True)
 
         self._run_async(
             lambda: self.host.service.read_flash(address, size, out_path), on_ok, on_err
         )
 
     def _start_verify(self, path: str) -> None:
+        path = self._firmware_to_program(path)
+        if not path:
+            return
         self._show_progress(0, tr("log.verifying"))
+        name = Path(path).name
 
         def on_ok(result) -> None:
             self._set_busy(False)
             self._log(result.message, not result.ok)
             self._hide_progress()
+            if result.ok:
+                self._notify(tr("op.verify_ok"), tr("op.verify_ok_text", name=name))
+            else:
+                self._notify(
+                    tr("op.verify_fail"),
+                    result.message or tr("op.verify_fail"),
+                    error=True,
+                )
 
         def on_err(msg: str) -> None:
             self._set_busy(False)
             self._log(msg, True)
             self._hide_progress()
+            self._notify(tr("op.verify_fail"), msg, error=True)
 
         self._run_async(lambda: self.host.service.verify_file(path), on_ok, on_err)
 
@@ -444,10 +535,15 @@ class ProgramController:
             self._set_busy(False)
             self._log(result.message, not result.ok)
             self._hide_progress()
+            if result.ok:
+                self._notify(tr("op.fill_ok"), result.message or tr("op.fill_ok"))
+            else:
+                self._notify(tr("op.fill_fail"), result.message or tr("op.fill_fail"), error=True)
 
         def on_err(msg: str) -> None:
             self._set_busy(False)
             self._log(msg, True)
             self._hide_progress()
+            self._notify(tr("op.fill_fail"), msg, error=True)
 
         self._run_async(lambda: self.host.service.fill_memory(addr, size, value), on_ok, on_err)

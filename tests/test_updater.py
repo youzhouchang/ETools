@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from etools.core.updater import (
+    apply_update,
     can_auto_install,
     default_save_name,
     is_frozen,
     is_newer,
     parse_version,
     pick_best_asset,
+    preferred_asset_kind,
 )
 from etools.ui.markdown import markdown_to_html
 
@@ -47,6 +51,9 @@ def test_pick_best_asset_windows():
     portable = pick_best_asset(assets, plat="win", kind="portable")
     assert portable is not None
     assert portable["name"] == "ETools-portable-0.2.0-win64.zip"
+    source = pick_best_asset(assets, plat="win", kind="source")
+    assert source is not None
+    assert source["name"] == "ETools-setup-0.2.0-win64.exe"
 
 
 def test_can_auto_install_source_run():
@@ -55,15 +62,72 @@ def test_can_auto_install_source_run():
     assert not can_auto_install()
 
 
-def test_pick_best_asset_linux():
+def test_pick_best_asset_linux_matches_install_kind():
     assets = _assets(
         "ETools-portable-0.2.0-linux-x86_64.tar.gz",
         "ETools-0.2.0-amd64.deb",
         "ETools-0.2.0-x86_64.AppImage",
     )
-    best = pick_best_asset(assets, plat="linux")
-    assert best is not None
-    assert best["name"].endswith(".AppImage")
+    expected = {
+        "appimage": ".AppImage",
+        "deb": ".deb",
+        "portable": ".tar.gz",
+    }
+    for kind, suffix in expected.items():
+        best = pick_best_asset(assets, plat="linux", kind=kind)
+        assert best is not None
+        assert best["name"].endswith(suffix)
+
+
+def test_pick_best_asset_does_not_fall_back_to_another_package_type():
+    assets = _assets("ETools-0.2.0-x86_64.AppImage")
+    assert pick_best_asset(assets, plat="linux", kind="deb") is None
+    assert pick_best_asset(assets, plat="linux", kind="portable") is None
+
+
+def test_preferred_linux_asset_kind(tmp_path, monkeypatch):
+    import etools.core.updater as updater
+
+    monkeypatch.setattr(updater.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(updater.sys, "platform", "linux")
+    monkeypatch.setenv("APPIMAGE", "/tmp/ETools.AppImage")
+    assert preferred_asset_kind() == "appimage"
+
+    monkeypatch.delenv("APPIMAGE")
+    marker = tmp_path / ".etools-package-kind"
+    marker.write_text("deb", encoding="utf-8")
+    monkeypatch.setattr(updater, "app_dir", lambda: tmp_path)
+    monkeypatch.setattr(updater.sys, "executable", "/home/user/ETools/ETools")
+    assert preferred_asset_kind() == "deb"
+
+    marker.unlink()
+    monkeypatch.setattr(updater.sys, "executable", "/opt/etools/ETools")
+    assert preferred_asset_kind() == "deb"
+
+    monkeypatch.setattr(updater.sys, "executable", "/home/user/ETools/ETools")
+    assert preferred_asset_kind() == "portable"
+
+
+def test_apply_update_rejects_cross_package_type(tmp_path, monkeypatch):
+    import etools.core.updater as updater
+
+    package = tmp_path / "ETools.AppImage"
+    package.write_bytes(b"image")
+    monkeypatch.setattr(updater, "detect_platform", lambda: "linux")
+    monkeypatch.setattr(updater, "preferred_asset_kind", lambda: "deb")
+    with pytest.raises(RuntimeError, match="unsupported package"):
+        apply_update(package)
+
+
+def test_deb_auto_install_requires_matching_runtime_and_helpers(monkeypatch):
+    import etools.core.updater as updater
+
+    monkeypatch.setattr(updater, "is_frozen", lambda: True)
+    monkeypatch.setattr(updater, "detect_platform", lambda: "linux")
+    monkeypatch.setattr(updater, "preferred_asset_kind", lambda: "deb")
+    monkeypatch.setattr(updater.shutil, "which", lambda name: f"/usr/bin/{name}")
+    assert can_auto_install("ETools-0.6.1-amd64.deb")
+    assert not can_auto_install("ETools-0.6.1-x86_64.AppImage")
 
 
 def test_pick_best_asset_empty():

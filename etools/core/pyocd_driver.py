@@ -11,11 +11,10 @@ import time
 from pathlib import Path
 from typing import Any
 
-from etools.core.hexdump import parse_elf, parse_ihex, parse_srec
+from etools.core.hexdump import parse_elf, parse_srec
 from etools.core.models import (
     PROBE_CLASS_MAP,
     STM32_FLASHSIZE_CANDIDATES,
-    STM32_IDCODE_ADDR,
     STM32_UID_CANDIDATES,
     ConnectionState,
     OperationResult,
@@ -38,6 +37,24 @@ from etools.i18n import tr
 from etools.logger import get_logger
 
 log = get_logger("pyocd")
+
+
+def _direct_probe_backends() -> list[type[Any]]:
+    """Return built-in pyOCD probe backends without relying on entry points."""
+    backends: list[type[Any]] = []
+    candidates = (
+        ("pyocd.probe.stlink_probe", "StlinkProbe"),
+        ("pyocd.probe.cmsis_dap_probe", "CMSISDAPProbe"),
+        ("pyocd.probe.jlink_probe", "JLinkProbe"),
+        ("pyocd.probe.picoprobe", "Picoprobe"),
+    )
+    for module_name, class_name in candidates:
+        try:
+            module = __import__(module_name, fromlist=[class_name])
+            backends.append(getattr(module, class_name))
+        except Exception:
+            log.debug("probe backend unavailable: %s", module_name, exc_info=True)
+    return backends
 
 
 def _probe_type_from_unique_id(unique_id: str, product_name: str = "") -> ProbeType:
@@ -103,16 +120,25 @@ class PyOCDDriver(ProbeDriver):
             probes = []
             self._emit(f"Primary probe scan failed: {exc}", True)
 
-        # Keep CMSIS-DAP discovery usable across pyOCD releases and frozen
-        # builds where the aggregator plugin may not be registered correctly.
+        # Frozen builds can lose distribution entry points used by pyOCD to
+        # register probe plugins. Scan every built-in USB backend directly.
         if not probes:
-            try:
-                from pyocd.probe.cmsis_dap_probe import CMSISDAPProbe
-
-                probes = list(CMSISDAPProbe.get_all_connected_probes())
-            except Exception as exc:
-                log.debug("CMSIS-DAP fallback scan failed", exc_info=True)
-                self._emit(f"CMSIS-DAP scan unavailable: {exc}", True)
+            seen: set[tuple[type[Any], str]] = set()
+            for backend in _direct_probe_backends():
+                try:
+                    candidates = backend.get_all_connected_probes()
+                except Exception:
+                    log.debug(
+                        "fallback scan failed for %s",
+                        backend.__name__,
+                        exc_info=True,
+                    )
+                    continue
+                for probe in candidates:
+                    key = (type(probe), str(getattr(probe, "unique_id", "") or id(probe)))
+                    if key not in seen:
+                        seen.add(key)
+                        probes.append(probe)
 
         for p in probes:
             unique_id = str(getattr(p, "unique_id", "") or "")
@@ -342,8 +368,8 @@ class PyOCDDriver(ProbeDriver):
             if not details.cpu:
                 details.cpu = self._target.cpu
 
-        # --- STM32 device ID + UID ---
-        details.device_id = self._read_stm32_device_id(target)
+        # STM32 has no single readable Device ID or RAM-size register.
+        # UID and the flash-size register are the chip values we can trust.
         uid = self._read_stm32_uid(target)
         if uid:
             details.uid = uid
@@ -365,25 +391,11 @@ class PyOCDDriver(ProbeDriver):
 
         return details
 
-    def _read_word(self, target: Any, addr: int) -> int | None:
-        try:
-            return int(target.read_memory(addr)) & 0xFFFFFFFF
-        except Exception:
-            return None
-
     def _read_bytes(self, target: Any, addr: int, n: int) -> bytes | None:
         try:
             return bytes(target.read_memory_block8(addr, n))
         except Exception:
             return None
-
-    def _read_stm32_device_id(self, target: Any) -> str:
-        word = self._read_word(target, STM32_IDCODE_ADDR)
-        if word is None or word == 0 or word == 0xFFFFFFFF:
-            return ""
-        dev_id = word & 0xFFF
-        rev = (word >> 16) & 0xFFFF
-        return f"0x{dev_id:03X} (rev 0x{rev:04X})"
 
     def _read_stm32_uid(self, target: Any) -> str:
         for addr in STM32_UID_CANDIDATES:
@@ -577,8 +589,10 @@ class PyOCDDriver(ProbeDriver):
                 session,
                 progress=_progress,
                 chip_erase=None,
-                smart_flash=True,
-                trust_crc=None,
+                # Always rewrite pages. Smart-flash compares against the memory
+                # cache, which still holds the previous flash contents.
+                smart_flash=False,
+                trust_crc=False,
             )
             programmer.program(str(path.resolve()))
         except Exception as exc:
@@ -633,11 +647,54 @@ class PyOCDDriver(ProbeDriver):
             bytes_processed=size,
         )
 
-    def read_memory_bytes(self, address: int, size: int) -> bytes:
+    def _invalidate_memory_cache(self, target: Any) -> None:
+        """Drop pyOCD's cached memory so the next read hits the device."""
+        cores: list[Any] = []
+        selected = getattr(target, "selected_core_or_raise", None)
+        if callable(selected):
+            try:
+                cores.append(selected())
+            except Exception:
+                log.debug("selected core unavailable", exc_info=True)
+        for core in cores:
+            context_getter = getattr(core, "get_target_context", None)
+            if not callable(context_getter):
+                continue
+            try:
+                context = context_getter()
+            except Exception:
+                log.debug("target context unavailable", exc_info=True)
+                continue
+            invalidate = getattr(context, "invalidate", None)
+            if callable(invalidate):
+                try:
+                    invalidate()
+                except Exception:
+                    log.debug("memory cache invalidate failed", exc_info=True)
+
+    def _prepare_fresh_flash_read(self, session: Any) -> None:
+        """Reset and drop cached flash before a verify or post-erase read.
+
+        The flash algorithm writes the device without updating pyOCD's memory
+        cache. Some STM32 flash accelerators also keep returning the previous
+        contents until the core is reset.
+        """
+        target = session.target
+        try:
+            target.reset_and_halt()
+        except Exception:
+            log.debug("reset before flash read failed", exc_info=True)
+        self._invalidate_memory_cache(target)
+
+    def read_memory_bytes(self, address: int, size: int, *, fresh: bool = False) -> bytes:
         """Read a memory region into bytes (chunked, with progress)."""
         session = self._require_session()
         if size <= 0 or size > 16 * 1024 * 1024:
             raise ValueError("Invalid read size (1 … 16 MiB)")
+        if fresh:
+            self._prepare_fresh_flash_read(session)
+        else:
+            self._invalidate_memory_cache(session.target)
         target = session.target
         chunk = 4096
         data = bytearray()
@@ -843,6 +900,7 @@ class PyOCDDriver(ProbeDriver):
         if not segments:
             return False, "No loadable segments in image"
 
+        self._prepare_fresh_flash_read(session)
         target = session.target
         compared = 0
         total = sum(len(d) for _, d in segments)
@@ -884,7 +942,18 @@ class PyOCDDriver(ProbeDriver):
         return [(base, data)]
 
     def _parse_hex(self, text: str) -> list[tuple[int, bytes]]:
-        return parse_ihex(text)
+        # Same parser pyOCD uses when it programs the file.
+        from io import StringIO
+
+        from intelhex import IntelHex
+
+        image = IntelHex(StringIO(text))
+        segments: list[tuple[int, bytes]] = []
+        for start, end in image.segments():
+            data = bytes(image.tobinarray(start=start, size=end - start))
+            if data:
+                segments.append((start, data))
+        return segments
 
     def _parse_srec(self, text: str) -> list[tuple[int, bytes]]:
         return parse_srec(text)
