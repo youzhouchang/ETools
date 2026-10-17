@@ -129,6 +129,12 @@ def app_dir() -> Path | None:
     return Path(sys.executable).resolve().parent
 
 
+def _is_deb_install_path(path: str) -> bool:
+    """Return whether ``path`` is the Linux deb binary or its /opt install tree."""
+    normalized = path.replace("\\", "/").lower()
+    return normalized.startswith("/opt/etools/") or normalized == "/usr/bin/etools"
+
+
 def preferred_asset_kind() -> str:
     """Return the package type used by the running application."""
     if not is_frozen():
@@ -146,8 +152,11 @@ def preferred_asset_kind() -> str:
                 marked_kind = ""
             if marked_kind in {"appimage", "deb", "portable"}:
                 return marked_kind
-        executable = str(Path(sys.executable).resolve()).lower()
-        if executable.startswith("/opt/etools/") or executable == "/usr/bin/etools":
+        # Keep the original path. On Windows, Path.resolve() anchors a POSIX
+        # absolute path to a drive, so the deb prefix would no longer match.
+        if _is_deb_install_path(sys.executable) or _is_deb_install_path(
+            str(Path(sys.executable).resolve())
+        ):
             return "deb"
         return "portable"
     d = app_dir()

@@ -108,6 +108,35 @@ def test_preferred_linux_asset_kind(tmp_path, monkeypatch):
     assert preferred_asset_kind() == "portable"
 
 
+def test_deb_kind_keeps_posix_path_when_resolve_adds_a_drive(monkeypatch):
+    import etools.core.updater as updater
+
+    class _WinPath:
+        """Stand-in for Windows pathlib, which anchors '/opt/...' on a drive."""
+
+        def __init__(self, value):
+            self._value = str(value)
+
+        def resolve(self):
+            text = self._value.replace("/", "\\")
+            if text.startswith("\\"):
+                text = "C:" + text
+            return _WinPath(text)
+
+        def __str__(self):
+            return self._value
+
+    monkeypatch.setattr(updater, "Path", _WinPath)
+    monkeypatch.setattr(updater.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(updater.sys, "platform", "linux")
+    monkeypatch.delenv("APPIMAGE", raising=False)
+    monkeypatch.setattr(updater, "app_dir", lambda: None)
+    monkeypatch.setattr(updater.sys, "executable", "/opt/etools/ETools")
+    assert preferred_asset_kind() == "deb"
+    monkeypatch.setattr(updater.sys, "executable", "/usr/bin/etools")
+    assert preferred_asset_kind() == "deb"
+
+
 def test_apply_update_rejects_cross_package_type(tmp_path, monkeypatch):
     import etools.core.updater as updater
 
