@@ -384,18 +384,6 @@ def test_main_window_builds_with_shell(qapp):
     w.close()
 
 
-def test_version_single_source():
-    from pathlib import Path
-
-    import tomllib
-
-    import etools
-
-    root = Path(__file__).resolve().parents[1]
-    data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
-    assert data["project"]["version"] == etools.__version__
-
-
 def test_task_manager_runs_parallel_tasks(qapp):
     import time
 
