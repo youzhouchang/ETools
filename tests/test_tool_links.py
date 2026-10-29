@@ -2,17 +2,57 @@
 
 from __future__ import annotations
 
+import os
 import socket
 import threading
+import time
+from collections.abc import Callable
+
+import pytest
 
 from etools.core.net_link import NetLink
 from etools.core.serial_link import list_serial_ports
 from etools.core.ssh_link import SshLink
 
 
+def _until(predicate: Callable[[], bool], timeout: float = 3.0) -> bool:
+    """Poll *predicate* until true or *timeout* passes (no fixed sleeps)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
 def test_list_serial_ports_does_not_raise():
     ports = list_serial_ports()
     assert isinstance(ports, list)
+
+
+@pytest.mark.skipif(not hasattr(os, "openpty"), reason="needs a POSIX pty")
+def test_serial_link_survives_ports_without_modem_lines():
+    import tty
+
+    from etools.core.serial_link import SerialLink
+
+    master, slave = os.openpty()
+    tty.setraw(master)
+    tty.setraw(slave)
+    got: list[bytes] = []
+    link = SerialLink()
+    link.set_handlers(on_rx=got.append)
+    try:
+        link.open(port=os.ttyname(slave), baudrate=115200)
+        # A pty rejects TIOCMBIS; the port must stay usable.
+        assert link.set_dtr(True) is False
+        assert link.set_rts(True) is False
+        os.write(master, b"ping")
+        assert _until(lambda: b"ping" in b"".join(got))
+    finally:
+        link.close()
+        os.close(master)
+        os.close(slave)
 
 
 def test_netlink_tcp_loopback():
@@ -38,16 +78,11 @@ def test_netlink_tcp_loopback():
     link.set_handlers(on_rx=lambda b, peer: got.append(b))
     link.connect_tcp_client("127.0.0.1", port)
     link.send(b"ping")
-    import time
-
-    time.sleep(0.3)
+    assert _until(lambda: b"ping" in b"".join(got))
     link.close()
-    assert b"ping" in b"".join(got)
 
 
 def test_netlink_tcp_server_multi_client():
-    import time
-
     events: list[tuple[str, str]] = []
     rx: list[tuple[bytes, str]] = []
     link = NetLink()
@@ -61,36 +96,37 @@ def test_netlink_tcp_server_multi_client():
 
     c1 = socket.create_connection(("127.0.0.1", port), timeout=2)
     c2 = socket.create_connection(("127.0.0.1", port), timeout=2)
-    time.sleep(0.4)
+    assert _until(lambda: len(link.peers()) == 2)
     peers = link.peers()
-    assert len(peers) == 2
 
     c1.sendall(b"from-c1")
     c2.sendall(b"from-c2")
-    time.sleep(0.4)
-    rx_payloads = b"".join(b for b, _ in rx)
-    assert b"from-c1" in rx_payloads
-    assert b"from-c2" in rx_payloads
+
+    def both_arrived() -> bool:
+        payloads = b"".join(b for b, _ in rx)
+        return b"from-c1" in payloads and b"from-c2" in payloads
+
+    assert _until(both_arrived)
 
     link.send(b"hello1", peer=peers[0])
     link.send(b"hello2", peer=peers[1])
     link.send(b"broadcast")
-    time.sleep(0.3)
 
-    c1.settimeout(0.5)
-    c2.settimeout(0.5)
-    got1 = b""
-    got2 = b""
-    try:
-        got1 += c1.recv(64)
-        got1 += c1.recv(64)
-    except TimeoutError:
-        pass
-    try:
-        got2 += c2.recv(64)
-        got2 += c2.recv(64)
-    except TimeoutError:
-        pass
+    def read_until(sock: socket.socket, needle: bytes) -> bytes:
+        sock.settimeout(2.0)
+        data = b""
+        while needle not in data:
+            try:
+                chunk = sock.recv(64)
+            except TimeoutError:
+                break
+            if not chunk:
+                break
+            data += chunk
+        return data
+
+    got1 = read_until(c1, b"broadcast")
+    got2 = read_until(c2, b"broadcast")
     assert b"broadcast" in got1 and b"broadcast" in got2
     assert (b"hello1" in got1) or (b"hello2" in got1)
     assert (b"hello1" in got2) or (b"hello2" in got2)

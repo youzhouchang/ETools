@@ -47,6 +47,7 @@ from etools.core.canopen import (
 )
 from etools.core.eds import EdsFile, parse_eds
 from etools.i18n import tr
+from etools.ui.runtime import OpRunner
 from etools.ui.shell import ToolActionSpec
 from etools.ui.tool_prefs import load_tool_prefs, save_tool_prefs
 from etools.ui.tools.base import LinkToolPage
@@ -64,6 +65,7 @@ class CanPage(LinkToolPage):
 
     def _build(self) -> None:
         self._link = CanLink()
+        self._runner = OpRunner(self)
         self._relay = _RxRelay(self)
         self._relay.received.connect(self._on_rx)
         self._relay.failed.connect(self._on_error)
@@ -419,6 +421,9 @@ class CanPage(LinkToolPage):
         return tr("status.link_can", iface=iface), "ok"
 
     def shutdown(self) -> None:
+        self._hb_timer.stop()
+        self.traffic.shutdown()
+        self._runner.shutdown()
         self._stop_record()
         self._stop_play()
         self._link.close()
@@ -875,6 +880,8 @@ class CanPage(LinkToolPage):
             b.setEnabled(on)
 
     def _on_toggle(self) -> None:
+        if self._runner.busy:
+            return
         if self._opened:
             self._link.close()
             self._opened = False
@@ -897,23 +904,30 @@ class CanPage(LinkToolPage):
             data_br = int(self.data_bitrate.currentText().strip() or "2000000")
         except ValueError:
             data_br = 2000000
-        try:
-            self._link.open(
-                interface,
-                channel,
-                bitrate,
-                fd=self.fd_check.isChecked(),
-                data_bitrate=data_br,
+        fd = self.fd_check.isChecked()
+        link = self._link
+
+        def work():
+            # Vendor drivers (PCAN / Kvaser / USB) may block for seconds while opening.
+            link.open(interface, channel, bitrate, fd=fd, data_bitrate=data_br)
+
+        def done(_result) -> None:
+            self.conn_btn.setEnabled(True)
+            self._opened = True
+            self._set_connected_ui(True)
+            self.traffic.append_status(
+                tr("can.opened", iface=interface, channel=channel, bitrate=bitrate)
             )
-        except Exception as exc:  # noqa: BLE001
-            self.traffic.append_status(tr("can.err", err=str(exc)))
-            return
-        self._opened = True
-        self._set_connected_ui(True)
-        self.traffic.append_status(
-            tr("can.opened", iface=interface, channel=channel, bitrate=bitrate)
-        )
-        self.persist_prefs()
+            self.persist_prefs()
+
+        def fail(message: str) -> None:
+            self.conn_btn.setEnabled(True)
+            self._set_connected_ui(False)
+            self.traffic.append_status(tr("can.err", err=message))
+
+        self.conn_btn.setEnabled(False)
+        self.conn_btn.setText(tr("status.connecting"))
+        self._runner.start(work, done, fail)
 
     # -- send ----------------------------------------------------------
 

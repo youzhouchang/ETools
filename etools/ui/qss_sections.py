@@ -193,15 +193,14 @@ QComboBox:hover, QLineEdit:hover, QSpinBox:hover {{
     border-color: {accent};
 }}
 QComboBox {{
-    padding-right: 26px;
-    min-width: 0;
+    padding: 2px 4px 2px 8px;
 }}
 QComboBox::drop-down {{
-    subcontrol-origin: border;
+    subcontrol-origin: padding;
     subcontrol-position: center right;
     border: none;
     background: transparent;
-    width: 22px;
+    width: 16px;
 }}
 QComboBox::down-arrow {{
     image: url({arrow_url});
@@ -422,6 +421,27 @@ QToolBar {{
     spacing: 6px;
     padding: 4px 8px;
 }}
+QToolButton#sectionTab {{
+    background: transparent;
+    color: {text_dim};
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    padding: 2px 10px;
+    min-width: 0;
+    max-height: 24px;
+    font-size: 12px;
+}}
+QToolButton#sectionTab:hover {{
+    color: {text};
+    background: {bg_hover};
+}}
+QToolButton#sectionTab:checked {{
+    color: {text};
+    background: {bg_panel};
+    border-color: {accent};
+}}
 QToolButton {{
     background: transparent;
     color: {text_dim};
@@ -589,6 +609,32 @@ QLabel#mutedLabel {{
 QLabel#statusTask {{
     color: {text_dim};
     font-size: 11px;
+}}
+/* Card fill and the single outline are painted by DashCard. A stylesheet
+   border-radius on this native board clips the frame and doubles the left edge. */
+QWidget#dashBoard {{
+    background: {bg};
+}}
+QLabel#dashCaption {{
+    background: transparent;
+    border: none;
+    padding: 2px 2px 0 2px;
+    font-weight: 600;
+    font-size: 12px;
+    color: {text};
+}}
+QWidget#dashCard QLabel {{
+    background: transparent;
+    border: none;
+}}
+QWidget#dashGrip {{
+    background: {bg_hover};
+    border: 1px solid {border};
+    border-radius: 0;
+}}
+QWidget#dashGrip:hover {{
+    background: {accent};
+    border-color: {accent};
 }}
 /* Focus ring — one accent outline for keyboard users */
 QLineEdit:focus,

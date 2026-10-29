@@ -49,6 +49,18 @@ class _QueueBridge:
                 box.append(exc)
             event.set()
 
+    #: Beyond this many queued jobs, ``post`` waits so a fast script cannot flood the UI.
+    POST_BACKLOG = 256
+
+    def post(self, fn: Callable[[], Any], timeout: float = 30.0) -> None:
+        """Run *fn* on the Qt thread without waiting, unless the queue is backed up."""
+        if self._jobs.qsize() >= self.POST_BACKLOG:
+            self.submit(fn, timeout)
+            return
+        if not self._armed:
+            raise RuntimeError("bridge not installed")
+        self._jobs.put((fn, threading.Event(), []))
+
     def submit(self, fn: Callable[[], Any], timeout: float = 30.0) -> Any:
         if not self._armed:
             raise RuntimeError("bridge not installed")
@@ -86,6 +98,9 @@ class SerialLuaBridge:
         data = self._pump.submit(lambda: self._page.lua_take_rx(int(max_bytes)))
         return bytes(data or b"").decode("latin-1", errors="replace")
 
+    def plot(self, kind: str, payload) -> int:
+        return int(self._pump.submit(lambda: self._page.lua_plot(kind, payload)))
+
     def expect(self, needle: str, timeout_ms: int = 2000) -> bool:
         deadline = time.monotonic() + max(1, int(timeout_ms)) / 1000.0
         needle_b = needle.encode("utf-8", errors="replace")
@@ -113,6 +128,9 @@ class NetLuaBridge:
     def recv(self, max_bytes: int = 4096) -> str:
         data = self._pump.submit(lambda: self._page.lua_take_rx(int(max_bytes)))
         return bytes(data or b"").decode("latin-1", errors="replace")
+
+    def plot(self, kind: str, payload) -> int:
+        return int(self._pump.submit(lambda: self._page.lua_plot(kind, payload)))
 
     def expect(self, needle: str, timeout_ms: int = 2000) -> bool:
         deadline = time.monotonic() + max(1, int(timeout_ms)) / 1000.0
@@ -246,3 +264,99 @@ class FlashLuaBridge:
     def reset(self, halt: bool = False) -> bool:
         result = self._service.reset_target(halt=bool(halt))
         return bool(getattr(result, "ok", False))
+
+
+class FramesLuaBridge:
+    """Lua ``frames.*``: read parsed frames from the hub and publish results back."""
+
+    def __init__(self, pump: _QueueBridge, hub=None) -> None:
+        from etools.core.frame_hub import FrameTap, frame_hub
+
+        self._pump = pump
+        self._hub = hub or frame_hub
+        self._tap = FrameTap(self._hub)
+        self._tap.start()
+
+    def script_started(self) -> None:
+        # Each run starts with fresh input instead of frames queued while idle.
+        self._tap.clear()
+
+    def shutdown(self) -> None:
+        self._tap.stop()
+
+    def recv(self, max_frames: int = 32, source: str = "") -> list[dict]:
+        return self._tap.take(max(1, int(max_frames)), source)
+
+    def wait(self, timeout_ms: int = 1000, source: str = "", stop=None) -> dict | None:
+        return self._tap.wait(max(0, int(timeout_ms)) / 1000.0, source, stop)
+
+    def latest(self, source: str = "") -> dict[str, float]:
+        return self._tap.latest(source)
+
+    def clear(self) -> bool:
+        self._tap.clear()
+        return True
+
+    def publish(self, fields: dict[str, float]) -> bool:
+        from etools.core.frame_hub import LUA_SOURCE
+
+        frame = dict(fields)
+        self._pump.post(lambda: self._hub.publish_frames(LUA_SOURCE, [frame]))
+        return True
+
+
+class DashLuaBridge:
+    """Lua ``dash.*`` backed by the DashboardPage."""
+
+    def __init__(self, page, pump: _QueueBridge) -> None:
+        self._page = page
+        self._pump = pump
+
+    def widgets(self) -> list[dict]:
+        return self._pump.submit(self._page.lua_widgets)
+
+    def values(self) -> list[dict]:
+        return self._pump.submit(self._page.lua_values)
+
+    def source(self, name: str | None = None) -> str:
+        return self._pump.submit(lambda: self._page.lua_source(name))
+
+    def push(self, fields: dict[str, float]) -> bool:
+        frame = dict(fields)
+        self._pump.post(lambda: self._page.lua_push(frame))
+        return True
+
+    def add(self, spec: dict) -> int:
+        return int(self._pump.submit(lambda: self._page.lua_add(dict(spec))))
+
+    def remove(self, index: int) -> bool:
+        return bool(self._pump.submit(lambda: self._page.lua_remove(int(index))))
+
+
+class MapLuaBridge:
+    """Lua ``map.*`` backed by the MapPage."""
+
+    def __init__(self, page, pump: _QueueBridge) -> None:
+        self._page = page
+        self._pump = pump
+
+    def points(self, n: int = 0) -> list[dict]:
+        return self._pump.submit(lambda: self._page.lua_points(int(n)))
+
+    def last(self) -> dict | None:
+        points = self.points(1)
+        return points[-1] if points else None
+
+    def add(self, lat: float, lon: float) -> bool:
+        return bool(self._pump.submit(lambda: self._page.lua_add_point(float(lat), float(lon))))
+
+    def clear(self) -> bool:
+        self._pump.submit(self._page.lua_clear)
+        return True
+
+    def source(self, name: str | None = None) -> str:
+        return self._pump.submit(lambda: self._page.lua_source(name))
+
+    def bind(self, lat_field: str, lon_field: str) -> bool:
+        self._pump.submit(lambda: self._page.lua_bind(str(lat_field), str(lon_field)))
+        return True

@@ -23,14 +23,27 @@ def app(tmp_path, monkeypatch):
     return QApplication.instance() or QApplication([])
 
 
+def test_python_too_old_message_names_the_etools_env(monkeypatch):
+    import sys
+
+    from etools.app import python_too_old_message
+
+    assert python_too_old_message() is None
+    monkeypatch.setattr(sys, "version_info", (3, 8, 20, "final", 0))
+    message = python_too_old_message()
+    assert message is not None
+    assert "3.10" in message
+    assert "conda activate etools" in message
+
+
 def test_paused_capture_retains_data_and_timestamp(app):
     from etools.ui.widgets.traffic_view import TS_FULL, TrafficView
 
     view = TrafficView()
-    view.append_rx(b"before")
+    view.append_rx(b"before\n")
     view._flush()
     view.pause_check.setChecked(True)
-    view.append_rx(b"during")
+    view.append_rx(b"during\n")
     assert len(view._records) == 2
     assert "during" not in view.to_plain_text()
     view.append_status("note-while-paused")
@@ -321,3 +334,22 @@ def test_main_window_and_new_dialogs_smoke(app, monkeypatch):
     WorkflowDialog(window)
     app.processEvents()
     window.close()
+
+
+def test_toolbar_script_status_reaches_the_monitor(app):
+    from etools.i18n import tr
+    from etools.ui.tools.script_menu import MenuRunWatch
+
+    notes: list[str] = []
+    page = QWidget()
+    page.traffic = SimpleNamespace(append_status=notes.append)
+    watch = MenuRunWatch(page, "绘图帧")
+    watch.arm()
+    app.processEvents()
+    assert notes[0] == tr("script.running_name", name="绘图帧")
+    watch._on_log("plot 5,4,16")
+    app.processEvents()
+    assert notes[1] == tr("script.log_line", msg="plot 5,4,16")
+    watch._on_done(True, "done")
+    app.processEvents()
+    assert notes[-1] == tr("script.done")

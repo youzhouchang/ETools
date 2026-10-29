@@ -25,8 +25,14 @@ jobs:
           VER="${TAG#v}"
           APP_VER="$(python3 -c "import re,pathlib; t=pathlib.Path('etools/__init__.py').read_text(); print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', t).group(1))")"
           echo "tag=$TAG app=$APP_VER"
+          PKG_VER="$(python3 -c "import re,pathlib; t=pathlib.Path('pyproject.toml').read_text(); print(re.search(r'^version\s*=\s*\"([^\"]+)\"', t, re.M).group(1))")"
+          echo "pyproject=$PKG_VER"
           if [ "$VER" != "$APP_VER" ]; then
             echo "::error::Tag $TAG does not match etools/__init__.py version $APP_VER"
+            exit 1
+          fi
+          if [ "$VER" != "$PKG_VER" ]; then
+            echo "::error::Tag $TAG does not match pyproject.toml version $PKG_VER"
             exit 1
           fi
           echo "version=$VER" >> "$GITHUB_OUTPUT"

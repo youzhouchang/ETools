@@ -269,6 +269,28 @@ def test_ssh_host_key_errors():
     assert m.port == 2222
 
 
+def test_program_left_column_can_be_dragged(qapp):
+    from etools.ui.tools.base import _LEFT_MAX, _LEFT_MIN
+    from etools.ui.tools.program_page import ProgramPage
+
+    page = ProgramPage()
+    page.resize(1080, 720)
+    page.show()
+    qapp.processEvents()
+    # Wide tables used to pin the right pane, so the handle could not move.
+    assert page.splitter.widget(1).minimumSizeHint().width() <= 360
+    page.splitter.setSizes([400, 676])
+    qapp.processEvents()
+    assert page.splitter.sizes()[0] == 400
+    page._on_left_split_moved(400, 0)
+    assert page._left_width == 400
+    page._on_left_split_moved(_LEFT_MIN - 20, 0)
+    assert page._left_width == _LEFT_MIN
+    page._on_left_split_moved(_LEFT_MAX + 40, 0)
+    assert page._left_width == _LEFT_MAX
+    page.close()
+
+
 def test_program_tabs_match_their_panels(qapp):
     from etools.i18n import tr
     from etools.ui.tools.program_page import _TAB_SPEC, ProgramPage
@@ -281,6 +303,7 @@ def test_program_tabs_match_their_panels(qapp):
         "tabRtt": page.rtt_panel,
         "tabSwo": page.swo_panel,
         "tabMonitor": page.variable_monitor,
+        "tabDiag": page.diag_panel,
     }
     assert page.main_tabs.count() == len(_TAB_SPEC)
     for index, (obj_name, _icon, key) in enumerate(_TAB_SPEC):
@@ -435,3 +458,21 @@ def test_worker_invoke_matches_signature():
         assert "inner business error" in str(exc)
     else:
         raise AssertionError("TypeError must propagate")
+
+
+def test_rtt_reader_ignores_a_stale_poll_thread(qapp):
+    from etools.ui.widgets.rtt_panel import _RttReader
+
+    reader = _RttReader()
+    got: list[tuple[int, bytes]] = []
+    stops: list[str] = []
+    reader.raw_received.connect(lambda ch, data: got.append((ch, data)))
+    reader.status.connect(stops.append)
+    old = reader._generation
+    reader._generation += 1  # a new session started after the old thread was abandoned
+    reader._running = True
+    reader._deliver(old, 0, b"stale")
+    reader._on_poll_failed(old, "stale error")
+    assert got == [] and stops == [] and reader.running
+    reader._deliver(reader._generation, 0, b"fresh")
+    assert got == [(0, b"fresh")]

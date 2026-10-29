@@ -22,10 +22,13 @@ from PySide6.QtWidgets import (
 
 from etools.config import get_config
 from etools.i18n import tr
+from etools.logger import get_logger
 from etools.ui.icons import icon as load_icon
 from etools.ui.icons import semantic_color, set_action_icon
 from etools.ui.styles import Theme, get_theme
 from etools.ui.widgets.icon_button import IconToolButton
+
+log = get_logger("ui.shell")
 
 #: Qt's QWIDGETSIZE_MAX — allow the collapsed strip to fill the rail column.
 _QWIDGETSIZE_MAX = 16_777_215
@@ -444,12 +447,12 @@ class ToolShell(QWidget):
                     action.setEnabled(not busy)
 
     def shutdown(self) -> None:
-        for page in self._pages.values():
+        for key, page in self._pages.items():
             if hasattr(page, "shutdown"):
                 try:
                     page.shutdown()
                 except Exception:  # noqa: BLE001
-                    pass
+                    log.exception("shutdown failed: %s", key)
 
     # -- internals -----------------------------------------------------
 

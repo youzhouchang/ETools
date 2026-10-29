@@ -129,6 +129,7 @@ class MqttPage(ToolPage):
         ]
 
     def shutdown(self) -> None:
+        self.traffic.shutdown()
         self._persist()
         self._runner.shutdown()
         self._link.close()

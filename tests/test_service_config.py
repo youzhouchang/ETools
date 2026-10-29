@@ -139,3 +139,54 @@ class TestFlashService:
         svc = FlashService(d)
         assert svc.erase_all().ok
         assert "erase:True" in d.calls
+
+
+def test_corrupt_config_is_backed_up_and_reported(tmp_path, monkeypatch):
+    import etools.config as config_mod
+
+    monkeypatch.setattr(config_mod, "get_config_dir", lambda: tmp_path)
+    (tmp_path / "config.json").write_text("{ broken", encoding="utf-8")
+    cfg = config_mod.AppConfig().load()
+    assert cfg.default_target == "cortex_m"
+    backups = list(tmp_path.glob("config.corrupt-*.json"))
+    assert len(backups) == 1 and backups[0].read_text(encoding="utf-8") == "{ broken"
+    assert config_mod.take_load_warning() == str(backups[0])
+    assert config_mod.take_load_warning() == ""
+
+
+def test_config_ignores_fields_with_wrong_type(tmp_path, monkeypatch):
+    import json
+
+    import etools.config as config_mod
+
+    monkeypatch.setattr(config_mod, "get_config_dir", lambda: tmp_path)
+    (tmp_path / "config.json").write_text(
+        json.dumps({"theme": "light", "custom_targets": "oops", "auto_probe_scan": 1}),
+        encoding="utf-8",
+    )
+    cfg = config_mod.AppConfig().load()
+    assert cfg.theme == "light"
+    assert cfg.custom_targets == []
+    assert cfg.auto_probe_scan is True
+
+
+def test_import_config_rejects_bad_file_without_touching_current(tmp_path, monkeypatch):
+    import pytest
+
+    import etools.config as config_mod
+
+    monkeypatch.setattr(config_mod, "get_config_dir", lambda: tmp_path)
+    current = config_mod.AppConfig()
+    current.theme = "light"
+    monkeypatch.setattr(config_mod, "_config", current)
+    bad = tmp_path / "bad.json"
+    bad.write_text("[1, 2]", encoding="utf-8")
+    with pytest.raises(ValueError):
+        config_mod.import_config(bad)
+    bad.write_text("not json", encoding="utf-8")
+    with pytest.raises(ValueError):
+        config_mod.import_config(bad)
+    bad.write_text('{"theme": 3}', encoding="utf-8")
+    with pytest.raises(ValueError, match="theme"):
+        config_mod.import_config(bad)
+    assert config_mod.get_config() is current

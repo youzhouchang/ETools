@@ -25,6 +25,7 @@ from etools.core.updater import (
     can_auto_install,
     default_save_name,
     download_file,
+    expected_sha256,
     is_frozen,
     pick_best_asset,
 )
@@ -43,10 +44,11 @@ class _AssetDownloader(QObject):
     finished = Signal(str)
     failed = Signal(str)
 
-    def __init__(self, url: str, dest: str) -> None:
+    def __init__(self, url: str, dest: str, sha256: str = "") -> None:
         super().__init__()
         self._url = url
         self._dest = dest
+        self._sha256 = sha256
 
     def run(self) -> None:
         try:
@@ -54,6 +56,7 @@ class _AssetDownloader(QObject):
                 self._url,
                 Path(self._dest),
                 progress=lambda r, t: self.progressed.emit(r, t),
+                sha256=self._sha256,
             )
             self.finished.emit(str(path))
         except Exception as exc:  # noqa: BLE001
@@ -239,7 +242,7 @@ class UpdateAvailableDialog(QDialog):
         self._progress = QProgressDialog(
             tr("update.downloading"), tr("update.cancel"), 0, 0, self
         )
-        self._progress.setWindowTitle(tr("update.title"))
+        self._progress.setWindowTitle(tr("update.download_title"))
         self._progress.setWindowModality(Qt.WindowModality.WindowModal)
         self._progress.setAutoClose(False)
         self._progress.setAutoReset(False)
@@ -250,7 +253,9 @@ class UpdateAvailableDialog(QDialog):
         self._progress.show()
 
         thread = QThread(self)
-        worker = _AssetDownloader(url, dest)
+        worker = _AssetDownloader(
+            url, dest, expected_sha256(self.asset or {}, self.info.body)
+        )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progressed.connect(self._on_dl_progress)
@@ -301,7 +306,7 @@ class UpdateAvailableDialog(QDialog):
 
         box = QMessageBox(
             QMessageBox.Icon.Information,
-            tr("update.title"),
+            tr("update.download_title"),
             tr("update.source_only", path=path)
             if not is_frozen()
             else tr("update.download_done", path=path),
@@ -322,7 +327,7 @@ class UpdateAvailableDialog(QDialog):
             0,
             self,
         )
-        busy.setWindowTitle(tr("update.title"))
+        busy.setWindowTitle(tr("update.install_title"))
         busy.setWindowModality(Qt.WindowModality.WindowModal)
         busy.setAutoClose(False)
         busy.setAutoReset(False)
@@ -344,7 +349,7 @@ class UpdateAvailableDialog(QDialog):
             log.exception("auto install failed")
             fail = QMessageBox(
                 QMessageBox.Icon.Warning,
-                tr("update.title"),
+                tr("update.install_title"),
                 tr("update.install_failed", err=str(exc)),
                 QMessageBox.StandardButton.Ok,
                 self,
@@ -365,7 +370,7 @@ class UpdateAvailableDialog(QDialog):
     def _offer_auto_install(self, path: str) -> None:
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Question)
-        box.setWindowTitle(tr("update.title"))
+        box.setWindowTitle(tr("update.install_title"))
         box.setText(tr("update.install_confirm"))
         box.setInformativeText(path)
         yes = box.addButton(tr("update.install_now"), QMessageBox.ButtonRole.AcceptRole)
@@ -377,7 +382,7 @@ class UpdateAvailableDialog(QDialog):
             # Keep package on disk; just close.
             done = QMessageBox(
                 QMessageBox.Icon.Information,
-                tr("update.title"),
+                tr("update.download_title"),
                 tr("update.download_done", path=path),
                 QMessageBox.StandardButton.Ok,
                 self,
@@ -395,7 +400,7 @@ class UpdateAvailableDialog(QDialog):
             self._progress = None
         box = QMessageBox(
             QMessageBox.Icon.Warning,
-            tr("update.title"),
+            tr("update.download_title"),
             tr("update.download_failed", err=message),
             QMessageBox.StandardButton.Ok,
             self,

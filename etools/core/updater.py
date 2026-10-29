@@ -226,6 +226,28 @@ def default_save_name(asset: dict) -> str:
     return "etools-update.bin"
 
 
+class ChecksumMismatch(RuntimeError):
+    """Downloaded package does not match the published SHA-256."""
+
+
+_SHA256_RE = re.compile(r"^\s*([0-9a-fA-F]{64})\s+\*?(\S+)\s*$")
+
+
+def expected_sha256(asset: dict, release_body: str = "") -> str:
+    """Published SHA-256 for *asset*, from the API ``digest`` or the release notes."""
+    digest = str(asset.get("digest") or "")
+    if digest.lower().startswith("sha256:"):
+        value = digest.split(":", 1)[1].strip().lower()
+        if re.fullmatch(r"[0-9a-f]{64}", value):
+            return value
+    name = Path(_asset_name(asset)).name
+    for line in (release_body or "").splitlines():
+        m = _SHA256_RE.match(line)
+        if m and Path(m.group(2)).name == name:
+            return m.group(1).lower()
+    return ""
+
+
 def download_file(
     url: str,
     dest: Path,
@@ -233,11 +255,16 @@ def download_file(
     progress: Callable[[int, int], None] | None = None,
     timeout: float = 60.0,
     chunk: int = _CHUNK,
+    sha256: str = "",
 ) -> Path:
     """Download *url* to *dest*. Calls progress(received, total) while running.
 
-    total may be 0 when the server omits Content-Length.
+    total may be 0 when the server omits Content-Length. When *sha256* is
+    given the file is only kept if its digest matches.
     """
+    import hashlib
+
+    hasher = hashlib.sha256()
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
@@ -259,9 +286,16 @@ def download_file(
                     if not buf:
                         break
                     f.write(buf)
+                    hasher.update(buf)
                     received += len(buf)
                     if progress:
                         progress(received, total)
+        if sha256 and hasher.hexdigest() != sha256.lower():
+            raise ChecksumMismatch(
+                f"SHA-256 mismatch: expected {sha256.lower()}, got {hasher.hexdigest()}"
+            )
+        if not sha256:
+            log.warning("no published SHA-256 for %s; integrity not verified", url)
         tmp.replace(dest)
     except Exception:
         if tmp.exists():

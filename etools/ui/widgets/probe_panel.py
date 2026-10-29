@@ -135,10 +135,13 @@ class ProbePanel(QFrame):
         for combo in combos:
             combo.setFixedHeight(28)
             combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            # Match the serial form: fill the column, and let long names elide
+            # instead of forcing a width that the sidebar then clips.
             combo.setSizeAdjustPolicy(
                 QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
             )
-            combo.setMinimumContentsLength(12)
+            combo.setMinimumContentsLength(1)
+            combo.setMinimumWidth(0)
             combo.setMaxVisibleItems(12)
             combo.view().setTextElideMode(Qt.TextElideMode.ElideMiddle)
             apply_combo_style(combo, get_theme(get_config().theme))

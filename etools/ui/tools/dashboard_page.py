@@ -10,11 +10,12 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
-    QGridLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -22,17 +23,22 @@ from PySide6.QtWidgets import (
 )
 
 from etools.core.dashboard import (
+    ATTITUDE_MODES,
+    ATTITUDE_SHAPES,
     WIDGET_TYPES,
     DashWidget,
+    ensure_layout,
+    lookup,
+    new_widget,
     project_from_json,
     project_to_json,
 )
-from etools.core.frame_hub import frame_hub
+from etools.core.frame_hub import LUA_SOURCE, frame_hub
 from etools.i18n import tr
 from etools.ui.shell import ToolActionSpec
 from etools.ui.tool_prefs import load_tool_prefs, save_tool_prefs
 from etools.ui.tools.base import ToolPage
-from etools.ui.widgets.dashboard_cards import DashCard
+from etools.ui.widgets.dash_canvas import DashCanvas, DashPalette
 
 
 class _Relay(QObject):
@@ -43,8 +49,24 @@ _TYPE_KEYS = {
     "value": "dash.type.value",
     "gauge": "dash.type.gauge",
     "bar": "dash.type.bar",
+    "lamp": "dash.type.lamp",
     "plot": "dash.type.plot",
     "multiplot": "dash.type.multi",
+    "attitude3d": "dash.type.attitude3d",
+}
+_ATTITUDE_MODE_KEYS = {
+    "euler": "dash.attitude_mode.euler",
+    "quat": "dash.attitude_mode.quat",
+}
+_ATTITUDE_SHAPE_KEYS = {
+    "aircraft": "dash.shape.aircraft",
+    "quad": "dash.shape.quad",
+    "cube": "dash.shape.cube",
+    "horizon": "dash.shape.horizon",
+}
+_ATTITUDE_DEFAULT_BIND = {
+    "euler": "roll,pitch,yaw",
+    "quat": "qw,qx,qy,qz",
 }
 
 
@@ -54,7 +76,7 @@ class DashboardPage(ToolPage):
 
     def _build(self) -> None:
         self._items: list[DashWidget] = []
-        self._cards: list[DashCard] = []
+        self._last_frame: dict[str, float] = {}
         self._relay = _Relay(self)
         self._relay.frame.connect(self._on_frame)
         self._listener = lambda source, frame: self._relay.frame.emit(source, frame)
@@ -71,6 +93,12 @@ class DashboardPage(ToolPage):
         self.title_edit = QLineEdit()
         self.title_edit.setFixedHeight(28)
         self.lbl_title = self.form_row(tr("dash.name"), self.title_edit)
+        self.attitude_mode = QComboBox()
+        self.attitude_mode.setFixedHeight(28)
+        self.lbl_attitude_mode = self.form_row(tr("dash.attitude_mode"), self.attitude_mode)
+        self.attitude_shape = QComboBox()
+        self.attitude_shape.setFixedHeight(28)
+        self.lbl_attitude_shape = self.form_row(tr("dash.shape"), self.attitude_shape)
         self.bind_edit = QLineEdit("1")
         self.bind_edit.setFixedHeight(28)
         self.bind_edit.setPlaceholderText(tr("dash.bind_ph"))
@@ -101,6 +129,12 @@ class DashboardPage(ToolPage):
         host = QWidget()
         host.setLayout(row)
         self.ctx_layout.addWidget(host)
+        self.lbl_palette = QLabel(tr("dash.palette"))
+        self.palette = DashPalette(self._palette_entries())
+        self.palette.setToolTip(tr("dash.drag_hint"))
+        outer = self.ctx_box.layout()
+        outer.insertWidget(0, self.palette)
+        outer.insertWidget(0, self.lbl_palette)
         self.save_btn = QPushButton(tr("dash.save"))
         self.load_btn = QPushButton(tr("dash.load"))
         for btn in (self.save_btn, self.load_btn):
@@ -122,18 +156,18 @@ class DashboardPage(ToolPage):
         lay.addLayout(switch)
 
         self.stack = QStackedWidget()
-        self.board = QWidget()
-        self.grid = QGridLayout(self.board)
-        self.grid.setContentsMargins(0, 0, 0, 0)
-        self.grid.setSpacing(8)
-        self.empty = QLabel(tr("dash.empty"))
-        self.grid.addWidget(self.empty, 0, 0)
+        self.canvas = DashCanvas()
+        self.empty = self.canvas.notice
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(self.canvas)
         self.table = QTableWidget(0, 6)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setStretchLastSection(True)
-        self.stack.addWidget(self.board)
+        self.stack.addWidget(scroll)
         self.stack.addWidget(self.table)
         lay.addWidget(self.stack, 1)
 
@@ -145,7 +179,14 @@ class DashboardPage(ToolPage):
         self.save_btn.clicked.connect(self._save_file)
         self.load_btn.clicked.connect(self._load_file)
         self.table.itemSelectionChanged.connect(self._load_row)
+        self.kind.currentIndexChanged.connect(self._on_kind_changed)
+        self.attitude_mode.currentIndexChanged.connect(lambda _=0: self._on_kind_changed())
+        self.palette.add_requested.connect(self.canvas.add_widget)
+        self.canvas.changed.connect(self._on_canvas_changed)
+        self.canvas.selected.connect(self._on_canvas_selected)
         self._fill_sources()
+        self._fill_attitude_modes()
+        self._fill_attitude_shapes()
         self._load_prefs()
         self._show(0)
         self.retranslate()
@@ -155,6 +196,10 @@ class DashboardPage(ToolPage):
         self.lbl_source.setText(tr("dash.source"))
         self.lbl_kind.setText(tr("dash.type"))
         self.lbl_title.setText(tr("dash.name"))
+        self.lbl_attitude_mode.setText(tr("dash.attitude_mode"))
+        self.lbl_attitude_shape.setText(tr("dash.shape"))
+        self.lbl_palette.setText(tr("dash.palette"))
+        self.palette.retranslate()
         self.lbl_bind.setText(tr("dash.bind"))
         self.lbl_unit.setText(tr("dash.unit"))
         self.lbl_min.setText(tr("dash.min"))
@@ -190,6 +235,17 @@ class DashboardPage(ToolPage):
         index = self.source.findData(current_source)
         if index >= 0:
             self.source.setCurrentIndex(index)
+        current_mode = self.attitude_mode.currentData()
+        self._fill_attitude_modes()
+        index = self.attitude_mode.findData(current_mode)
+        if index >= 0:
+            self.attitude_mode.setCurrentIndex(index)
+        current_shape = self.attitude_shape.currentData()
+        self._fill_attitude_shapes()
+        index = self.attitude_shape.findData(current_shape)
+        if index >= 0:
+            self.attitude_shape.setCurrentIndex(index)
+        self._on_kind_changed()
         self._fill_table()
 
     def toolbar_actions(self) -> list[ToolActionSpec]:
@@ -212,7 +268,45 @@ class DashboardPage(ToolPage):
         self.source.addItem(tr("tool.serial"), "serial")
         self.source.addItem(tr("tool.ethernet"), "ethernet")
         self.source.addItem(tr("tool.mqtt"), "mqtt")
+        self.source.addItem(tr("dash.source.lua"), LUA_SOURCE)
         self.source.blockSignals(False)
+
+    def _palette_entries(self) -> list[tuple[str, str, str]]:
+        rows = [
+            (kind, "", key) for kind, key in _TYPE_KEYS.items() if kind != "attitude3d"
+        ]
+        rows.extend(("attitude3d", shape, key) for shape, key in _ATTITUDE_SHAPE_KEYS.items())
+        return rows
+
+    def _fill_attitude_modes(self) -> None:
+        self.attitude_mode.blockSignals(True)
+        self.attitude_mode.clear()
+        for mode in ATTITUDE_MODES:
+            self.attitude_mode.addItem(tr(_ATTITUDE_MODE_KEYS[mode]), mode)
+        self.attitude_mode.blockSignals(False)
+
+    def _fill_attitude_shapes(self) -> None:
+        self.attitude_shape.blockSignals(True)
+        self.attitude_shape.clear()
+        for shape in ATTITUDE_SHAPES:
+            self.attitude_shape.addItem(tr(_ATTITUDE_SHAPE_KEYS[shape]), shape)
+        self.attitude_shape.blockSignals(False)
+
+    def _on_kind_changed(self, _index: int = 0) -> None:
+        kind = str(self.kind.currentData() or "value")
+        is_attitude = kind == "attitude3d"
+        self.lbl_attitude_mode.setVisible(is_attitude)
+        self.attitude_mode.setVisible(is_attitude)
+        self.lbl_attitude_shape.setVisible(is_attitude)
+        self.attitude_shape.setVisible(is_attitude)
+        mode = str(self.attitude_mode.currentData() or "euler")
+        if not is_attitude:
+            self.bind_edit.setPlaceholderText(tr("dash.bind_ph"))
+            return
+        default_bind = _ATTITUDE_DEFAULT_BIND.get(mode, "roll,pitch,yaw")
+        self.bind_edit.setPlaceholderText(default_bind)
+        if self.bind_edit.text().strip() in ("", "1"):
+            self.bind_edit.setText(default_bind)
 
     def _show(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
@@ -227,10 +321,16 @@ class DashboardPage(ToolPage):
             minimum=float(self.min_spin.value()),
             maximum=float(self.max_spin.value()),
             bind=self.bind_edit.text().strip() or "1",
+            mode=str(self.attitude_mode.currentData() or "euler"),
+            shape=str(self.attitude_shape.currentData() or "aircraft"),
         )
 
     def _add(self) -> None:
-        self._items.append(self._form_spec())
+        spec = self._form_spec()
+        fresh = new_widget(spec.type, spec.shape)
+        spec.row_span = fresh.row_span
+        spec.col_span = fresh.col_span
+        self._items.append(spec)
         self._rebuild()
         self._persist()
 
@@ -238,7 +338,13 @@ class DashboardPage(ToolPage):
         row = self.table.currentRow()
         if row < 0 or row >= len(self._items):
             return
-        self._items[row] = self._form_spec()
+        previous = self._items[row]
+        spec = self._form_spec()
+        spec.row = previous.row
+        spec.col = previous.col
+        spec.row_span = previous.row_span
+        spec.col_span = previous.col_span
+        self._items[row] = spec
         self._rebuild()
         self._persist()
 
@@ -255,9 +361,16 @@ class DashboardPage(ToolPage):
         if row < 0 or row >= len(self._items):
             return
         spec = self._items[row]
+        self.canvas.highlight(row)
         index = self.kind.findData(spec.type)
         if index >= 0:
             self.kind.setCurrentIndex(index)
+        mode_index = self.attitude_mode.findData(spec.mode)
+        if mode_index >= 0:
+            self.attitude_mode.setCurrentIndex(mode_index)
+        shape_index = self.attitude_shape.findData(spec.shape)
+        if shape_index >= 0:
+            self.attitude_shape.setCurrentIndex(shape_index)
         self.title_edit.setText(spec.title)
         self.bind_edit.setText(spec.bind)
         self.unit_edit.setText(spec.unit)
@@ -279,21 +392,19 @@ class DashboardPage(ToolPage):
                 self.table.setItem(row, col, QTableWidgetItem(text))
 
     def _rebuild(self) -> None:
-        for card in self._cards:
-            self.grid.removeWidget(card)
-            card.deleteLater()
-        self._cards = []
-        if not self._items:
-            self.empty.show()
-            if self.grid.indexOf(self.empty) < 0:
-                self.grid.addWidget(self.empty, 0, 0)
-        else:
-            self.empty.hide()
-            for index, spec in enumerate(self._items):
-                card = DashCard(spec)
-                self._cards.append(card)
-                self.grid.addWidget(card, index // 2, index % 2)
+        ensure_layout(self._items)
+        self.canvas.set_items(self._items)
         self._fill_table()
+
+    def _on_canvas_changed(self) -> None:
+        self._fill_table()
+        self._persist()
+
+    def _on_canvas_selected(self, index: int) -> None:
+        if index < 0 or index >= self.table.rowCount():
+            self.table.clearSelection()
+            return
+        self.table.selectRow(index)
 
     def _on_frame(self, source: str, frame: object) -> None:
         if not isinstance(frame, dict):
@@ -301,8 +412,85 @@ class DashboardPage(ToolPage):
         wanted = str(self.source.currentData() or "any")
         if wanted != "any" and source != wanted:
             return
-        for card in self._cards:
+        self._show_frame(frame)
+
+    def _show_frame(self, frame: dict) -> None:
+        self._last_frame = dict(frame)
+        for card in self.canvas.cards:
             card.push(frame)
+
+    # -- Lua bridge helpers --------------------------------------------
+
+    def lua_widgets(self) -> list[dict]:
+        return [
+            {
+                "index": index + 1,
+                "type": spec.type,
+                "title": spec.title,
+                "bind": spec.bind,
+                "unit": spec.unit,
+                "min": spec.minimum,
+                "max": spec.maximum,
+            }
+            for index, spec in enumerate(self._items)
+        ]
+
+    def lua_values(self) -> list[dict]:
+        """Value(s) each widget shows for the last frame it received."""
+        rows = []
+        for index, spec in enumerate(self._items):
+            values = [lookup(self._last_frame, bind) for bind in spec.binds()]
+            row = {"index": index + 1, "title": spec.title, "bind": spec.bind}
+            if len(values) == 1:
+                if values[0] is not None:
+                    row["value"] = values[0]
+            else:
+                row["values"] = [v for v in values if v is not None]
+            rows.append(row)
+        return rows
+
+    def lua_source(self, name: str | None = None) -> str:
+        if name is not None:
+            index = self.source.findData(str(name))
+            if index < 0:
+                raise ValueError(f"unknown dashboard source: {name}")
+            self.source.setCurrentIndex(index)
+            self._persist()
+        return str(self.source.currentData() or "any")
+
+    def lua_push(self, fields: dict[str, float]) -> None:
+        """Show *fields* on the dashboard only (not forwarded to the map)."""
+        self._show_frame(fields)
+
+    def lua_add(self, spec: dict) -> int:
+        kind = str(spec.get("type") or "value")
+        if kind not in WIDGET_TYPES:
+            raise ValueError(f"unknown widget type: {kind}")
+        shape = str(spec.get("shape") or "aircraft")
+        item = new_widget(kind, shape)
+        item.title = str(spec.get("title") or "")
+        item.bind = str(spec.get("bind") or item.bind or "1")
+        item.unit = str(spec.get("unit") or "")
+        if spec.get("min") is not None:
+            item.minimum = float(spec["min"])
+        if spec.get("max") is not None:
+            item.maximum = float(spec["max"])
+        if kind == "attitude3d":
+            item.mode = str(spec.get("mode") or "euler")
+            item.shape = shape
+        self._items.append(item)
+        self._rebuild()
+        self._persist()
+        return len(self._items)
+
+    def lua_remove(self, index: int) -> bool:
+        row = int(index) - 1
+        if not 0 <= row < len(self._items):
+            return False
+        del self._items[row]
+        self._rebuild()
+        self._persist()
+        return True
 
     def _save_file(self) -> None:
         path, _ = QFileDialog.getSaveFileName(

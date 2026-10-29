@@ -7,8 +7,10 @@ from etools.core.ymodem import (
     CRC_REQUEST,
     EOT,
     MODE_CHECKSUM,
+    NAK,
     PKT_128,
     SOH,
+    XmodemSender,
     YmodemReceiver,
     YmodemSender,
     checksum8,
@@ -91,54 +93,126 @@ def test_parse_ymodem_header():
 
 
 def test_ymodem_receiver_roundtrip():
-    """Drive a fake sender into YmodemReceiver using a queue pipe."""
+    """Received data equals the sent file exactly (no 0x1A padding)."""
+    _run_pair(b"hello-firmware" * 5, one_k=False)
+
+
+def _run_pair(payload: bytes, *, one_k: bool, mode: str = "crc", xmodem: bool = False):
     import queue
+    import threading
 
     to_rx: queue.Queue = queue.Queue()
     to_tx: queue.Queue = queue.Queue()
 
-    def sender_write(data: bytes) -> None:
-        to_rx.put(bytes(data))
+    def pipe_read(q):
+        def _read(timeout: float) -> bytes:
+            try:
+                return q.get(timeout=timeout)
+            except queue.Empty:
+                return b""
 
-    def sender_read(timeout: float) -> bytes:
-        try:
-            return to_tx.get(timeout=timeout)
-        except Exception:
-            return b""
+        return _read
 
-    def receiver_write(data: bytes) -> None:
-        to_tx.put(bytes(data))
-
-    def receiver_read(timeout: float) -> bytes:
-        try:
-            return to_rx.get(timeout=timeout)
-        except Exception:
-            return b""
-
-    payload = b"hello-firmware" * 5
-    sender = YmodemSender(write=sender_write, read=sender_read, packet_timeout=1.0)
-    receiver = YmodemReceiver(write=receiver_write, read=receiver_read, packet_timeout=1.0)
-
-    import threading
-
-    result_box: dict = {}
-
-    def run_tx():
-        result_box["tx"] = sender.send("app.bin", payload)
-
-    def run_rx():
-        result_box["rx"] = receiver.receive(ymodem=True, timeout=5.0)
-
-    t1 = threading.Thread(target=run_tx)
-    t2 = threading.Thread(target=run_rx)
+    sender_cls = XmodemSender if xmodem else YmodemSender
+    sender = sender_cls(
+        write=to_rx.put, read=pipe_read(to_tx), packet_timeout=1.0, one_k=one_k
+    )
+    receiver = YmodemReceiver(
+        write=to_tx.put, read=pipe_read(to_rx), packet_timeout=1.0, mode=mode
+    )
+    box: dict = {}
+    t1 = threading.Thread(target=lambda: box.update(tx=sender.send("app.bin", payload)))
+    t2 = threading.Thread(
+        target=lambda: box.update(rx=receiver.receive(ymodem=not xmodem, timeout=8.0))
+    )
     t2.start()
     t1.start()
-    t1.join(timeout=6)
-    t2.join(timeout=6)
-    rx = result_box.get("rx")
-    tx = result_box.get("tx")
+    t1.join(timeout=10)
+    t2.join(timeout=10)
+    tx, rx = box.get("tx"), box.get("rx")
     assert tx and tx.ok, tx
     assert rx and rx.ok, rx
-    assert rx.filename == "app.bin"
-    assert rx.data.startswith(b"hello-firmware")
-    assert len(rx.data) >= len(payload)
+    if xmodem:
+        assert rx.data.rstrip(b"\x1a") == payload
+    else:
+        assert rx.filename == "app.bin"
+        assert rx.data == payload
+    return tx, rx
+
+
+def test_ymodem_receiver_strips_padding_1k():
+    payload = bytes(range(256)) * 5 + b"tail"
+    _run_pair(payload, one_k=True)
+
+
+def test_ymodem_checksum_mode_follows_receiver():
+    payload = b"checksum-mode" * 20
+    _run_pair(payload, one_k=False, mode=MODE_CHECKSUM)
+
+
+def test_xmodem_checksum_handshake():
+    _run_pair(b"legacy-boot" * 30, one_k=False, mode=MODE_CHECKSUM, xmodem=True)
+
+
+def test_receiver_acks_duplicate_without_appending():
+    sent: list[bytes] = []
+    pkt0 = make_packet(0, ymodem_header_block("a.bin", 3))
+    pkt1 = make_packet(1, b"abc")
+    inbox = bytearray(pkt0 + pkt1 + pkt1 + bytes([EOT]) + make_packet(0, b"\x00" * PKT_128))
+
+    def read(timeout: float) -> bytes:
+        if not inbox:
+            return b""
+        out = bytes(inbox[:64])
+        del inbox[:64]
+        return out
+
+    rx = YmodemReceiver(write=sent.append, read=read, packet_timeout=0.5)
+    result = rx.receive(ymodem=True, timeout=3.0)
+    assert result.ok, result.message
+    assert result.data == b"abc"
+
+
+def _feed(inbox: bytearray):
+    def read(timeout: float) -> bytes:
+        if not inbox:
+            return b""
+        out = bytes(inbox[:64])
+        del inbox[:64]
+        return out
+
+    return read
+
+
+def test_empty_file_has_no_padding():
+    _run_pair(b"", one_k=False)
+
+
+def test_header_size_with_mtime_and_mode():
+    name, size = parse_ymodem_header(b"fw.bin\x00" + b"300 14727044460 100644 0\x00")
+    assert (name, size) == ("fw.bin", 300)
+
+
+def test_checksum_header_requests_first_block_with_nak():
+    sent: list[bytes] = []
+    pkt0 = make_packet(0, ymodem_header_block("a.bin", 3), mode=MODE_CHECKSUM)
+    pkt1 = make_packet(1, b"abc", mode=MODE_CHECKSUM)
+    tail = bytes([EOT]) + make_packet(0, b"\x00" * PKT_128, mode=MODE_CHECKSUM)
+    inbox = bytearray(pkt0 + pkt1 + tail)
+    rx = YmodemReceiver(write=sent.append, read=_feed(inbox), packet_timeout=0.5,
+                        mode=MODE_CHECKSUM)
+    result = rx.receive(ymodem=True, timeout=3.0)
+    assert result.ok and result.data == b"abc"
+    # NAK to start, ACK the header, then NAK (not 'C') for the first data block.
+    assert b"".join(sent)[:3] == bytes([NAK, ACK, NAK])
+
+
+def test_retransmitted_header_is_acked():
+    sent: list[bytes] = []
+    pkt0 = make_packet(0, ymodem_header_block("a.bin", 3))
+    pkt1 = make_packet(1, b"abc")
+    inbox = bytearray(pkt0 + pkt0 + pkt1 + bytes([EOT]) + make_packet(0, b"\x00" * PKT_128))
+    rx = YmodemReceiver(write=sent.append, read=_feed(inbox), packet_timeout=0.5)
+    result = rx.receive(ymodem=True, timeout=3.0)
+    assert result.ok, result.message
+    assert result.data == b"abc"

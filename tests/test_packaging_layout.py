@@ -73,3 +73,14 @@ def test_packaging_installs_project_dependencies():
     assert '.[packaging]' in windows
     assert 'collect_submodules("can")' in spec
     assert 'collect_submodules("lupa")' in spec
+
+
+def test_pyproject_version_matches_app_version():
+    import re
+    from pathlib import Path
+
+    from etools import __version__
+
+    text = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    match = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
+    assert match and match.group(1) == __version__

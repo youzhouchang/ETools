@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -29,6 +29,7 @@ from etools.ui.widgets.send_edit import SendEdit
 from etools.ui.widgets.traffic_view import ENCODINGS, TrafficView
 
 # 0 = TCP Client, 1 = TCP Server, 2 = UDP
+_PROTO_KEYS = ("net.proto.client", "net.proto.server", "net.proto.udp")
 _PROTO_CLIENT = 0
 _PROTO_SERVER = 1
 _PROTO_UDP = 2
@@ -72,7 +73,7 @@ class EthernetPage(LinkToolPage):
         self.ctx_conn = self.ctx_group(tr("net.title"))
 
         self.proto = QComboBox()
-        self.proto.addItems(["TCP Client", "TCP Server", "UDP"])
+        self.proto.addItems([tr(k) for k in _PROTO_KEYS])
         self.proto.setFixedHeight(28)
         self.lbl_proto = self.form_row(tr("net.proto"), self.proto)
 
@@ -91,6 +92,7 @@ class EthernetPage(LinkToolPage):
         self.peer_combo.setFixedHeight(28)
         self.peer_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.lbl_peer = self.form_row(tr("net.peer"), self.peer_combo)
+        self.expand_field(self.peer_combo)
 
         self.conn_btn = QPushButton()
         self.conn_btn.setObjectName("accent")
@@ -103,10 +105,10 @@ class EthernetPage(LinkToolPage):
         self.traffic = TrafficView()
         self.view = self.traffic.view
         sess_lay.addWidget(self.traffic, 1)
+        from etools.ui.widgets.section_tabs import SectionTabs
         from etools.ui.widgets.studio_plot import StudioPlotPanel
 
         self.studio = StudioPlotPanel()
-        sess_lay.addWidget(self.studio)
 
         send_row = QHBoxLayout()
         send_row.setSpacing(8)
@@ -114,13 +116,11 @@ class EthernetPage(LinkToolPage):
         self.mode_combo.addItem(tr("net.mode.ascii"), "ascii")
         self.mode_combo.addItem(tr("net.mode.hex"), "hex")
         self.mode_combo.setFixedHeight(28)
-        self.mode_combo.setFixedWidth(88)
         self.lbl_mode = QLabel(tr("serial.send_mode"))
         self.rx_mode = QComboBox()
         self.rx_mode.addItem(tr("net.mode.ascii"), "ascii")
         self.rx_mode.addItem(tr("net.mode.hex"), "hex")
         self.rx_mode.setFixedHeight(28)
-        self.rx_mode.setFixedWidth(88)
         self.lbl_rx_mode = QLabel(tr("serial.receive_mode"))
         self.ending = QComboBox()
         self.ending.addItem(tr("serial.ending.crlf"), "crlf")
@@ -128,13 +128,11 @@ class EthernetPage(LinkToolPage):
         self.ending.addItem(tr("serial.ending.cr"), "cr")
         self.ending.addItem(tr("serial.ending.none"), "none")
         self.ending.setFixedHeight(28)
-        self.ending.setFixedWidth(88)
         self.lbl_ending = QLabel(tr("net.ending"))
         self.encoding = QComboBox()
         for value, label in ENCODINGS:
             self.encoding.addItem(label, value)
         self.encoding.setFixedHeight(28)
-        self.encoding.setFixedWidth(88)
         self.lbl_encoding = QLabel(tr("mon.encoding"))
         self.send_edit = SendEdit()
         self.send_edit.setPlaceholderText(tr("net.send_ph"))
@@ -144,17 +142,13 @@ class EthernetPage(LinkToolPage):
         self.history_btn = QPushButton(tr("serial.history"))
         self.history_btn.setObjectName("ghost")
         self.history_btn.setFixedHeight(28)
+        self.history_btn.setFixedWidth(80)
         for field in (self.mode_combo, self.ending, self.rx_mode, self.encoding):
-            field.setFixedWidth(120)
-            field.setFixedHeight(28)
+            self.align_combo(field)
         self.send_btn.setFixedHeight(30)
         send_row.setSpacing(6)
-        send_row.addWidget(self.lbl_mode)
-        send_row.addWidget(self.mode_combo)
-        send_row.addWidget(self.lbl_ending)
-        send_row.addWidget(self.ending)
         send_row.addWidget(self.send_edit, 1)
-        send_row.addWidget(self.send_btn)
+        send_row.addWidget(self.send_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.send_more_toggle = QCheckBox(tr("serial.send_options"))
         self.send_more_toggle.setChecked(False)
@@ -164,6 +158,10 @@ class EthernetPage(LinkToolPage):
         more_row = QHBoxLayout(self.send_more)
         more_row.setContentsMargins(0, 0, 0, 0)
         more_row.setSpacing(8)
+        more_row.addWidget(self.lbl_mode)
+        more_row.addWidget(self.mode_combo)
+        more_row.addWidget(self.lbl_ending)
+        more_row.addWidget(self.ending)
         more_row.addWidget(self.lbl_rx_mode)
         more_row.addWidget(self.rx_mode)
         more_row.addWidget(self.lbl_encoding)
@@ -171,14 +169,9 @@ class EthernetPage(LinkToolPage):
         more_row.addWidget(self.history_btn)
         more_row.addStretch(1)
 
-        self.preset_toggle = QCheckBox(tr("serial.presets"))
-        self.preset_toggle.setToolTip(tr("serial.presets_toggle_tip"))
-        self.preset_toggle.setChecked(False)
         self.preset_content = QWidget()
-        self.preset_content.setVisible(False)
-        self.preset_toggle.toggled.connect(self.preset_content.setVisible)
         preset_lay = QVBoxLayout(self.preset_content)
-        preset_lay.setContentsMargins(18, 4, 0, 0)
+        preset_lay.setContentsMargins(0, 4, 0, 0)
         preset_lay.setSpacing(4)
         self._preset_edits: list[QLineEdit] = []
         self._preset_btns: list[QPushButton] = []
@@ -200,11 +193,15 @@ class EthernetPage(LinkToolPage):
             self._preset_btns.append(btn)
             btn.clicked.connect(lambda _c=False, idx=i: self._on_preset_send(idx))
             edit.editingFinished.connect(self.persist_prefs)
+        self.section_tabs = SectionTabs()
+        self.section_tabs.add_page(tr("serial.plot"), self.studio, tr("serial.plot_tip"))
+        self.section_tabs.add_page(
+            tr("serial.presets"), self.preset_content, tr("serial.presets_toggle_tip")
+        )
+        sess_lay.addWidget(self.section_tabs)
         sess_lay.addLayout(send_row)
         sess_lay.addWidget(self.send_more_toggle)
         sess_lay.addWidget(self.send_more)
-        sess_lay.addWidget(self.preset_toggle)
-        sess_lay.addWidget(self.preset_content)
         self.install_send_preview(sess_lay)
 
         self.conn_btn.clicked.connect(self._on_toggle)
@@ -260,6 +257,8 @@ class EthernetPage(LinkToolPage):
     def retranslate(self) -> None:
         self.ctx_conn.setTitle(tr("net.title"))
         self.lbl_proto.setText(tr("net.proto"))
+        for index, key in enumerate(_PROTO_KEYS):
+            self.proto.setItemText(index, tr(key))
         mode = self.proto.currentIndex()
         self.lbl_host.setText(tr("net.host") if mode == _PROTO_SERVER else tr("net.remote_host"))
         self.lbl_port.setText(tr("net.port") if mode == _PROTO_SERVER else tr("net.remote_port"))
@@ -276,6 +275,8 @@ class EthernetPage(LinkToolPage):
         else:
             self.conn_btn.setText(tr("net.listen") if mode == _PROTO_SERVER else tr("net.connect"))
         self.sess_box.setTitle(tr("net.session"))
+        self.section_tabs.set_title(0, tr("serial.plot"), tr("serial.plot_tip"))
+        self.section_tabs.set_title(1, tr("serial.presets"), tr("serial.presets_toggle_tip"))
         self.traffic.retranslate()
         self.studio.retranslate()
         self.traffic.set_placeholder(tr("net.placeholder"))
@@ -374,6 +375,32 @@ class EthernetPage(LinkToolPage):
             return False
         self.traffic.append_tx(data)
         return True
+
+    def _reveal_plot(self) -> None:
+        """Open the plot the first time a script draws. Later frames stay put."""
+        tabs = getattr(self, "section_tabs", None)
+        if tabs is not None and tabs._buttons and tabs._buttons[0].isChecked():
+            return
+        if tabs is not None:
+            tabs.show_page(0)
+        parent = self.parent()
+        while parent is not None:
+            show = getattr(parent, "set_current_tool", None)
+            if callable(show):
+                show(self.tool_id)
+                break
+            parent = parent.parent()
+
+    def lua_plot(self, kind: str, payload) -> int:
+        if not hasattr(self, "studio"):
+            return 0
+        self._reveal_plot()
+        frames = self.studio.accept_script(kind, payload)
+        if frames:
+            from etools.core.frame_hub import frame_hub
+
+            frame_hub.publish_frames("ethernet", frames)
+        return len(frames)
 
     def lua_take_rx(self, max_bytes: int = 4096) -> bytes:
         buf = getattr(self, "_lua_rx", None)
@@ -494,58 +521,54 @@ class EthernetPage(LinkToolPage):
             self.port.setFocus()
             self.traffic.append_status(tr("connection.bad_port"))
             return
-        try:
-            if mode == _PROTO_CLIENT:
-                opened = tr("net.opened", host=host, port=port)
-                self._connect_cancel = threading.Event()
-                self.conn_btn.setText(tr("connection.cancel"))
-                self.proto.setEnabled(False)
-                self.host.setEnabled(False)
-                self.port.setEnabled(False)
+        link = self._link
+        if mode == _PROTO_CLIENT:
+            opened = tr("net.opened", host=host, port=port)
 
-                def work():
-                    self._link.connect_tcp_client(host, port)
+            def work():
+                link.connect_tcp_client(host, port)
 
-                def done(_result=None):
-                    if self._connect_cancel.is_set():
-                        self._link.close()
-                        self._connect_finished()
-                        return
-                    self._opened = True
-                    self._peer_connected = True
-                    self._set_send_enabled(True)
-                    self._connect_finished()
-                    self.traffic.append_status(opened)
-                    self.persist_prefs()
+        elif mode == _PROTO_SERVER:
+            opened = tr("net.listening", host=host, port=port)
 
-                def fail(message):
-                    self._connect_finished()
-                    self.traffic.append_status(tr("net.err", err=message))
+            def work():
+                link.listen_tcp_server(host, port)
 
-                self._runner.start(work, done, fail)
+        else:
+            try:
+                local_port = int(self.local_port.text().strip() or "0") or port
+            except ValueError:
+                self.traffic.append_status(tr("net.err", err="bad local port"))
                 return
-            elif mode == _PROTO_SERVER:
-                self._link.listen_tcp_server(host, port)
-                opened = tr("net.listening", host=host, port=port)
-            else:
-                try:
-                    local_port = int(self.local_port.text().strip() or "0") or port
-                except ValueError:
-                    self.traffic.append_status(tr("net.err", err="bad local port"))
-                    return
-                self._link.open_udp(host, port, local_port=local_port)
-                opened = tr("net.opened", host=f"{host}:{port}", port=local_port)
-        except Exception as exc:  # noqa: BLE001
-            self.traffic.append_status(tr("net.err", err=str(exc)))
-            return
-        self._opened = True
-        self._peer_connected = mode != _PROTO_SERVER
-        self._set_send_enabled(self._peer_connected)
-        self.conn_btn.setText(tr("net.disconnect"))
-        self._repaint_btn()
-        self._refresh_peers()
-        self.traffic.append_status(opened)
-        self.persist_prefs()
+            opened = tr("net.opened", host=f"{host}:{port}", port=local_port)
+
+            def work():
+                link.open_udp(host, port, local_port=local_port)
+
+        self._connect_cancel = threading.Event()
+        self.conn_btn.setText(tr("connection.cancel"))
+        self.proto.setEnabled(False)
+        self.host.setEnabled(False)
+        self.port.setEnabled(False)
+
+        def done(_result=None):
+            if self._connect_cancel.is_set():
+                self._link.close()
+                self._connect_finished()
+                return
+            self._opened = True
+            self._peer_connected = mode != _PROTO_SERVER
+            self._set_send_enabled(self._peer_connected)
+            self._connect_finished()
+            self._refresh_peers()
+            self.traffic.append_status(opened)
+            self.persist_prefs()
+
+        def fail(message):
+            self._connect_finished()
+            self.traffic.append_status(tr("net.err", err=message))
+
+        self._runner.start(work, done, fail)
 
     def _connect_finished(self) -> None:
         self.conn_btn.setEnabled(True)
@@ -678,9 +701,12 @@ class EthernetPage(LinkToolPage):
             frames = self.studio.feed(data)
             from etools.core.frame_hub import frame_hub
 
-            frame_hub.set_mode("ethernet", self.studio.parse_mode_name())
-            frame_hub.set_names("ethernet", self.studio.names.text())
-            frame_hub.set_hex_template("ethernet", self.studio.hex_template_text())
+            frame_hub.configure(
+                "ethernet",
+                self.studio.parse_mode_name(),
+                self.studio.names.text(),
+                self.studio.hex_template_text(),
+            )
             if frames:
                 frame_hub.publish_frames("ethernet", frames)
 
@@ -731,6 +757,5 @@ class EthernetPage(LinkToolPage):
         self.persist_prefs()
         self._connect_cancel.set()
         self._runner.shutdown()
-        self.traffic.stop_replay()
-        self.traffic._close_auto_log()
+        self.traffic.shutdown()
         self._link.close()

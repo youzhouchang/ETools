@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from etools.core.elf import ElfImage, ElfVariable, load_elf
+from etools.core.probe_io import PROBE_LOCK
 from etools.core.spectrum import real_magnitude_spectrum
 from etools.core.trace_stream import (
     TYPE_FLOAT32,
@@ -32,12 +33,15 @@ from etools.core.trace_stream import (
     TYPE_UNSIGNED,
     TraceFrameParser,
 )
+from etools.i18n import tr
 from etools.logger import get_logger
 
 log = get_logger("ui.variable_monitor")
-MAX_HISTORY = 900
+MAX_HISTORY = 24000
 MAX_VARIABLES = 5000
-PAINT_INTERVAL_MS = 33
+# Paint at display rate. Samples keep arriving between frames; update() is not
+# called once per sample.
+PAINT_INTERVAL_MS = 16
 VIEW_MODES = ("time", "freq", "bar")
 
 
@@ -85,7 +89,7 @@ class _Sampler(QObject):
         self.stop()
         target = getattr(session, "target", None) if session is not None else None
         if target is None or not variables:
-            self.status.emit("目标未连接或没有选中的变量")
+            self.status.emit(tr("vmon.no_target"))
             return False
         self._stop.clear()
         self._thread = threading.Thread(
@@ -94,13 +98,12 @@ class _Sampler(QObject):
                 target,
                 list(variables),
                 max(20, int(interval_ms)) / 1000.0,
-                getattr(session, "_etools_io_lock", None),
             ),
             name="VariableSampler",
             daemon=True,
         )
         self._thread.start()
-        self.status.emit("采样中")
+        self.status.emit(tr("vmon.sampling"))
         return True
 
     def stop(self) -> None:
@@ -115,7 +118,6 @@ class _Sampler(QObject):
         target: Any,
         variables: list[ElfVariable],
         interval: float,
-        io_lock: Any = None,
     ) -> None:
         try:
             while not self._stop.is_set():
@@ -131,13 +133,8 @@ class _Sampler(QObject):
                         # Sampling is for scalar values; cap reads so a large
                         # linker object cannot stall the probe for one tick.
                         read_size = min(max(1, int(variable.size)), 8)
-                        if io_lock is None:
+                        with PROBE_LOCK:
                             raw = bytes(target.read_memory_block8(variable.address, read_size))
-                        else:
-                            with io_lock:
-                                raw = bytes(
-                                    target.read_memory_block8(variable.address, read_size)
-                                )
                         sample[_variable_key(variable)] = (_decode_value(raw, variable), raw)
                     except Exception as exc:
                         sample[_variable_key(variable)] = (None, None)
@@ -146,7 +143,7 @@ class _Sampler(QObject):
                     self.sample_ready.emit(sample)
                 self._stop.wait(max(0.001, interval - (time.monotonic() - started)))
         finally:
-            self.status.emit("已停止")
+            self.status.emit(tr("vmon.stopped"))
 
 
 def _variable_key(variable: ElfVariable) -> str:
@@ -158,13 +155,13 @@ class _Waveform(QWidget):
         self,
         parent: QWidget | None = None,
         *,
-        title: str = "波形监视",
-        empty: str = "选择变量并开始采样",
+        title: str | None = None,
+        empty: str | None = None,
         min_height: int = 240,
     ) -> None:
         super().__init__(parent)
-        self._title = title
-        self._empty = empty
+        self._title = title if title is not None else tr("vmon.wave_title")
+        self._empty = empty if empty is not None else tr("vmon.wave_empty")
         self._view_mode = "time"
         self._series: dict[str, deque[float]] = {}
         self._dirty = False
@@ -192,8 +189,20 @@ class _Waveform(QWidget):
         self._dirty = True
         self.update()
 
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if not self._paint_timer.isActive():
+            self._paint_timer.start()
+        if self._dirty:
+            self._dirty = False
+            self.update()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        self._paint_timer.stop()
+        super().hideEvent(event)
+
     def push_batch(self, values: dict[str, Any]) -> None:
-        """Append one sampler tick and coalesce repaints to ~30 FPS."""
+        """Append one sampler tick. Repaint waits for the display-rate timer."""
         changed = False
         for key, value in values.items():
             if not isinstance(value, (int, float)):
@@ -239,14 +248,12 @@ class _Waveform(QWidget):
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(text)
         painter.drawText(canvas.left() + 14, canvas.top() + 22, self._title)
-        mode_label = {"time": "时域", "freq": "频域", "bar": "柱状"}.get(
-            self._view_mode, "时域"
-        )
+        mode_label = tr(f"serial.plot_view.{self._view_mode}")
         painter.setPen(dim)
         painter.drawText(
             canvas.left() + 92,
             canvas.top() + 22,
-            f"{len(self._series)} 路 · {mode_label}",
+            tr("vmon.series", n=len(self._series), mode=mode_label),
         )
         if not self._series:
             painter.setPen(dim)
@@ -279,34 +286,41 @@ class _Waveform(QWidget):
         max_points = max(80, int(plot.width() * 1.5))
         for index, (key, values) in enumerate(self._series.items()):
             samples = list(values)
-            if len(samples) < 2:
+            if not samples:
                 continue
             lo, hi = min(samples), max(samples)
             if hi == lo:
                 hi = lo + 1.0
             color = colors[index % len(colors)]
-            envelope = self._envelope(samples, max_points)
-            points = [
-                QPointF(
-                    plot.left() + i * plot.width() / max(1, len(samples) - 1),
-                    plot.bottom() - (value - lo) / (hi - lo) * plot.height(),
+            if len(samples) == 1:
+                last = QPointF(
+                    plot.left() + plot.width() / 2,
+                    plot.bottom() - (samples[0] - lo) / (hi - lo) * plot.height(),
                 )
-                for i, value in envelope
-            ]
-            line = QPainterPath(points[0])
-            for point in points[1:]:
-                line.lineTo(point)
-            fill = QPainterPath(line)
-            fill.lineTo(points[-1].x(), plot.bottom())
-            fill.lineTo(points[0].x(), plot.bottom())
-            fill.closeSubpath()
-            fill_color = QColor(color)
-            fill_color.setAlpha(28)
-            painter.fillPath(fill, fill_color)
-            painter.setPen(QPen(color, 1.7))
-            painter.drawPath(line)
-            last = points[-1]
+            else:
+                envelope = self._envelope(samples, max_points)
+                points = [
+                    QPointF(
+                        plot.left() + i * plot.width() / max(1, len(samples) - 1),
+                        plot.bottom() - (value - lo) / (hi - lo) * plot.height(),
+                    )
+                    for i, value in envelope
+                ]
+                line = QPainterPath(points[0])
+                for point in points[1:]:
+                    line.lineTo(point)
+                fill = QPainterPath(line)
+                fill.lineTo(points[-1].x(), plot.bottom())
+                fill.lineTo(points[0].x(), plot.bottom())
+                fill.closeSubpath()
+                fill_color = QColor(color)
+                fill_color.setAlpha(28)
+                painter.fillPath(fill, fill_color)
+                painter.setPen(QPen(color, 1.7))
+                painter.drawPath(line)
+                last = points[-1]
             painter.setBrush(color)
+            painter.setPen(QPen(color, 1.7))
             painter.drawEllipse(last, 3.2, 3.2)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(color)
@@ -423,22 +437,22 @@ class VariableMonitorPanel(QWidget):
         root.setSpacing(6)
         bar = QHBoxLayout()
         self.path_edit = QLineEdit()
-        self.path_edit.setPlaceholderText("选择 ELF / AXF / ALF 文件以加载调试符号")
-        self.open_btn = QPushButton("打开 ELF/ALF")
+        self.path_edit.setPlaceholderText(tr("vmon.path_ph"))
+        self.open_btn = QPushButton(tr("vmon.open"))
         self.open_btn.setObjectName("ghost")
         bar.addWidget(QLabel("ELF"))
         bar.addWidget(self.path_edit, 1)
         bar.addWidget(self.open_btn)
         self.filter_edit = QLineEdit()
-        self.filter_edit.setPlaceholderText("筛选变量名…")
+        self.filter_edit.setPlaceholderText(tr("vmon.filter_ph"))
         bar.addWidget(self.filter_edit)
         root.addLayout(bar)
 
-        self.status_label = QLabel("未加载 ELF")
+        self.status_label = QLabel(tr("vmon.no_elf"))
         self.status_label.setObjectName("hint")
         root.addWidget(self.status_label)
         self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["监控", "变量", "地址", "类型", "当前值"])
+        self._set_headers()
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
@@ -451,20 +465,21 @@ class VariableMonitorPanel(QWidget):
 
         controls = QHBoxLayout()
         self.mode_combo = QComboBox()
-        self.mode_combo.addItem("SWD 轮询", "swd")
-        self.mode_combo.addItem("RTT 数据流", "rtt")
-        self.mode_combo.addItem("SWO 数据流", "swo")
+        for mode in ("swd", "rtt", "swo"):
+            self.mode_combo.addItem(tr(f"vmon.mode.{mode}"), mode)
         self.interval_spin = QSpinBox()
         self.interval_spin.setRange(20, 5000)
         self.interval_spin.setValue(100)
         self.interval_spin.setSuffix(" ms")
-        self.start_btn = QPushButton("开始采样")
+        self.start_btn = QPushButton(tr("vmon.start"))
         self.start_btn.setObjectName("accent")
-        self.clear_btn = QPushButton("清除波形")
+        self.clear_btn = QPushButton(tr("vmon.clear"))
         self.clear_btn.setObjectName("ghost")
-        controls.addWidget(QLabel("模式"))
+        self.mode_label = QLabel(tr("vmon.mode"))
+        self.interval_label = QLabel(tr("vmon.interval"))
+        controls.addWidget(self.mode_label)
         controls.addWidget(self.mode_combo)
-        controls.addWidget(QLabel("间隔"))
+        controls.addWidget(self.interval_label)
         controls.addWidget(self.interval_spin)
         controls.addWidget(self.start_btn)
         controls.addWidget(self.clear_btn)
@@ -534,7 +549,7 @@ class VariableMonitorPanel(QWidget):
             self._variable_lookup.clear()
             self._variables_by_address.clear()
             self.table.setRowCount(0)
-            self.status_label.setText(f"ELF 加载失败：{exc}")
+            self.status_label.setText(tr("vmon.load_fail", err=exc))
             log.exception("ELF load failed")
             return False
         self._image = image
@@ -543,16 +558,16 @@ class VariableMonitorPanel(QWidget):
         self._variable_lookup = {_variable_key(variable): variable for variable in self._variables}
         self._variables_by_address = {variable.address: variable for variable in self._variables}
         self._populate_table()
-        dwarf = "DWARF" if image.has_dwarf else "仅符号表"
+        dwarf = "DWARF" if image.has_dwarf else tr("vmon.symtab_only")
         self.status_label.setText(
-            f"已加载 {image.path.name} · {len(image.variables)} 个变量 · {dwarf}"
+            tr("vmon.loaded", name=image.path.name, n=len(image.variables), info=dwarf)
         )
         self.start_btn.setEnabled(bool(self._variables) and self._session_getter() is not None)
         return True
 
     def _choose_elf(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "打开 ELF/ALF", "", "ELF (*.elf *.axf *.alf);;All files (*)"
+            self, tr("vmon.open"), "", "ELF (*.elf *.axf *.alf);;All files (*)"
         )
         if path:
             self.load_path(path)
@@ -603,34 +618,34 @@ class VariableMonitorPanel(QWidget):
             return
         selected = self._selected()
         if not selected:
-            self.status_label.setText("请先勾选要监控的变量")
+            self.status_label.setText(tr("vmon.pick_first"))
             return
         mode = str(self.mode_combo.currentData() or "swd")
         if mode == "swd":
             session = self._session_getter() if callable(self._session_getter) else None
             if self._sampler.start(session, selected, self.interval_spin.value()):
-                self.start_btn.setText("停止采样")
+                self.start_btn.setText(tr("vmon.stop_sampling"))
             return
         self._stream_active = True
         self._stream_variables = {_variable_key(variable) for variable in selected}
         self._trace_parsers.clear()
-        self.start_btn.setText("停止数据流")
-        self.status_label.setText("等待 RTT/SWO 数据帧…")
+        self.start_btn.setText(tr("vmon.stop_stream"))
+        self.status_label.setText(tr("vmon.waiting_stream"))
 
     def _mode_changed(self) -> None:
         if self._sampler.running or self._stream_active:
             self._stop_monitoring()
         if self.mode_combo.currentData() != "swd":
-            self.status_label.setText("已切换为数据流模式，请先启动对应 RTT/SWO 读取器")
+            self.status_label.setText(tr("vmon.mode_stream"))
         else:
-            self.status_label.setText("已切换为 SWD 轮询模式")
+            self.status_label.setText(tr("vmon.mode_swd"))
 
     def _stop_monitoring(self) -> None:
         self._sampler.stop()
         self._stream_active = False
         self._stream_variables.clear()
         self._trace_parsers.clear()
-        self.start_btn.setText("开始采样")
+        self.start_btn.setText(tr("vmon.start"))
 
     def _on_sample(self, sample: dict[str, tuple[Any, bytes | None]]) -> None:
         wave_values: dict[str, Any] = {}
@@ -656,12 +671,32 @@ class VariableMonitorPanel(QWidget):
                 self.table.item(row, 4).setText("—")
 
     def retranslate(self) -> None:
-        # Labels are intentionally concise; the page is usable in both locales
-        # while the rest of the application is translated.
-        pass
+        self.path_edit.setPlaceholderText(tr("vmon.path_ph"))
+        self.open_btn.setText(tr("vmon.open"))
+        self.filter_edit.setPlaceholderText(tr("vmon.filter_ph"))
+        self.clear_btn.setText(tr("vmon.clear"))
+        self.mode_label.setText(tr("vmon.mode"))
+        self.interval_label.setText(tr("vmon.interval"))
+        for index in range(self.mode_combo.count()):
+            mode = self.mode_combo.itemData(index)
+            self.mode_combo.setItemText(index, tr(f"vmon.mode.{mode}"))
+        if self._sampler.running:
+            self.start_btn.setText(tr("vmon.stop_sampling"))
+        elif self._stream_active:
+            self.start_btn.setText(tr("vmon.stop_stream"))
+        else:
+            self.start_btn.setText(tr("vmon.start"))
+        self._set_headers()
+        self.waveform.set_caption(tr("vmon.wave_title"), tr("vmon.wave_empty"))
+
+    def _set_headers(self) -> None:
+        self.table.setHorizontalHeaderLabels(
+            [tr(f"vmon.col.{name}") for name in ("watch", "name", "addr", "type", "value")]
+        )
 
     def shutdown(self) -> None:
         self._sample_timer.stop()
+        self.waveform._paint_timer.stop()
         self._stop_monitoring()
 
 

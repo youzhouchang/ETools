@@ -27,6 +27,10 @@ datas = [
         "etools/ui/resources/icons",
     ),
 ]
+_guide = project_root / "docs" / "guide.md"
+if _guide.is_file():
+    datas.append((str(_guide), "docs"))
+
 # Pre-rendered PNG logo fallback (desktop/taskbar icon if SVG plugin fails)
 _png_icons = project_root / "docs" / "icons" / "png"
 if _png_icons.is_dir():
@@ -47,6 +51,18 @@ hiddenimports = [
     "PySide6.QtWidgets",
     "PySide6.QtUiTools",
     "PySide6.QtSvg",
+    # Dashboard's 3D attitude widget (etools/ui/widgets/attitude_view.py). Qt3D
+    # loads its aspect/render plugins dynamically, so a frozen build needs
+    # these listed explicitly; if a packaged build can't start Qt3D, the
+    # widget still falls back to a text-only readout.
+    "PySide6.QtOpenGL",
+    "PySide6.QtOpenGLWidgets",
+    "PySide6.Qt3DCore",
+    "PySide6.Qt3DRender",
+    "PySide6.Qt3DExtras",
+    "PySide6.Qt3DInput",
+    "PySide6.Qt3DLogic",
+    "PySide6.Qt3DAnimation",
     "pyocd",
     "hid",
     "elftools",

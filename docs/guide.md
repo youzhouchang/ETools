@@ -1,0 +1,174 @@
+# ETools 使用教程
+
+在应用里打开这份说明：**帮助 → 使用教程…**。也可以按 `Ctrl+K`，输入「使用教程」。
+
+地图和仪表盘直接使用解析后的数值。先在串口页或网络页连上设备，并在曲线区选好解析方式；再到地图或仪表盘里，把经纬度、曲线或姿态绑到字段名（或序号）上。MQTT 按下面的 Studio/JSON 发送。
+
+## 让软件读出数值
+
+串口页和网络页的曲线区有三种解析方式。选定之后，这一路收到的数据会变成一帧帧数字，地图和仪表盘都读取这些数字。
+
+绑定有两种填法。填字段名，例如 `temp`；或者填序号，`1` 表示这一帧里从左往右的第 1 个值。一条曲线填一个名字，多条曲线用英文逗号隔开，例如 `temp,hum`。
+
+### Studio / JSON
+
+设备发送下面任意一种即可，两种也可以接在同一段数据里。
+
+```text
+/*1.2,3.4,-5*/
+{"temp":25.5,"roll":1.0,"pitch":0,"yaw":90}
+```
+
+`/* */` 里用逗号分隔数字。曲线区的「字段名」按同样的顺序给这些数字起名：留空时依次是 `f1`、`f2`、`f3`；写成 `temp,hum` 时，上面第一帧就是 `temp`、`hum`、`f3`。
+
+JSON 写成一个对象，里面填写数字。键从左到右的书写顺序就是序号：`1` 对应 `temp`，想绑滚转角就填 `roll`。
+
+### key=value
+
+每行一帧，行末换行。等号和冒号都可以，同一行里用空格或逗号分开多项。
+
+```text
+roll=1.2 pitch=-0.4 yaw=90
+lat:31.23,lon:121.47
+```
+
+键名以字母或下划线开头。绑定填这些键名，或者填这一行从左往右的序号。
+
+### HEX 结构
+
+在曲线区选择「HEX 结构」。模板先写帧头字节，再写每个字段的类型和名字。类型后面的 `le` 表示小端，`be` 表示大端；省略时按大端读取。
+
+```text
+AA 55 u16be:v f32le:x
+```
+
+类型可以是 `u8` `i8` `u16` `i16` `u32` `i32` `f32` `f64`。
+
+波形刷新很快时，用这种定长格式发送。
+
+## 仪表盘怎么搭
+
+打开仪表盘，左侧是控件。按住色块拖到空白处松开，控件就放在那里；点一下色块，则追加到后面的空位。波形和三维姿态放上去后大约占半个面板宽，方便直接看图。
+
+- 拖标题栏：控件跟着指针移动，松开后贴到最近的空位
+- 拖右下角的手柄：边缘跟着指针放大或缩小，松开后贴齐网格
+- 在卡片上右键：删除这块控件
+- 点中一块后，在左侧修改绑定、标题、单位和范围，改完点应用
+
+指示灯在绑定值不为 0 时点亮，用来看开关量和状态位。
+
+数据源选「全部」，或者只看串口、网络、MQTT、Lua 脚本其中一路。
+
+布局保存在本机。换一台电脑时，用 **文件 → 项目配置** 导出 JSON，到新电脑再导入。
+
+## 三维姿态
+
+外形选固定翼、四旋翼、方块或地平仪。方块旁边的轴：红是朝前的 X，绿是朝右的 Y，蓝是朝下的 Z。
+
+姿态有两种填法：
+
+| 在「姿态」里选 | 绑定填 | 数值含义 |
+| --- | --- | --- |
+| 欧拉角 | `roll,pitch,yaw` | 单位是度 |
+| 四元数 | `qw,qx,qy,qz` | 四个分量 |
+
+坐标按飞行器习惯：X 朝前（机头），Y 朝右，Z 朝下。俯仰为正时机头抬起，滚转为正时右翼下沉。
+
+设备发欧拉角时可以这样：
+
+```text
+/*2.0,-5.0,90*/
+```
+
+字段名填 `roll,pitch,yaw`。字段名留空时，绑定改成 `1,2,3`。发四元数时，绑定填 `qw,qx,qy,qz`，四个数按这个顺序给出。
+
+## 地图怎么看轨迹
+
+纬度、经度默认绑定 `lat` 和 `lon`，也可以改成序号。设备发送 WGS84 十进制度，纬度写在 -90 到 90，经度写在 -180 到 180。
+
+```text
+{"lat":31.2304,"lon":121.4737}
+```
+
+底图在地图页切换：
+
+| 底图 | 怎么用 |
+| --- | --- |
+| 高德路网（打开地图时就是这个） | 设备仍发 WGS84。轨迹画在中国境内时，软件把它换到高德使用的 GCJ-02 上，和路网对齐 |
+| Esri 街道 | 与 WGS84 一致。放到很近时，画面沿用已有瓦片 |
+| OpenStreetMap | 与 WGS84 一致 |
+| 无 | 只画轨迹 |
+
+轨迹颜色在地图页里选，打开时是红色。
+
+## 串口、网络、MQTT
+
+1. 打开对应页面，连上串口、网络或 MQTT。
+2. 串口和网络：在曲线区选择 Studio/JSON、`key=value` 或 HEX 结构，并填好字段名或 HEX 模板。每一路单独设置。
+3. 可以先在发送区发一帧 `/*1,2,3*/`，确认地图或仪表盘出现数字。设备之后按同一种格式周期发送。
+4. MQTT 按 Studio/JSON 发送，内容用 `/* */` 或数字 JSON。
+5. 打开地图或仪表盘，绑定填字段名或序号，数据源选这一路或「全部」。
+
+## 用 Lua 二次处理仪表盘和地图的数据
+
+串口、网络、MQTT 解析出的每一帧都会交给脚本页。脚本可以读这些帧，算出新的量，再发回去给仪表盘和地图显示。脚本自己发出的帧来源是 `lua`，不会再回到 `frames.recv`，所以不会形成循环。
+
+| 接口 | 作用 |
+| --- | --- |
+| `etools.frames.recv(max, source)` | 取出排队的帧，每项是 `{source=, fields={...}, time=}` |
+| `etools.frames.wait(timeout_ms, source)` | 等一帧，超时返回 `nil` |
+| `etools.frames.latest(source)` | 每个字段的最新值 |
+| `etools.frames.publish(fields)` | 把结果发给仪表盘和地图，来源是 `lua` |
+| `etools.dash.widgets()` / `etools.dash.values()` | 控件列表 / 控件当前显示的值 |
+| `etools.dash.source(name)` | 切换仪表盘数据源：`any` `serial` `ethernet` `mqtt` `lua` |
+| `etools.dash.push(fields)` | 只推给仪表盘显示 |
+| `etools.dash.add{type=, title=, bind=, unit=, min=, max=}` / `etools.dash.remove(i)` | 增删控件 |
+| `etools.map.points(n)` / `etools.map.last()` | 轨迹点（WGS84） |
+| `etools.map.add(lat, lon)` / `etools.map.clear()` | 追加点 / 清空轨迹 |
+| `etools.map.source(name)` / `etools.map.bind(lat, lon)` | 数据源 / 经纬度字段 |
+
+下面的脚本把速度做 10 点滑动平均，并累计里程：
+
+```lua
+etools.dash.source('lua')
+etools.map.source('lua')
+local window, sum = {}, 0
+while not etools.app.stopped() do
+  local f = etools.frames.wait(500)
+  if f and f.fields.speed then
+    table.insert(window, f.fields.speed)
+    sum = sum + f.fields.speed
+    if #window > 10 then sum = sum - table.remove(window, 1) end
+    etools.frames.publish{speed_avg = sum / #window, lat = f.fields.lat, lon = f.fields.lon}
+  end
+end
+```
+
+仪表盘控件绑定 `speed_avg`，地图绑定 `lat` / `lon`。完整示例见脚本页的「9_仪表盘与地图二次处理」。
+
+## 烧录和变量监控
+
+烧录：打开烧录页，连接探针，选中目标，打开 ELF、HEX、BIN 或 SREC，再点烧录。设置里可以勾选「烧录后自动校验」和「启动时自动扫描探针」。
+
+变量监控用来看固件里的变量，和上面的绘图帧是两条路。目标从 RTT 上行或 SWO 发送下面这种小端帧，软件用 ELF 里的地址对应到变量名：
+
+```text
+4 bytes  magic = "EVM1"
+1 byte   version = 1
+1 byte   flags = 0
+2 bytes  payload_length
+重复记录：
+  4 bytes  变量链接地址
+  1 byte   类型（1 有符号，2 无符号，3 float32，4 float64）
+  1 byte   值的字节数
+  N bytes  小端数值
+```
+
+一帧里可以放多条记录。组帧示例写在 `docs/variable_trace_protocol.md`。
+
+## 常用入口
+
+- `Ctrl+K`：命令面板，可跳到某个工具或打开本教程
+- `F1`：快捷键表
+- **帮助 → 检查更新…**：查看 GitHub Releases
+- **文件 → 项目配置**：导出或导入工具设置

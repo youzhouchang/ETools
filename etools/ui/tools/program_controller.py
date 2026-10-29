@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QMessageBox
 from etools.core.models import ProbeInfo, ProgressInfo, ProgressStage, TargetInfo
 from etools.i18n import tr
 from etools.logger import get_logger
+from etools.ui.kit import toast
 
 log = get_logger("ui.program")
 
@@ -143,6 +144,12 @@ class ProgramController:
             QMessageBox.warning(self.host, title, text)
         else:
             QMessageBox.information(self.host, title, text)
+
+    def _hint(self, text: str) -> None:
+        """Log and show a routine result without a dialog."""
+        self._log(text)
+        self._show_progress(100, text)
+        toast(text)
 
     def _firmware_to_program(self, fallback: str = "") -> str:
         """Program the firmware tab on screen, otherwise the path field."""
@@ -346,8 +353,7 @@ class ProgramController:
             a, data = result
             self.host.hex_preview.load_bytes(a, data, source=None)
             done = tr("op.read_ok_text", size=f"{len(data):,}")
-            self._show_progress(100, done)
-            self._notify(tr("op.read_ok"), done)
+            self._hint(done)
 
         def on_err(msg: str) -> None:
             self._log(msg, True)
@@ -466,7 +472,7 @@ class ProgramController:
             self._log(result.message, not result.ok)
             self._hide_progress()
             if result.ok:
-                self._notify(tr("op.read_ok"), tr("op.read_saved", path=out_path))
+                self._notify(tr("op.save_ok"), tr("op.read_saved", path=out_path))
             else:
                 self._notify(tr("op.read_fail"), result.message or tr("op.read_fail"), error=True)
 
@@ -489,11 +495,11 @@ class ProgramController:
 
         def on_ok(result) -> None:
             self._set_busy(False)
-            self._log(result.message, not result.ok)
-            self._hide_progress()
             if result.ok:
-                self._notify(tr("op.verify_ok"), tr("op.verify_ok_text", name=name))
+                self._hint(result.message or tr("op.verify_ok_text", name=name))
             else:
+                self._log(result.message, True)
+                self._hide_progress()
                 self._notify(
                     tr("op.verify_fail"),
                     result.message or tr("op.verify_fail"),
@@ -533,11 +539,11 @@ class ProgramController:
 
         def on_ok(result) -> None:
             self._set_busy(False)
-            self._log(result.message, not result.ok)
-            self._hide_progress()
             if result.ok:
-                self._notify(tr("op.fill_ok"), result.message or tr("op.fill_ok"))
+                self._hint(result.message or tr("op.fill_ok"))
             else:
+                self._log(result.message, True)
+                self._hide_progress()
                 self._notify(tr("op.fill_fail"), result.message or tr("op.fill_fail"), error=True)
 
         def on_err(msg: str) -> None:

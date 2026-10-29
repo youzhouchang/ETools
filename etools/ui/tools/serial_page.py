@@ -2,22 +2,17 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from collections.abc import Callable
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
-    QPlainTextEdit,
-    QProgressBar,
     QPushButton,
     QSizePolicy,
-    QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -31,13 +26,16 @@ from etools.core.serial_link import (
     SerialLink,
     list_serial_ports,
 )
-from etools.core.trigger_reply import MAX_RULES, TriggerEngine
+from etools.core.trigger_reply import TriggerEngine
 from etools.i18n import tr
+from etools.ui.runtime import OpRunner
 from etools.ui.shell import ToolActionSpec
 from etools.ui.tool_prefs import load_tool_prefs, save_tool_prefs
 from etools.ui.tools.base import LinkToolPage
+from etools.ui.tools.serial_quicksend import SerialQuickSendMixin
+from etools.ui.tools.serial_transfer import SerialTransferMixin
+from etools.ui.tools.serial_worktabs import SerialWorkTabsMixin
 from etools.ui.widgets.send_edit import SendEdit
-from etools.ui.widgets.terminal_view import TerminalView
 from etools.ui.widgets.traffic_view import ENCODINGS, TrafficView, decode_payload, parse_hex_input
 
 _BAUDS = [
@@ -62,7 +60,6 @@ _BAUDS = [
 _CUSTOM_BAUD_MAX = 8
 
 _HISTORY_MAX = 30
-_PRESET_COUNT = 8
 
 
 class _RxRelay(QObject):
@@ -80,12 +77,20 @@ class _PortCombo(QComboBox):
         super().showPopup()
 
 
-class SerialPage(LinkToolPage):
+class SerialPage(
+    SerialTransferMixin,
+    SerialQuickSendMixin,
+    SerialWorkTabsMixin,
+    LinkToolPage,
+):
     tool_id = "serial"
     tool_title_key = "tool.serial"
 
     def _build(self) -> None:
         self._link = SerialLink()
+        self._open_runner = OpRunner(self)
+        self._scan_runner = OpRunner(self)
+        self._scan_pending = False
         self._relay = _RxRelay(self)
         self._relay.received.connect(self._on_rx)
         self._relay.failed.connect(self._on_link_error)
@@ -117,6 +122,8 @@ class SerialPage(LinkToolPage):
         self.port_combo.setFixedHeight(28)
         self.port_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.lbl_port = self.form_row(tr("serial.port"), self.port_combo)
+        # Port names are filled later and are often long.
+        self.expand_field(self.port_combo)
 
         self.baud = QComboBox()
         self.baud.setEditable(True)
@@ -194,13 +201,11 @@ class SerialPage(LinkToolPage):
         self.mode_combo.addItem(tr("serial.mode.ascii"), "ascii")
         self.mode_combo.addItem(tr("serial.mode.hex"), "hex")
         self.mode_combo.setFixedHeight(28)
-        self.mode_combo.setFixedWidth(88)
         self.lbl_mode = QLabel(tr("serial.send_mode"))
         self.rx_mode = QComboBox()
         self.rx_mode.addItem(tr("serial.mode.ascii"), "ascii")
         self.rx_mode.addItem(tr("serial.mode.hex"), "hex")
         self.rx_mode.setFixedHeight(28)
-        self.rx_mode.setFixedWidth(88)
         self.lbl_rx_mode = QLabel(tr("serial.receive_mode"))
         self.ending = QComboBox()
         self.ending.addItem(tr("serial.ending.crlf"), "crlf")
@@ -208,13 +213,11 @@ class SerialPage(LinkToolPage):
         self.ending.addItem(tr("serial.ending.cr"), "cr")
         self.ending.addItem(tr("serial.ending.none"), "none")
         self.ending.setFixedHeight(28)
-        self.ending.setFixedWidth(88)
         self.lbl_ending = QLabel(tr("serial.ending"))
         self.checksum = QComboBox()
         for algo in ALGORITHMS:
             self.checksum.addItem(tr(f"serial.checksum.{algo}"), algo)
         self.checksum.setFixedHeight(28)
-        self.checksum.setFixedWidth(130)
         self.lbl_checksum = QLabel(tr("serial.checksum"))
         self.checksum_preview = QLabel("")
         self.checksum_preview.setObjectName("mutedLabel")
@@ -223,46 +226,8 @@ class SerialPage(LinkToolPage):
         self.history_btn = QPushButton(tr("serial.history"))
         self.history_btn.setObjectName("ghost")
         self.history_btn.setFixedHeight(28)
-        self.history_btn.setMinimumWidth(64)
-        self.xfer_proto = QComboBox()
-        self.xfer_proto.setFixedHeight(28)
-        self.xfer_proto.setFixedWidth(96)
-        for pid, label in (
-            ("ymodem", "YMODEM"),
-            ("xmodem", "XMODEM"),
-            ("zmodem", "ZMODEM"),
-            ("raw", "Raw"),
-        ):
-            self.xfer_proto.addItem(label, pid)
-        self.xfer_proto.setToolTip(tr("serial.xfer_proto_tip"))
-        self.xfer_proto.currentIndexChanged.connect(lambda _i: self._relabel_xfer_buttons())
-        self.xmode_combo = QComboBox()
-        self.xmode_combo.setFixedHeight(28)
-        self.xmode_combo.setFixedWidth(88)
-        self.xmode_combo.addItem(tr("serial.xmode_crc"), "crc")
-        self.xmode_combo.addItem(tr("serial.xmode_checksum"), "checksum")
-        self.xmode_combo.setToolTip(tr("serial.xmode_tip"))
-        self.ymodem_btn = QPushButton(tr("serial.ymodem_send"))
-        self.ymodem_btn.setObjectName("ghost")
-        self.ymodem_btn.setFixedHeight(28)
-        self.ymodem_btn.setMinimumWidth(80)
-        self.ymodem_btn.setEnabled(False)
-        self.ymodem_btn.setToolTip(tr("serial.ymodem_tip"))
-        self.ymodem_recv_btn = QPushButton(tr("serial.ymodem_recv"))
-        self.ymodem_recv_btn.setObjectName("ghost")
-        self.ymodem_recv_btn.setFixedHeight(28)
-        self.ymodem_recv_btn.setMinimumWidth(80)
-        self.ymodem_recv_btn.setEnabled(False)
-        self.ymodem_recv_btn.setToolTip(tr("serial.ymodem_recv_tip"))
-        self.xfer_progress = QProgressBar()
-        self.xfer_progress.setFixedHeight(18)
-        self.xfer_progress.setRange(0, 100)
-        self.xfer_progress.setValue(0)
-        self.xfer_progress.setVisible(False)
-        self.xfer_cancel_btn = QPushButton(tr("serial.xfer_cancel"))
-        self.xfer_cancel_btn.setObjectName("ghost")
-        self.xfer_cancel_btn.setFixedHeight(18)
-        self.xfer_cancel_btn.setVisible(False)
+        self.history_btn.setFixedWidth(80)
+        self._build_transfer_controls()
         self.send_edit = SendEdit()
         self.send_edit.setPlaceholderText(tr("serial.send_ph"))
         self.send_btn = QPushButton()
@@ -271,189 +236,54 @@ class SerialPage(LinkToolPage):
         self.send_btn.setEnabled(False)
         self.preset_import_btn = QPushButton(tr("serial.presets_import"))
         self.preset_import_btn.setObjectName("ghost")
-        self.preset_import_btn.setFixedHeight(26)
+        self.preset_import_btn.setFixedHeight(28)
+        self.preset_import_btn.setFixedWidth(80)
         self.preset_export_btn = QPushButton(tr("serial.presets_export"))
         self.preset_export_btn.setObjectName("ghost")
-        self.preset_export_btn.setFixedHeight(26)
+        self.preset_export_btn.setFixedHeight(28)
+        self.preset_export_btn.setFixedWidth(80)
 
-        # Quick-send presets — disclosure row + content (no QGroupBox chrome).
-        self.preset_toggle = QCheckBox(tr("serial.presets"))
-        self.preset_toggle.setToolTip(tr("serial.presets_toggle_tip"))
-        self.preset_toggle.setChecked(False)
-        self.preset_content = QWidget()
-        self.preset_content.setVisible(False)
-        self.preset_toggle.toggled.connect(self.preset_content.setVisible)
-        preset_lay = QVBoxLayout(self.preset_content)
-        preset_lay.setContentsMargins(18, 4, 0, 0)
-        preset_lay.setSpacing(4)
-        self.preset_shortcuts = QCheckBox(tr("serial.preset_shortcuts"))
-        self.preset_shortcuts.setToolTip(tr("serial.preset_shortcuts_tip"))
-        self.preset_shortcuts.setChecked(True)
-        preset_lay.addWidget(self.preset_shortcuts)
-        self._preset_checks: list[QCheckBox] = []
-        self._preset_edits: list[QLineEdit] = []
-        self._preset_btns: list[QPushButton] = []
-        self._preset_shortcut_objs: list[QShortcut] = []
-        for i in range(_PRESET_COUNT):
-            row = QHBoxLayout()
-            row.setSpacing(6)
-            check = QCheckBox()
-            check.setToolTip(tr("serial.cycle_pick"))
-            check.setFixedWidth(20)
-            edit = QLineEdit()
-            edit.setFixedHeight(28)
-            edit.setPlaceholderText(tr("serial.presets_ph", n=i + 1))
-            btn = QPushButton(tr("serial.send"))
-            btn.setObjectName("ghost")
-            btn.setFixedHeight(28)
-            btn.setFixedWidth(56)
-            btn.setEnabled(False)
-            row.addWidget(check)
-            row.addWidget(edit, 1)
-            row.addWidget(btn)
-            preset_lay.addLayout(row)
-            self._preset_checks.append(check)
-            self._preset_edits.append(edit)
-            self._preset_btns.append(btn)
-            btn.clicked.connect(lambda _c=False, idx=i: self._on_preset_send(idx))
-            edit.editingFinished.connect(self.persist_prefs)
-            check.toggled.connect(lambda _c: self.persist_prefs())
-            shortcut = QShortcut(QKeySequence(f"Alt+{i + 1}"), self)
-            shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
-            shortcut.activated.connect(lambda idx=i: self._on_preset_shortcut(idx))
-            self._preset_shortcut_objs.append(shortcut)
+        self._build_presets()
+        self._build_triggers()
+        self._build_cyclic()
 
-        # Trigger / auto-reply rules.
-        self.trigger_toggle = QCheckBox(tr("serial.trigger"))
-        self.trigger_toggle.setToolTip(tr("serial.trigger_tip"))
-        self.trigger_toggle.setChecked(False)
-        self.trigger_content = QWidget()
-        self.trigger_content.setVisible(False)
-        self.trigger_toggle.toggled.connect(self.trigger_content.setVisible)
-        trigger_lay = QVBoxLayout(self.trigger_content)
-        trigger_lay.setContentsMargins(18, 4, 0, 0)
-        trigger_lay.setSpacing(4)
-        self._trigger_enables: list[QCheckBox] = []
-        self._trigger_modes: list[QComboBox] = []
-        self._trigger_patterns: list[QLineEdit] = []
-        self._trigger_replies: list[QLineEdit] = []
-        self._trigger_hex: list[QCheckBox] = []
-        self._trigger_cooldowns: list[QSpinBox] = []
-        self._trigger_onces: list[QCheckBox] = []
-        for _i in range(MAX_RULES):
-            row = QHBoxLayout()
-            row.setSpacing(4)
-            enable = QCheckBox()
-            enable.setFixedWidth(20)
-            enable.setToolTip(tr("serial.trigger_enable"))
-            mode = QComboBox()
-            mode.setFixedHeight(26)
-            mode.setFixedWidth(78)
-            for mid, key in (
-                ("text", "serial.trigger_mode.text"),
-                ("hex", "serial.trigger_mode.hex"),
-                ("regex", "serial.trigger_mode.regex"),
-            ):
-                mode.addItem(tr(key), mid)
-            pattern = QLineEdit()
-            pattern.setFixedHeight(26)
-            pattern.setPlaceholderText(tr("serial.trigger_pattern_ph"))
-            reply = QLineEdit()
-            reply.setFixedHeight(26)
-            reply.setPlaceholderText(tr("serial.trigger_reply_ph"))
-            hex_check = QCheckBox(tr("serial.mode.hex"))
-            hex_check.setFixedWidth(48)
-            cooldown = QSpinBox()
-            cooldown.setRange(0, 600_000)
-            cooldown.setValue(200)
-            cooldown.setSuffix(" ms")
-            cooldown.setFixedHeight(26)
-            cooldown.setFixedWidth(90)
-            once = QCheckBox(tr("serial.trigger_once"))
-            once.setFixedWidth(48)
-            row.addWidget(enable)
-            row.addWidget(mode)
-            row.addWidget(pattern, 2)
-            row.addWidget(reply, 2)
-            row.addWidget(hex_check)
-            row.addWidget(cooldown)
-            row.addWidget(once)
-            trigger_lay.addLayout(row)
-            self._trigger_enables.append(enable)
-            self._trigger_modes.append(mode)
-            self._trigger_patterns.append(pattern)
-            self._trigger_replies.append(reply)
-            self._trigger_hex.append(hex_check)
-            self._trigger_cooldowns.append(cooldown)
-            self._trigger_onces.append(once)
-            for widget in (enable, mode, hex_check, once):
-                if isinstance(widget, QCheckBox):
-                    widget.toggled.connect(lambda _c: self._sync_trigger_rules())
-                else:
-                    widget.currentIndexChanged.connect(lambda _i: self._sync_trigger_rules())
-            for widget in (pattern, reply):
-                widget.editingFinished.connect(self._sync_trigger_rules)
-            cooldown.valueChanged.connect(lambda _v: self._sync_trigger_rules())
-
-        cyclic_row = QHBoxLayout()
-        cyclic_row.setSpacing(10)
-        self.cyclic_check = QCheckBox(tr("serial.cyclic"))
-        self.cyclic_check.setToolTip(tr("serial.cyclic_tip"))
-        self.lbl_interval = QLabel(tr("serial.cyclic_interval"))
-        self.cyclic_interval = QSpinBox()
-        self.cyclic_interval.setRange(1, 600_000)
-        self.cyclic_interval.setSingleStep(10)
-        self.cyclic_interval.setValue(1000)
-        self.cyclic_interval.setSuffix(" ms")
-        self.cyclic_interval.setFixedHeight(28)
-        self.cyclic_interval.setFixedWidth(100)
-        self.lbl_presets_io = QLabel(tr("serial.presets_io"))
-        cyclic_row.addWidget(self.lbl_presets_io)
-        cyclic_row.addWidget(self.preset_import_btn)
-        cyclic_row.addWidget(self.preset_export_btn)
-        cyclic_row.addStretch(1)
-        cyclic_row.addWidget(self.cyclic_check)
-        cyclic_row.addWidget(self.lbl_interval)
-        cyclic_row.addWidget(self.cyclic_interval)
-        # Lives with send options — never inside the preset list (avoids overlap).
-        self._cyclic_timer = QTimer(self)
-        self._cyclic_timer.timeout.connect(self._on_cyclic_tick)
-        self._cyclic_index = 0
-
-        # Mode and line ending sit on the send row. The rest stays folded.
+        # The text box and Send stay on their own row. Format controls share
+        # the folded option rows.
+        option_row = QHBoxLayout()
+        option_row.setSpacing(6)
         for lbl_w, field in (
             (self.lbl_mode, self.mode_combo),
             (self.lbl_ending, self.ending),
-        ):
-            lbl_w.setFixedWidth(48)
-            field.setMinimumWidth(96)
-            field.setFixedHeight(28)
-
-        more_fmt = QHBoxLayout()
-        more_fmt.setSpacing(6)
-        for lbl_w, field in (
             (self.lbl_rx_mode, self.rx_mode),
             (self.lbl_checksum, self.checksum),
         ):
-            lbl_w.setFixedWidth(48)
-            field.setMinimumWidth(128)
-            field.setFixedHeight(28)
-            more_fmt.addWidget(lbl_w)
-            more_fmt.addWidget(field)
-        more_fmt.addWidget(self.rx_verify)
-        more_fmt.addWidget(self.checksum_preview)
-        more_fmt.addStretch(1)
+            self.align_combo(field)
+            option_row.addWidget(lbl_w)
+            option_row.addWidget(field)
+        option_row.addWidget(self.rx_verify)
+        option_row.addWidget(self.checksum_preview)
+        option_row.addWidget(self.history_btn)
+        option_row.addStretch(1)
 
-        act_row = QHBoxLayout()
-        act_row.setSpacing(8)
-        self.xfer_proto.setFixedWidth(128)
-        self.xmode_combo.setFixedWidth(128)
-        act_row.addWidget(self.history_btn)
-        act_row.addWidget(self.xfer_proto)
-        act_row.addWidget(self.xmode_combo)
-        act_row.addWidget(self.ymodem_btn)
-        act_row.addWidget(self.ymodem_recv_btn)
-        act_row.addStretch(1)
+        tool_row = QHBoxLayout()
+        tool_row.setSpacing(6)
+        self.preset_import_btn.setToolTip(tr("serial.presets_io"))
+        self.preset_export_btn.setToolTip(tr("serial.presets_io"))
+        self.align_combo(self.xfer_proto)
+        self.align_combo(self.xmode_combo)
+        for widget in (
+            self.cyclic_check,
+            self.lbl_interval,
+            self.cyclic_interval,
+            self.xfer_proto,
+            self.xmode_combo,
+            self.ymodem_btn,
+            self.ymodem_recv_btn,
+            self.preset_import_btn,
+            self.preset_export_btn,
+        ):
+            tool_row.addWidget(widget)
+        tool_row.addStretch(1)
 
         self.send_more_toggle = QCheckBox(tr("serial.send_options"))
         self.send_more_toggle.setChecked(False)
@@ -463,15 +293,10 @@ class SerialPage(LinkToolPage):
         more_lay = QVBoxLayout(self.send_more)
         more_lay.setContentsMargins(0, 0, 0, 0)
         more_lay.setSpacing(4)
-        more_lay.addLayout(more_fmt)
-        more_lay.addLayout(cyclic_row)
-        more_lay.addLayout(act_row)
+        more_lay.addLayout(option_row)
+        more_lay.addLayout(tool_row)
 
         send_row.setSpacing(6)
-        send_row.addWidget(self.lbl_mode)
-        send_row.addWidget(self.mode_combo)
-        send_row.addWidget(self.lbl_ending)
-        send_row.addWidget(self.ending)
         send_row.addWidget(self.send_edit, 1)
         send_row.addWidget(self.send_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         xfer_row = QHBoxLayout()
@@ -486,73 +311,25 @@ class SerialPage(LinkToolPage):
         meta_wrap.addLayout(xfer_row)
         self.install_send_preview(meta_wrap)
         mon_lay.addWidget(self.traffic, 1)
+        from etools.ui.widgets.section_tabs import SectionTabs
         from etools.ui.widgets.studio_plot import StudioPlotPanel
 
         self.studio = StudioPlotPanel()
-        mon_lay.addWidget(self.studio)
-        mon_lay.addWidget(self.preset_toggle)
-        mon_lay.addWidget(self.preset_content)
-        mon_lay.addWidget(self.trigger_toggle)
-        mon_lay.addWidget(self.trigger_content)
-        mon_lay.addSpacing(4)
+        self.section_tabs = SectionTabs()
+        self.section_tabs.add_page(tr("serial.plot"), self.studio, tr("serial.plot_tip"))
+        self.section_tabs.add_page(
+            tr("serial.presets"), self.preset_content, tr("serial.presets_toggle_tip")
+        )
+        self.section_tabs.add_page(
+            tr("serial.trigger"), self.trigger_content, tr("serial.trigger_tip")
+        )
+        mon_lay.addWidget(self.section_tabs)
         mon_lay.addLayout(meta_wrap)
         self.work_tabs.addTab(mon_box, tr("serial.monitor"))
 
-        self.terminal_box = QWidget()
-        terminal_lay = QVBoxLayout(self.terminal_box)
-        terminal_lay.setContentsMargins(8, 8, 8, 8)
-        terminal_lay.setSpacing(6)
-        terminal_bar = QHBoxLayout()
-        self.local_echo = QCheckBox(tr("serial.terminal.local_echo"))
-        self.local_echo.setChecked(True)
-        self.terminal_break = QPushButton(tr("serial.terminal.break"))
-        self.terminal_break.setObjectName("ghost")
-        self.terminal_break.setEnabled(False)
-        self.terminal_clear = QPushButton(tr("mon.clear"))
-        self.terminal_clear.setObjectName("ghost")
-        terminal_bar.addWidget(self.local_echo)
-        terminal_bar.addStretch(1)
-        terminal_bar.addWidget(self.terminal_break)
-        terminal_bar.addWidget(self.terminal_clear)
-        self.terminal_view = TerminalView(interactive=True)
-        self.terminal_view.setPlaceholderText(tr("serial.terminal.placeholder"))
-        self.terminal_view.document().setMaximumBlockCount(10000)
-        terminal_lay.addLayout(terminal_bar)
-        terminal_lay.addWidget(self.terminal_view, 1)
-        self.work_tabs.addTab(self.terminal_box, tr("serial.terminal"))
+        self._build_terminal_tab()
 
-        # Automation script tab: send / wait / expect / log without blocking UI.
-        self.script_box = QWidget()
-        script_lay = QVBoxLayout(self.script_box)
-        script_lay.setContentsMargins(8, 8, 8, 8)
-        script_lay.setSpacing(6)
-        script_bar = QHBoxLayout()
-        self.script_run = QPushButton(tr("serial.script.run"))
-        self.script_run.setObjectName("accent")
-        self.script_stop = QPushButton(tr("serial.script.stop"))
-        self.script_stop.setObjectName("ghost")
-        self.script_stop.setEnabled(False)
-        self.script_status = QLabel(tr("serial.script.idle"))
-        self.script_status.setObjectName("mutedLabel")
-        script_bar.addWidget(self.script_run)
-        script_bar.addWidget(self.script_stop)
-        script_bar.addWidget(self.script_status, 1)
-        self.script_edit = QPlainTextEdit()
-        self.script_edit.setObjectName("logView")
-        self.script_edit.setPlaceholderText(tr("serial.script.placeholder"))
-        self.script_edit.setStyleSheet("font-family: Consolas, 'Courier New', monospace;")
-        script_lay.addLayout(script_bar)
-        script_lay.addWidget(self.script_edit, 1)
-        self.work_tabs.addTab(self.script_box, tr("serial.script"))
-        self._script_cmds: list = []
-        self._script_index = 0
-        self._script_rx = bytearray()
-        self._script_timer = QTimer(self)
-        self._script_timer.setSingleShot(True)
-        self._script_timer.timeout.connect(self._script_step)
-        self._script_running = False
-        self._script_expect: str | None = None
-        self._script_deadline: float = 0.0
+        self._build_script_tab()
 
         self.open_btn.clicked.connect(self._on_toggle)
         self.send_btn.clicked.connect(self._on_send)
@@ -720,12 +497,14 @@ class SerialPage(LinkToolPage):
         self.xmode_combo.setItemText(1, tr("serial.xmode_checksum"))
         self.xmode_combo.setToolTip(tr("serial.xmode_tip"))
         self.xfer_cancel_btn.setText(tr("serial.xfer_cancel"))
-        self.preset_toggle.setText(tr("serial.presets"))
-        self.preset_toggle.setToolTip(tr("serial.presets_toggle_tip"))
+        self.section_tabs.set_title(0, tr("serial.plot"), tr("serial.plot_tip"))
+        self.section_tabs.set_title(1, tr("serial.presets"), tr("serial.presets_toggle_tip"))
+        self.section_tabs.set_title(2, tr("serial.trigger"), tr("serial.trigger_tip"))
         self.preset_shortcuts.setText(tr("serial.preset_shortcuts"))
         self.preset_shortcuts.setToolTip(tr("serial.preset_shortcuts_tip"))
         self.cyclic_check.setToolTip(tr("serial.cyclic_tip"))
-        self.lbl_presets_io.setText(tr("serial.presets_io"))
+        self.preset_import_btn.setToolTip(tr("serial.presets_io"))
+        self.preset_export_btn.setToolTip(tr("serial.presets_io"))
         for i, edit in enumerate(self._preset_edits):
             edit.setPlaceholderText(tr("serial.presets_ph", n=i + 1))
         for check in self._preset_checks:
@@ -736,8 +515,6 @@ class SerialPage(LinkToolPage):
         self.lbl_interval.setText(tr("serial.cyclic_interval"))
         self.preset_import_btn.setText(tr("serial.presets_import"))
         self.preset_export_btn.setText(tr("serial.presets_export"))
-        self.trigger_toggle.setText(tr("serial.trigger"))
-        self.trigger_toggle.setToolTip(tr("serial.trigger_tip"))
         for mode in self._trigger_modes:
             mode.setItemText(0, tr("serial.trigger_mode.text"))
             mode.setItemText(1, tr("serial.trigger_mode.hex"))
@@ -918,7 +695,7 @@ class SerialPage(LinkToolPage):
         if devices != self._known_ports:
             vanished = self._opened and self._selected_port() not in devices
             self._known_ports = devices
-            self._refresh_ports(probe=True)
+            self._refresh_ports_async()
             if vanished:
                 self._handle_unexpected_disconnect(tr("serial.port_lost"))
         elif (
@@ -941,7 +718,7 @@ class SerialPage(LinkToolPage):
             return
         self._only_free = bool(on)
         self.persist_prefs()
-        self._refresh_ports(probe=True)
+        self._refresh_ports_async()
 
     def _remember_baud(self, text: str) -> None:
         """Keep ad-hoc baud rates in the preset list across sessions."""
@@ -977,8 +754,27 @@ class SerialPage(LinkToolPage):
             w.setEnabled(True)
 
     def _refresh_ports(self, *, probe: bool = True) -> None:
+        self._apply_port_list(list_serial_ports(probe=probe or self._only_free))
+
+    def _refresh_ports_async(self) -> None:
+        """Probe ports on a worker: probing opens each port and can take seconds."""
+        if self._scan_runner.busy:
+            self._scan_pending = True
+            return
+        self._scan_pending = False
+
+        def done(ports) -> None:
+            self._apply_port_list(ports)
+            if self._scan_pending:
+                self._refresh_ports_async()
+
+        def fail(_message: str) -> None:
+            self._refresh_ports(probe=False)
+
+        self._scan_runner.start(lambda: list_serial_ports(probe=True), done, fail)
+
+    def _apply_port_list(self, ports) -> None:
         only_free = self._only_free
-        ports = list_serial_ports(probe=probe or only_free)
         self._known_ports = tuple(e.device for e in ports)
         current_data = self.port_combo.currentData()
         current_text = self.port_combo.currentText()
@@ -1048,6 +844,8 @@ class SerialPage(LinkToolPage):
         st.polish(self.send_btn)
 
     def _on_toggle(self) -> None:
+        if self._open_runner.busy:
+            return
         if self._opened:
             self._user_closed = True
             self._resume_cyclic = False
@@ -1057,30 +855,62 @@ class SerialPage(LinkToolPage):
         self._user_closed = False
         self._cancel_reconnect()
         self._reconnect_delay_ms = 500
-        if not self._open_selected_port():
-            return
+        self._open_selected_port()
 
-    def _open_selected_port(self, *, quiet: bool = False) -> bool:
+    def _open_selected_port(
+        self, *, quiet: bool = False, on_done: Callable[[bool], None] | None = None
+    ) -> bool:
+        """Open the selected port on a worker thread. Returns False if not started."""
         port = self._selected_port()
         if not port:
             if not quiet:
                 self.traffic.append_status(tr("serial.open_no_port"))
             return False
-        try:
-            self._link.open(
-                port=port,
-                baudrate=int(self.baud.currentText() or 115200),
-                bytesize=int(self.data.currentText() or 8),
-                parity=self.parity.currentText() or "N",
-                stopbits=float(self.stop.currentText() or 1),
-                flow_control=str(self.flow.currentData() or "none"),
-            )
-            self._link.set_dtr(self.dtr.isChecked())
-            self._link.set_rts(self.rts.isChecked())
-        except Exception as exc:  # noqa: BLE001
-            if not quiet:
-                self.traffic.append_status(tr("serial.err", err=str(exc)))
+        if self._open_runner.busy:
             return False
+        link = self._link
+        params = dict(
+            port=port,
+            baudrate=int(self.baud.currentText() or 115200),
+            bytesize=int(self.data.currentText() or 8),
+            parity=self.parity.currentText() or "N",
+            stopbits=float(self.stop.currentText() or 1),
+            flow_control=str(self.flow.currentData() or "none"),
+        )
+        dtr, rts = self.dtr.isChecked(), self.rts.isChecked()
+
+        def work():
+            # Bluetooth / USB-CDC drivers can block for seconds inside open().
+            link.open(**params)
+            link.set_dtr(dtr)
+            link.set_rts(rts)
+
+        def ok(_result) -> None:
+            self.open_btn.setEnabled(True)
+            if self._user_closed:
+                link.close()
+                self.open_btn.setText(tr("serial.open"))
+                if on_done:
+                    on_done(False)
+                return
+            self._on_port_opened(port)
+            if on_done:
+                on_done(True)
+
+        def fail(message: str) -> None:
+            link.close()
+            self.open_btn.setEnabled(True)
+            self.open_btn.setText(tr("serial.open"))
+            if not quiet:
+                self.traffic.append_status(tr("serial.err", err=message))
+            if on_done:
+                on_done(False)
+
+        self.open_btn.setEnabled(False)
+        self.open_btn.setText(tr("status.connecting"))
+        return self._open_runner.start(work, ok, fail)
+
+    def _on_port_opened(self, port: str) -> None:
         self._opened = True
         self._user_closed = False
         self._reconnect_delay_ms = 500
@@ -1091,13 +921,13 @@ class SerialPage(LinkToolPage):
         self.open_btn.setText(tr("serial.close"))
         self._repaint_btn()
         self.traffic.append_status(tr("serial.opened", port=port))
+        self.notify_state()
         if self._resume_cyclic:
             self._resume_cyclic = False
             self.cyclic_check.blockSignals(True)
             self.cyclic_check.setChecked(True)
             self.cyclic_check.blockSignals(False)
             self._on_cyclic_toggled(True)
-        return True
 
     def _mark_closed(self, *, status: str | None = None, keep_cyclic: bool = False) -> None:
         self._reconfig_timer.stop()
@@ -1132,7 +962,12 @@ class SerialPage(LinkToolPage):
         self._reconnect_timer.start(delay)
 
     def _try_reconnect(self) -> None:
-        if self._user_closed or not self.auto_reconnect.isChecked() or self._opened:
+        if (
+            self._user_closed
+            or not self.auto_reconnect.isChecked()
+            or self._opened
+            or self._open_runner.busy
+        ):
             return
         port = self._selected_port()
         if not port:
@@ -1142,14 +977,18 @@ class SerialPage(LinkToolPage):
             self._schedule_reconnect()
             return
         self.traffic.append_status(tr("serial.reconnect_try", port=port))
-        if self._open_selected_port(quiet=True):
-            self.traffic.append_status(tr("serial.reconnect_ok", port=port))
-            return
-        self._reconnect_delay_ms = min(8000, max(500, self._reconnect_delay_ms * 2))
-        self.traffic.append_status(
-            tr("serial.reconnect_wait", ms=self._reconnect_delay_ms)
-        )
-        self._schedule_reconnect()
+
+        def finished(ok: bool) -> None:
+            if ok:
+                self.traffic.append_status(tr("serial.reconnect_ok", port=port))
+                return
+            self._reconnect_delay_ms = min(8000, max(500, self._reconnect_delay_ms * 2))
+            self.traffic.append_status(
+                tr("serial.reconnect_wait", ms=self._reconnect_delay_ms)
+            )
+            self._schedule_reconnect()
+
+        self._open_selected_port(quiet=True, on_done=finished)
 
     def _schedule_live_reconfig(self, *_args) -> None:
         if not self._opened:
@@ -1226,360 +1065,6 @@ class SerialPage(LinkToolPage):
         if self._send_payload(text, record_history=True):
             self.send_edit.clear()
 
-    def _on_send_file(self) -> None:
-        from pathlib import Path
-
-        from PySide6.QtWidgets import QFileDialog
-
-        if not self._opened:
-            return
-        path, _ = QFileDialog.getOpenFileName(
-            self, tr("serial.send_file_title"), "", tr("hex.file_filter")
-        )
-        if not path:
-            return
-        try:
-            data = Path(path).read_bytes()
-        except OSError as exc:
-            self.traffic.append_status(tr("serial.send_file_err", err=str(exc)))
-            return
-        try:
-            self._link.write(data)
-        except Exception as exc:  # noqa: BLE001
-            self.traffic.append_status(tr("serial.send_file_err", err=str(exc)))
-            return
-        self.traffic.append_tx(data)
-        self.traffic.append_status(
-            tr("serial.send_file_done", name=Path(path).name, size=len(data))
-        )
-
-    def _xfer_mode(self) -> str:
-        return "checksum" if self.xmode_combo.currentData() == "checksum" else "crc"
-
-    def _relabel_xfer_buttons(self) -> None:
-        """Send/Recv labels follow the selected protocol."""
-        proto = str(self.xfer_proto.currentData() or "ymodem")
-        name = {
-            "ymodem": "YMODEM",
-            "xmodem": "XMODEM",
-            "zmodem": "ZMODEM",
-            "raw": "RAW",
-        }.get(proto, proto.upper())
-        self.ymodem_btn.setText(tr("serial.xfer_send", proto=name))
-        self.ymodem_btn.setToolTip(tr("serial.xfer_send_tip", proto=name))
-        self.ymodem_recv_btn.setText(tr("serial.xfer_recv", proto=name))
-        self.ymodem_recv_btn.setToolTip(tr("serial.xfer_recv_tip", proto=name))
-
-    def _show_xfer_progress(self, on: bool) -> None:
-        self.xfer_progress.setVisible(on)
-        self.xfer_cancel_btn.setVisible(on)
-        if not on:
-            self.xfer_progress.setValue(0)
-        self._xfer_cancel = False
-
-    def _cancel_transfer(self) -> None:
-        self._xfer_cancel = True
-
-    def _on_xfer_progress(self, done: int, total: int) -> None:
-        # Called from a worker thread — only touch Qt via queued invoke-safe path.
-        def apply() -> None:
-            if total > 0:
-                self.xfer_progress.setMaximum(max(1, total))
-                self.xfer_progress.setValue(min(done, total))
-                self.xfer_progress.setFormat("%v / %m B")
-            else:
-                self.xfer_progress.setMaximum(0)  # busy indicator
-
-        from PySide6.QtCore import QTimer
-
-        QTimer.singleShot(0, apply)
-
-    def _run_transfer(self, label: str, work) -> None:
-        link = self._link
-        link.begin_transfer()
-        self._show_xfer_progress(True)
-        self._set_send_enabled(False)
-        self.ymodem_btn.setEnabled(False)
-        self.ymodem_recv_btn.setEnabled(False)
-
-        def on_ok(result) -> None:
-            link.end_transfer()
-            self._show_xfer_progress(False)
-            self._set_send_enabled(True)
-            if getattr(result, "ok", False):
-                extra = getattr(result, "filename", "") or ""
-                self.traffic.append_status(
-                    tr(
-                        "serial.ymodem_done",
-                        n=result.bytes_sent,
-                        p=result.packets,
-                    )
-                    + (f"  {extra}" if extra else "")
-                )
-                payload = getattr(result, "data", None)
-                if payload:
-                    self._save_received_file(extra or "ymodem.bin", bytes(payload))
-            else:
-                self.traffic.append_status(
-                    tr("serial.ymodem_err", err=getattr(result, "message", "failed"))
-                )
-
-        def on_err(msg: str) -> None:
-            link.end_transfer()
-            self._show_xfer_progress(False)
-            self._set_send_enabled(True)
-            self.traffic.append_status(tr("serial.ymodem_err", err=msg))
-
-        runner = getattr(self, "_runner", None)
-        if runner is None:
-            from etools.ui.runtime import OpRunner
-
-            self._runner = OpRunner(self)
-            self._runner.busy_changed.connect(lambda _busy: self.notify_state())
-            runner = self._runner
-        if not runner.start(work, on_ok, on_err):
-            link.end_transfer()
-            self._show_xfer_progress(False)
-            self._set_send_enabled(True)
-            self.traffic.append_status(tr("serial.ymodem_err", err=label))
-
-    def _save_received_file(self, name: str, data: bytes) -> None:
-        from pathlib import Path
-
-        from PySide6.QtWidgets import QFileDialog
-
-        path, _ = QFileDialog.getSaveFileName(self, tr("serial.ymodem_save"), name)
-        if not path:
-            return
-        try:
-            Path(path).write_bytes(data)
-        except OSError as exc:
-            self.traffic.append_status(tr("serial.ymodem_err", err=str(exc)))
-            return
-        self.traffic.append_status(tr("serial.ymodem_saved", path=path, size=len(data)))
-
-    def _on_ymodem_send(self) -> None:
-        """YMODEM download to an IAP bootloader (runs in the background)."""
-        from pathlib import Path
-
-        from PySide6.QtWidgets import QFileDialog
-
-        if not self._opened:
-            return
-        path, _ = QFileDialog.getOpenFileName(
-            self, tr("serial.ymodem_send"), "", "Firmware (*.bin *.hex *.elf *.dat);;All (*.*)"
-        )
-        if not path:
-            return
-        try:
-            data = Path(path).read_bytes()
-        except OSError as exc:
-            self.traffic.append_status(tr("serial.ymodem_err", err=str(exc)))
-            return
-        name = Path(path).name
-        self.traffic.append_status(tr("serial.ymodem_start", name=name, size=len(data)))
-        link = self._link
-        mode = self._xfer_mode()
-        xfer_cancel = lambda: self._xfer_cancel  # noqa: E731
-        progress = self._on_xfer_progress
-
-        def work():
-            from etools.core.file_xfer import send_file
-
-            proto = self.xfer_proto.currentData() or "ymodem"
-            return send_file(
-                link.write,
-                link.transfer_read,
-                name,
-                data,
-                protocol=proto,
-                mode=mode,
-                on_progress=progress,
-                cancel=xfer_cancel,
-            )
-
-        self._run_transfer("start", work)
-
-    def _on_ymodem_recv(self) -> None:
-        """Receive a file pushed by a peer / bootloader (YMODEM or XMODEM)."""
-        if not self._opened:
-            return
-        self.traffic.append_status(tr("serial.ymodem_recv_start"))
-        link = self._link
-        mode = self._xfer_mode()
-        xfer_cancel = lambda: self._xfer_cancel  # noqa: E731
-        progress = self._on_xfer_progress
-
-        def work():
-            from etools.core.file_xfer import receive_file
-
-            proto = self.xfer_proto.currentData() or "ymodem"
-            return receive_file(
-                link.write,
-                link.transfer_read,
-                protocol=proto,
-                mode=mode,
-                timeout=90.0,
-                on_progress=progress,
-                cancel=xfer_cancel,
-            )
-
-        self._run_transfer("recv", work)
-
-    def _import_presets(self) -> None:
-        import json
-
-        from PySide6.QtWidgets import QFileDialog
-
-        path, _ = QFileDialog.getOpenFileName(
-            self, tr("serial.presets_import"), "", "JSON (*.json)"
-        )
-        if not path:
-            return
-        try:
-            data = json.loads(Path(path).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            from etools.ui.kit import toast
-
-            toast(tr("serial.presets_import_err"))
-            return
-        items = data if isinstance(data, list) else data.get("presets")
-        if not isinstance(items, list):
-            return
-        for i, edit in enumerate(self._preset_edits):
-            if i < len(items) and isinstance(items[i], str):
-                edit.setText(items[i])
-        self.persist_prefs()
-        from etools.ui.kit import toast
-
-        toast(tr("serial.presets_imported", n=min(len(items), len(self._preset_edits))))
-
-    def _export_presets(self) -> None:
-        import json
-
-        from PySide6.QtWidgets import QFileDialog
-
-        from etools.ui.kit import toast
-
-        path, _ = QFileDialog.getSaveFileName(
-            self, tr("serial.presets_export"), "etools-presets.json", "JSON (*.json)"
-        )
-        if not path:
-            return
-        payload = [e.text() for e in self._preset_edits]
-        Path(path).write_text(
-            json.dumps({"presets": payload}, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        toast(tr("serial.presets_exported"))
-
-    def _on_preset_send(self, index: int) -> None:
-        if not (0 <= index < len(self._preset_edits)):
-            return
-        text = self._preset_edits[index].text().strip()
-        if not text:
-            return
-        self._send_payload(text, record_history=True)
-
-    def _on_preset_shortcut(self, index: int) -> None:
-        if not self.preset_shortcuts.isChecked() or not self._opened:
-            return
-        focus = self.focusWidget()
-        if focus in self._preset_edits or focus is self.script_edit:
-            return
-        if focus in self._trigger_patterns or focus in self._trigger_replies:
-            return
-        self._on_preset_send(index)
-
-    def _on_preset_shortcuts_toggled(self, on: bool) -> None:
-        for shortcut in self._preset_shortcut_objs:
-            shortcut.setEnabled(bool(on))
-        if getattr(self, "_loading_prefs", False):
-            return
-        self.persist_prefs()
-
-    def _sync_trigger_rules(self, *_args, persist: bool = True) -> None:
-        rules = []
-        for i in range(MAX_RULES):
-            rules.append(
-                {
-                    "enabled": self._trigger_enables[i].isChecked(),
-                    "mode": self._trigger_modes[i].currentData(),
-                    "pattern": self._trigger_patterns[i].text(),
-                    "reply": self._trigger_replies[i].text(),
-                    "reply_hex": self._trigger_hex[i].isChecked(),
-                    "cooldown_ms": int(self._trigger_cooldowns[i].value()),
-                    "once": self._trigger_onces[i].isChecked(),
-                }
-            )
-        self._trigger.load_rules(rules)
-        if persist and not getattr(self, "_loading_prefs", False):
-            self.persist_prefs()
-
-    def _apply_trigger_rules_to_ui(self) -> None:
-        for i, rule in enumerate(self._trigger.rules):
-            self._trigger_enables[i].blockSignals(True)
-            self._trigger_modes[i].blockSignals(True)
-            self._trigger_cooldowns[i].blockSignals(True)
-            self._trigger_enables[i].setChecked(rule.enabled)
-            idx = self._trigger_modes[i].findData(rule.mode)
-            if idx >= 0:
-                self._trigger_modes[i].setCurrentIndex(idx)
-            self._trigger_patterns[i].setText(rule.pattern)
-            self._trigger_replies[i].setText(rule.reply)
-            self._trigger_hex[i].setChecked(rule.reply_hex)
-            self._trigger_cooldowns[i].setValue(int(rule.cooldown_ms))
-            self._trigger_onces[i].setChecked(rule.once)
-            self._trigger_enables[i].blockSignals(False)
-            self._trigger_modes[i].blockSignals(False)
-            self._trigger_cooldowns[i].blockSignals(False)
-
-    def _on_cyclic_toggled(self, on: bool) -> None:
-        if on:
-            if not self._opened:
-                self.cyclic_check.blockSignals(True)
-                self.cyclic_check.setChecked(False)
-                self.cyclic_check.blockSignals(False)
-                self.traffic.append_status(tr("serial.cyclic_need_open"))
-                return
-            self._cyclic_index = 0
-            self._cyclic_timer.start(max(1, int(self.cyclic_interval.value())))
-            self.traffic.append_status(tr("serial.cyclic_running"))
-        else:
-            self._cyclic_timer.stop()
-        self.persist_prefs()
-
-    def _on_interval_changed(self, value: int) -> None:
-        if self._cyclic_timer.isActive():
-            self._cyclic_timer.setInterval(max(1, int(value)))
-        self.persist_prefs()
-
-    def _stop_cyclic(self) -> None:
-        self._cyclic_timer.stop()
-        if self.cyclic_check.isChecked():
-            self.cyclic_check.blockSignals(True)
-            self.cyclic_check.setChecked(False)
-            self.cyclic_check.blockSignals(False)
-
-    def _on_cyclic_tick(self) -> None:
-        if not self._opened:
-            self._stop_cyclic()
-            return
-        targets = [
-            edit.text().strip()
-            for check, edit in zip(self._preset_checks, self._preset_edits, strict=True)
-            if check.isChecked() and edit.text().strip()
-        ]
-        if targets:
-            text = targets[self._cyclic_index % len(targets)]
-            self._cyclic_index += 1
-        else:
-            text = self.send_edit.text().strip()
-        if not text:
-            self.traffic.append_status(tr("serial.cyclic_empty"))
-            self._stop_cyclic()
-            return
-        self._send_payload(text)
-
     def _on_rx(self, data: bytes) -> None:
         self._script_rx.extend(data)
         if len(self._script_rx) > 65536:
@@ -1591,9 +1076,12 @@ class SerialPage(LinkToolPage):
             frames = self.studio.feed(data)
             from etools.core.frame_hub import frame_hub
 
-            frame_hub.set_mode("serial", self.studio.parse_mode_name())
-            frame_hub.set_names("serial", self.studio.names.text())
-            frame_hub.set_hex_template("serial", self.studio.hex_template_text())
+            frame_hub.configure(
+                "serial",
+                self.studio.parse_mode_name(),
+                self.studio.names.text(),
+                self.studio.hex_template_text(),
+            )
             if frames:
                 frame_hub.publish_frames("serial", frames)
         for hit in self._trigger.feed(data, encoding=self._encoding_name()):
@@ -1630,6 +1118,40 @@ class SerialPage(LinkToolPage):
             self.traffic.append_status(tr("serial.err", err=str(exc)))
             return False
 
+    def _reveal_plot(self) -> None:
+        """Open the plot the first time a script draws. Later frames stay put."""
+        tabs = getattr(self, "section_tabs", None)
+        already = (
+            tabs is not None
+            and tabs._buttons
+            and tabs._buttons[0].isChecked()
+            and (not hasattr(self, "work_tabs") or self.work_tabs.currentIndex() == 0)
+        )
+        if already:
+            return
+        if hasattr(self, "work_tabs"):
+            self.work_tabs.setCurrentIndex(0)
+        if tabs is not None:
+            tabs.show_page(0)
+        parent = self.parent()
+        while parent is not None:
+            show = getattr(parent, "set_current_tool", None)
+            if callable(show):
+                show(self.tool_id)
+                break
+            parent = parent.parent()
+
+    def lua_plot(self, kind: str, payload) -> int:
+        if not hasattr(self, "studio"):
+            return 0
+        self._reveal_plot()
+        frames = self.studio.accept_script(kind, payload)
+        if frames:
+            from etools.core.frame_hub import frame_hub
+
+            frame_hub.publish_frames("serial", frames)
+        return len(frames)
+
     def lua_take_rx(self, max_bytes: int = 4096) -> bytes:
         n = max(0, int(max_bytes))
         data = bytes(self._script_rx[:n])
@@ -1652,132 +1174,6 @@ class SerialPage(LinkToolPage):
             want = compute_checksum(data[:-width], algo).hex(" ").upper()
             self.traffic.append_status(tr("serial.rx_crc_bad", want=want))
 
-    # -- automation script ---------------------------------------------
-
-    def _on_script_run(self) -> None:
-        from etools.core.serial_script import ScriptError, parse_script
-
-        try:
-            cmds = parse_script(self.script_edit.toPlainText())
-        except ScriptError as exc:
-            self.script_status.setText(str(exc))
-            self.traffic.append_status(tr("serial.script.err", err=str(exc)))
-            return
-        if not cmds:
-            self.script_status.setText(tr("serial.script.empty"))
-            return
-        if not self._opened:
-            self.traffic.append_status(tr("serial.cyclic_need_open"))
-            self.script_status.setText(tr("serial.cyclic_need_open"))
-            return
-        self._script_cmds = cmds
-        self._script_index = 0
-        self._script_expect = None
-        self._script_rx.clear()
-        self._script_running = True
-        self.script_run.setEnabled(False)
-        self.script_stop.setEnabled(True)
-        self.script_status.setText(tr("serial.script.running"))
-        self.traffic.append_status(tr("serial.script.running"))
-        self._script_timer.start(0)
-
-    def _on_script_stop(self) -> None:
-        self._script_running = False
-        self._script_timer.stop()
-        self._script_expect = None
-        self.script_run.setEnabled(True)
-        self.script_stop.setEnabled(False)
-        self.script_status.setText(tr("serial.script.stopped"))
-        self.traffic.append_status(tr("serial.script.stopped"))
-
-    def _finish_script(self, message_key: str) -> None:
-        self._script_running = False
-        self._script_timer.stop()
-        self._script_expect = None
-        self.script_run.setEnabled(True)
-        self.script_stop.setEnabled(False)
-        self.script_status.setText(tr(message_key))
-        self.traffic.append_status(tr(message_key))
-
-    def _script_step(self) -> None:
-        import time
-
-        if not self._script_running:
-            return
-        if not self._opened:
-            self._finish_script("serial.script.disconnected")
-            return
-
-        expect_text = self._script_expect
-        if expect_text is not None:
-            buf = self._script_rx.decode("utf-8", errors="replace")
-            if expect_text in buf:
-                self._script_expect = None
-                self._script_timer.start(0)
-                return
-            if time.monotonic() >= self._script_deadline:
-                self.traffic.append_status(
-                    tr("serial.script.err", err=f"expect timeout: {expect_text!r}")
-                )
-                self._finish_script("serial.script.timeout")
-                return
-            self._script_timer.start(20)
-            return
-
-        if self._script_index >= len(self._script_cmds):
-            self._finish_script("serial.script.done")
-            return
-
-        cmd = self._script_cmds[self._script_index]
-        self._script_index += 1
-        try:
-            if cmd.op == "send":
-                if not self._send_payload(cmd.text, record_history=True):
-                    self._finish_script("serial.script.err_send")
-                    return
-            elif cmd.op == "send_hex":
-                if not self._send_payload(cmd.text, record_history=True, force_hex=True):
-                    self._finish_script("serial.script.err_send")
-                    return
-            elif cmd.op == "log":
-                self.traffic.append_status(cmd.text)
-            elif cmd.op == "wait":
-                self._script_timer.start(max(0, int(cmd.value)))
-                return
-            elif cmd.op == "expect":
-                self._script_deadline = time.monotonic() + max(1, int(cmd.value)) / 1000.0
-                self._script_expect = cmd.text
-                self._script_timer.start(20)
-                return
-        except Exception as exc:  # noqa: BLE001
-            self.traffic.append_status(tr("serial.script.err", err=str(exc)))
-            self._finish_script("serial.script.failed")
-            return
-        self._script_timer.start(0)
-
-    def _terminal_write(self, text: str) -> None:
-        """Render serial stream without adding a newline per read chunk."""
-        text = text.replace("\r\n", "\n").replace("\r", "\n")
-        self.terminal_view.append_text(text)
-
-    def _terminal_send(self, data: bytes) -> None:
-        if not self._opened:
-            return
-        try:
-            self._link.write(data)
-            self.traffic.append_tx(data)
-            if self.local_echo.isChecked():
-                self._terminal_write(decode_payload(data, self._encoding_name()))
-        except Exception as exc:  # noqa: BLE001
-            self.traffic.append_status(tr("serial.err", err=str(exc)))
-
-    def _send_break(self) -> None:
-        try:
-            self._link.send_break()
-            self.traffic.append_status(tr("serial.terminal.break_sent"))
-        except Exception as exc:  # noqa: BLE001
-            self.traffic.append_status(tr("serial.err", err=str(exc)))
-
     def _on_rx_mode_changed(self, _index: int = 0) -> None:
         self.traffic.set_display_mode(str(self.rx_mode.currentData() or "ascii"))
 
@@ -1785,8 +1181,7 @@ class SerialPage(LinkToolPage):
         self._handle_unexpected_disconnect(tr("serial.err", err=message))
 
     def shutdown(self) -> None:
-        self.traffic.stop_replay()
-        self.traffic._close_auto_log()
+        self.traffic.shutdown()
         self._hotplug.stop()
         self._cancel_reconnect()
         self._reconfig_timer.stop()
@@ -1799,5 +1194,7 @@ class SerialPage(LinkToolPage):
         if runner is not None:
             runner.cancel()
             runner.shutdown()
+        self._open_runner.shutdown()
+        self._scan_runner.shutdown()
         self.persist_prefs()
         self._link.close()

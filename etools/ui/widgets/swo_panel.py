@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from etools.core.probe_io import PROBE_LOCK
 from etools.i18n import tr as _tr
 from etools.logger import get_logger
 
@@ -97,14 +98,14 @@ class _SwvReader:
             return False
         probe = getattr(session, "probe", None)
         if probe is None:
-            self._bridge.status.emit("无探针")
+            self._bridge.status.emit(_tr("swv.no_probe"))
             return False
         try:
             from pyocd.probe.debug_probe import DebugProbe
 
             caps = getattr(probe, "capabilities", set())
             if DebugProbe.Capability.SWO not in caps:
-                self._bridge.status.emit("探针不支持 SWO")
+                self._bridge.status.emit(_tr("swv.no_swo"))
                 return False
         except Exception:
             pass
@@ -117,15 +118,15 @@ class _SwvReader:
             tpiu = target.get_first_child_of_type(TPIU, "has_swo_uart")
             itm = target.get_first_child_of_type(ITM)
             if tpiu is None or itm is None:
-                self._bridge.status.emit("目标缺少 ITM/TPIU，无法启用 SWV")
+                self._bridge.status.emit(_tr("swv.no_itm"))
                 return False
             if not tpiu.set_swo_clock(swo_clock, sys_clock):
-                self._bridge.status.emit("设置 SWO 时钟失败")
+                self._bridge.status.emit(_tr("swv.clock_fail"))
                 return False
             itm.enable()
         except Exception as exc:
             log.exception("SWV init failed")
-            self._bridge.status.emit(f"SWV 初始化失败：{exc}")
+            self._bridge.status.emit(_tr("swv.init_fail", err=exc))
             return False
 
         from pyocd.trace.swo import SWOParser
@@ -137,7 +138,7 @@ class _SwvReader:
             if hasattr(parser, "connect"):
                 parser.connect(sink)
         except Exception as exc:
-            self._bridge.status.emit(f"SWO 解析器连接失败：{exc}")
+            self._bridge.status.emit(_tr("swv.parser_fail", err=exc))
             return False
 
         self._session = session
@@ -149,11 +150,16 @@ class _SwvReader:
             target=self._run,
             name="SWVReader",
             daemon=True,
-            args=(probe, parser, getattr(session, "_etools_io_lock", None)),
+            args=(probe, parser),
         )
         self._thread.start()
         self._bridge.status.emit(
-            f"SWV 运行中 · 系统 {sys_clock} Hz · SWO {swo_clock} Hz · 端口 {sorted(ports)}"
+            _tr(
+                "swv.running",
+                sys=sys_clock,
+                swo=swo_clock,
+                ports=", ".join(str(port) for port in sorted(ports)),
+            )
         )
         return True
 
@@ -166,39 +172,26 @@ class _SwvReader:
         try:
             probe = getattr(self._session, "probe", None)
             if probe is not None:
-                io_lock = getattr(self._session, "_etools_io_lock", None)
-                if io_lock is None:
+                with PROBE_LOCK:
                     probe.swo_stop()
-                else:
-                    with io_lock:
-                        probe.swo_stop()
         except Exception:
             pass
 
-    def _run(self, probe: Any, parser: Any, io_lock: Any = None) -> None:
+    def _run(self, probe: Any, parser: Any) -> None:
         try:
             try:
-                if io_lock is None:
+                with PROBE_LOCK:
                     probe.swo_stop()
-                else:
-                    with io_lock:
-                        probe.swo_stop()
             except Exception:
                 pass
-            if io_lock is None:
+            with PROBE_LOCK:
                 probe.swo_start(self._swo_clock)
-            else:
-                with io_lock:
-                    probe.swo_start(self._swo_clock)
             while not self._stop.is_set():
                 try:
-                    if io_lock is None:
+                    with PROBE_LOCK:
                         data = probe.swo_read()
-                    else:
-                        with io_lock:
-                            data = probe.swo_read()
                 except Exception as exc:
-                    self._bridge.status.emit(f"SWO 读取错误：{exc}")
+                    self._bridge.status.emit(_tr("swv.read_error", err=exc))
                     break
                 if data:
                     try:
@@ -210,17 +203,13 @@ class _SwvReader:
                     self._stop.wait(0.01)
         finally:
             try:
-                if io_lock is None:
+                with PROBE_LOCK:
                     probe.swo_stop()
-                else:
-                    with io_lock:
-                        probe.swo_stop()
             except Exception:
                 pass
 
 
 class SwvPanel(QWidget):
-    """SWV console with multi ITM port tabs (renamed from SWO)."""
     """SWV console with multi ITM port tabs (renamed from SWO)."""
 
     data_received = Signal(int, bytes)
@@ -239,8 +228,6 @@ class SwvPanel(QWidget):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
 
-        from etools.i18n import tr as _tr
-
         bar = QHBoxLayout()
         bar.setSpacing(6)
         title = QLabel("SWV")
@@ -248,7 +235,8 @@ class SwvPanel(QWidget):
         bar.addWidget(title)
         bar.addStretch(1)
 
-        bar.addWidget(QLabel(_tr("swv.sysclk")))
+        self.sys_label = QLabel(_tr("swv.sysclk"))
+        bar.addWidget(self.sys_label)
         from etools.ui.widgets.spin_boxes import int_spin
 
         spin_w = 110
@@ -259,7 +247,8 @@ class SwvPanel(QWidget):
         self.sys_edit = self.sys_spin
         bar.addWidget(self.sys_spin)
 
-        bar.addWidget(QLabel(_tr("swv.swoclk")))
+        self.swo_label = QLabel(_tr("swv.swoclk"))
+        bar.addWidget(self.swo_label)
         self.swo_spin = int_spin(
             2_000_000, minimum=1_000, maximum=50_000_000, step=100_000, width=spin_w
         )
@@ -267,7 +256,8 @@ class SwvPanel(QWidget):
         self.swo_edit = self.swo_spin
         bar.addWidget(self.swo_spin)
 
-        bar.addWidget(QLabel(_tr("swv.itm_port")))
+        self.port_label = QLabel(_tr("swv.itm_port"))
+        bar.addWidget(self.port_label)
         self.port_spin = int_spin(0, minimum=0, maximum=31, step=1, width=spin_w)
         self.port_spin.setFixedWidth(spin_w)
         self.port_edit = self.port_spin
@@ -300,7 +290,7 @@ class SwvPanel(QWidget):
         ph.setObjectName("logView")
         ph.setReadOnly(True)
         ph.setPlaceholderText(_tr("swv.placeholder"))
-        self.tabs.addTab(ph, "端口 —")
+        self.tabs.addTab(ph, _tr("swv.port_tab_none"))
 
     def _wire(self) -> None:
         self.start_btn.clicked.connect(self._toggle)
@@ -310,9 +300,19 @@ class SwvPanel(QWidget):
         self._bridge.status.connect(lambda m: self.status_label.setText(m))
 
     def retranslate(self) -> None:
-        from etools.i18n import tr as _tr
-
         self.clear_btn.setText(_tr("swv.clear"))
+        running = self._reader.running
+        self.start_btn.setText(_tr("swv.stop_swv") if running else _tr("swv.start"))
+        self.sys_label.setText(_tr("swv.sysclk"))
+        self.swo_label.setText(_tr("swv.swoclk"))
+        self.port_label.setText(_tr("swv.itm_port"))
+        if not running:
+            self.status_label.setText(_tr("swv.status_off"))
+        if self._views:
+            for index, port in enumerate(sorted(self._views)):
+                self.tabs.setTabText(index, _tr("swv.port_tab", port=port))
+        elif self.tabs.count():
+            self.tabs.setTabText(0, _tr("swv.port_tab_none"))
 
     def set_connected(self, connected: bool) -> None:
         self.start_btn.setEnabled(connected)
@@ -335,14 +335,14 @@ class SwvPanel(QWidget):
         ports = self._parse_ports()
         self._build_channel_tabs(ports)
         if self._reader.start(sess, sys_clk, swo_clk, ports):
-            self.start_btn.setText("停止 SWV")
+            self.start_btn.setText(_tr("swv.stop_swv"))
         else:
             self._ensure_placeholder()
 
     def _stop(self) -> None:
         self._reader.stop()
         self.start_btn.setText(_tr("swv.start"))
-        self.status_label.setText("已停止")
+        self.status_label.setText(_tr("swv.stopped"))
 
     def _build_channel_tabs(self, ports: set[int]) -> None:
         self.tabs.clear()
@@ -353,7 +353,7 @@ class SwvPanel(QWidget):
             view.setReadOnly(True)
             view.setMaximumBlockCount(MAX_VIEW_LINES)
             self._views[p] = view
-            self.tabs.addTab(view, f"端口 {p}")
+            self.tabs.addTab(view, _tr("swv.port_tab", port=p))
 
     def _on_text(self, port: int, text: str) -> None:
         view = self._views.get(port)

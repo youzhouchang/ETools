@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import threading
 from pathlib import Path
 
 from etools.core.models import (
@@ -13,6 +12,7 @@ from etools.core.models import (
     TargetInfo,
 )
 from etools.core.probe import ProbeDriver
+from etools.core.probe_io import PROBE_LOCK
 from etools.logger import get_logger
 
 log = get_logger("operations")
@@ -25,18 +25,14 @@ class FlashService:
         self.driver = driver
         # UI tasks and Lua scripts share this driver. Hold the lock for the
         # whole probe call so they cannot enter pyOCD at the same time.
-        self._lock = threading.RLock()
+        self._lock = PROBE_LOCK
 
     def scan_probes(self) -> list[ProbeInfo]:
         return self.driver.discover()
 
     def connect(self, probe: ProbeInfo, target: TargetInfo) -> OperationResult:
         with self._lock:
-            result = self.driver.connect(probe, target)
-            session = getattr(self.driver, "session", None)
-            if session is not None:
-                session._etools_io_lock = self._lock
-            return result
+            return self.driver.connect(probe, target)
 
     def disconnect(self) -> None:
         with self._lock:

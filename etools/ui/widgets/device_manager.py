@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+import threading
+
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
@@ -36,7 +38,39 @@ from etools.ui.ui_loader import embed_form
 
 log = get_logger("ui.devices")
 
-VENDOR_ALL = "全部"
+VENDOR_ALL = "*"
+
+# Jobs are not parented to the panel: pack install can outlive the window,
+# and destroying a running QThread with its parent crashes Qt.
+_LIVE_JOBS: set[_PackJob] = set()
+_LIVE_LOCK = threading.Lock()
+
+
+class _PackJob(QThread):
+    """Run `pyocd pack install` or `pyocd pack list` off the GUI thread."""
+
+    finished_ok = Signal(str, object)
+
+    def __init__(self, kind: str, pack_id: str) -> None:
+        super().__init__()
+        self._kind = kind
+        self._pack_id = pack_id
+
+    def run(self) -> None:
+        try:
+            if self._kind == "install":
+                result: object = install_pack(self._pack_id)
+            else:
+                result = list_installed_packs()
+        except Exception as exc:
+            result = exc
+        self.finished_ok.emit(self._kind, result)
+
+
+def _release_job(job: _PackJob) -> None:
+    with _LIVE_LOCK:
+        _LIVE_JOBS.discard(job)
+    job.deleteLater()
 
 
 class DeviceManagerPanel(QWidget):
@@ -118,8 +152,16 @@ class DeviceManagerPanel(QWidget):
             self.unhide_all_btn.clicked.connect(self._on_unhide_all)
         self.install_pack_btn.clicked.connect(self._on_install_pack)
         self.list_pack_btn.clicked.connect(self._on_list_packs)
+        self._pack_job: _PackJob | None = None
 
     # ----- data -----
+
+    def retranslate(self) -> None:
+        first = self.vendor_list.item(0)
+        if first is not None:
+            count = first.text().rsplit(" (", 1)[-1]
+            first.setText(f"{tr('devices.all')} ({count}")
+        self._fill_tree()
 
     def reload(self) -> None:
         invalidate_target_cache()
@@ -127,7 +169,7 @@ class DeviceManagerPanel(QWidget):
         self.vendor_list.blockSignals(True)
         self.vendor_list.clear()
         total_n = sum(len(v) for v in groups.values())
-        self.vendor_list.addItem(QListWidgetItem(f"{VENDOR_ALL} ({total_n})"))
+        self.vendor_list.addItem(QListWidgetItem(f"{tr('devices.all')} ({total_n})"))
         for vendor in sorted(groups.keys(), key=lambda v: (v == "Other", v)):
             self.vendor_list.addItem(QListWidgetItem(f"{vendor} ({len(groups[vendor])})"))
         self.vendor_list.setCurrentRow(0)
@@ -136,12 +178,9 @@ class DeviceManagerPanel(QWidget):
 
     def _selected_vendor(self) -> str:
         item = self.vendor_list.currentItem()
-        if not item:
+        if not item or self.vendor_list.currentRow() <= 0:
             return VENDOR_ALL
-        text = item.text()
-        if text.startswith(VENDOR_ALL):
-            return VENDOR_ALL
-        return text.rsplit(" (", 1)[0]
+        return item.text().rsplit(" (", 1)[0]
 
     def _fill_tree(self) -> None:
         groups = group_targets_by_vendor()
@@ -170,18 +209,24 @@ class DeviceManagerPanel(QWidget):
                 if keyword and keyword not in name.lower() and keyword not in label.lower():
                     continue
                 if name in custom_names:
-                    source = "自定义"
+                    source = tr("devices.src_custom")
                 elif name in builtin:
-                    source = "内置"
+                    source = tr("devices.src_builtin")
                 else:
-                    source = "候选"
+                    source = tr("devices.src_candidate")
                 row = QTreeWidgetItem([model, name, source])
                 row.setData(0, Qt.ItemDataRole.UserRole, name)
                 items.append(row)
         self.device_tree.addTopLevelItems(items)
         self.hint.setText(
-            f"共 {len(list_target_choices())} 个 target · 自定义 {len(custom_names)} · "
-            f"隐藏型号 {hidden_n} · 隐藏厂商 {hid_v} · 当前筛选：{vendor}"
+            tr(
+                "devices.summary",
+                total=len(list_target_choices()),
+                custom=len(custom_names),
+                hidden=hidden_n,
+                hidden_vendors=hid_v,
+                vendor=tr("devices.all") if vendor == VENDOR_ALL else vendor,
+            )
         )
 
     # ----- actions -----
@@ -199,7 +244,7 @@ class DeviceManagerPanel(QWidget):
             self.reload()
             self.catalog_changed.emit()
         else:
-            self.hint.setText(f"已存在或无效：{name}")
+            self.hint.setText(tr("devices.add_fail", name=name))
 
     def _on_remove_custom(self) -> None:
         item = self.device_tree.currentItem()
@@ -210,7 +255,7 @@ class DeviceManagerPanel(QWidget):
             self.reload()
             self.catalog_changed.emit()
         else:
-            self.hint.setText("仅自定义项可删除；内置项请用「隐藏选中」")
+            self.hint.setText(tr("devices.remove_only_custom"))
 
     def _selected_target_name(self) -> str:
         item = self.device_tree.currentItem()
@@ -227,9 +272,9 @@ class DeviceManagerPanel(QWidget):
         if hide_target(name):
             self.reload()
             self.catalog_changed.emit()
-            self.hint.setText(f"已隐藏型号 {name}")
+            self.hint.setText(tr("devices.hidden_model", name=name))
         else:
-            self.hint.setText(f"无法隐藏 {name}")
+            self.hint.setText(tr("devices.hide_fail", name=name))
 
     def _on_hide_vendor(self) -> None:
         """Hide the currently selected vendor (all its targets)."""
@@ -241,59 +286,91 @@ class DeviceManagerPanel(QWidget):
             n = self.vendor_list.currentItem().text() if self.vendor_list.currentItem() else ""
             self.reload()
             self.catalog_changed.emit()
-            self.hint.setText(f"已隐藏厂商 {vendor}（{n}）")
+            self.hint.setText(tr("devices.hidden_vendor", vendor=vendor, n=n))
         else:
-            self.hint.setText(f"无法隐藏厂商 {vendor}")
+            self.hint.setText(tr("devices.hide_vendor_fail", vendor=vendor))
 
     def _on_unhide_all(self) -> None:
         unhide_all_targets()
         self.reload()
         self.catalog_changed.emit()
-        self.hint.setText("已恢复全部隐藏的型号与厂商")
+        self.hint.setText(tr("devices.unhidden"))
+
+    def shutdown(self) -> None:
+        """Drop the result handler. A running pack job is left to finish on its own."""
+        job = self._pack_job
+        self._pack_job = None
+        if job is None:
+            return
+        try:
+            job.finished_ok.disconnect(self._apply_pack)
+        except (RuntimeError, TypeError):
+            pass
 
     def _on_install_pack(self) -> None:
         pack = self.pack_edit.text().strip()
         if not pack:
-            self.hint.setText("请填写 Pack ID，例如 GigaDevice::GD32F103C8，再点「安装 Pack」")
+            self.hint.setText(tr("devices.pack_need_id"))
             return
-        self.hint.setText(f"正在安装 {pack} …（可能需要联网，最长约 2 分钟）")
-        self.install_pack_btn.setEnabled(False)
-        self.list_pack_btn.setEnabled(False)
-        try:
-            ok, msg = install_pack(pack)
-            last = msg.splitlines()[-1] if msg else pack
-            self.hint.setText(("安装成功：" if ok else "安装失败：") + last)
-            if ok:
-                self.reload()
-                self.catalog_changed.emit()
-        except Exception as exc:
-            self.hint.setText(f"安装异常：{exc}")
-        finally:
-            self.install_pack_btn.setEnabled(True)
-            self.list_pack_btn.setEnabled(True)
+        if not self._start_pack_job("install", pack):
+            return
+        self.hint.setText(tr("devices.pack_installing", pack=pack))
 
     def _on_list_packs(self) -> None:
-        self.hint.setText("正在查询已装 Pack…")
-        self.list_pack_btn.setEnabled(False)
-        self.install_pack_btn.setEnabled(False)
-        try:
-            lines = list_installed_packs()
-        except Exception as exc:
-            lines = []
-            self.hint.setText(f"查询失败：{exc}")
-        finally:
-            self.list_pack_btn.setEnabled(True)
-            self.install_pack_btn.setEnabled(True)
+        if not self._start_pack_job("list"):
+            return
+        self.hint.setText(tr("devices.pack_listing"))
 
+    def _start_pack_job(self, kind: str, pack_id: str = "") -> bool:
+        if self._pack_job is not None and self._pack_job.isRunning():
+            return False
+        job = _PackJob(kind, pack_id)
+        with _LIVE_LOCK:
+            _LIVE_JOBS.add(job)
+        job.finished_ok.connect(self._apply_pack)
+        job.finished.connect(lambda j=job: _release_job(j))
+        self._pack_job = job
+        self._set_pack_busy(True)
+        job.start()
+        return True
+
+    def _set_pack_busy(self, busy: bool) -> None:
+        self.install_pack_btn.setEnabled(not busy)
+        self.list_pack_btn.setEnabled(not busy)
+
+    def _apply_pack(self, kind: str, result: object) -> None:
+        if self._pack_job is None:
+            return
+        self._pack_job = None
+        self._set_pack_busy(False)
+        if kind == "install":
+            self._show_install_result(result)
+            return
+        self._show_pack_list(result)
+
+    def _show_install_result(self, result: object) -> None:
+        if not (isinstance(result, tuple) and len(result) == 2):
+            self.hint.setText(tr("devices.pack_error", err=result))
+            return
+        ok, msg = result
+        if ok:
+            self.reload()
+            self.catalog_changed.emit()
+        last = str(msg).splitlines()[-1] if msg else ""
+        self.hint.setText(tr("devices.pack_ok" if ok else "devices.pack_fail", msg=last))
+
+    def _show_pack_list(self, result: object) -> None:
+        if not isinstance(result, list):
+            self.hint.setText(tr("devices.pack_list_fail", err=result))
+            return
+        lines = result
         self.vendor_list.blockSignals(True)
         self.vendor_list.setCurrentRow(0)
         self.vendor_list.blockSignals(False)
         self.device_tree.clear()
         if not lines:
-            self.hint.setText(
-                "未列出已装 Pack（pyocd 不可用或列表为空）。可尝试：python -m pyocd pack list"
-            )
+            self.hint.setText(tr("devices.pack_none"))
             return
         for ln in lines:
             self.device_tree.addTopLevelItem(QTreeWidgetItem([ln[:80], ln, "Pack"]))
-        self.hint.setText(f"已装 Pack 共 {len(lines)} 行（python -m pyocd pack list）")
+        self.hint.setText(tr("devices.pack_count", n=len(lines)))

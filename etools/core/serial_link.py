@@ -9,6 +9,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from etools.logger import get_logger
+
+log = get_logger("serial")
+
 #: Port availability classes returned by :func:`probe_port`.
 PORT_OK = "ok"
 PORT_BUSY = "busy"
@@ -327,13 +331,22 @@ class SerialLink:
             raise RuntimeError("serial not open")
         self._ser.send_break(duration=max(0.0, float(duration)))
 
-    def set_dtr(self, on: bool) -> None:
-        if self.is_open:
-            self._ser.dtr = bool(on)
+    def set_dtr(self, on: bool) -> bool:
+        return self._set_modem_line("dtr", on)
 
-    def set_rts(self, on: bool) -> None:
-        if self.is_open:
-            self._ser.rts = bool(on)
+    def set_rts(self, on: bool) -> bool:
+        return self._set_modem_line("rts", on)
+
+    def _set_modem_line(self, name: str, on: bool) -> bool:
+        """Best effort: ptys, many BT SPP and some CDC drivers reject modem-line ioctls."""
+        if not self.is_open:
+            return False
+        try:
+            setattr(self._ser, name, bool(on))
+        except (OSError, ValueError) as exc:  # SerialException is an OSError
+            log.info("serial %s not supported on %s: %s", name.upper(), self._port, exc)
+            return False
+        return True
 
     def close(self) -> None:
         self._stop.set()
@@ -361,6 +374,10 @@ class SerialLink:
                     data = ser.read(1)
                 if not data:
                     continue
+                # Pick up what arrived with the first byte so one burst is one callback.
+                waiting = ser.in_waiting
+                if waiting:
+                    data += ser.read(waiting)
                 if epoch != self._epoch:
                     break
                 q = self._transfer_q
@@ -371,5 +388,9 @@ class SerialLink:
                     self._on_rx(data)
             except Exception as exc:  # noqa: BLE001
                 if not self._stop.is_set() and epoch == self._epoch and self._on_error:
-                    self._on_error(str(exc))
+                    try:
+                        self._on_error(str(exc))
+                    except RuntimeError:
+                        # The Qt receiver was destroyed while this thread was still reading.
+                        pass
                 break

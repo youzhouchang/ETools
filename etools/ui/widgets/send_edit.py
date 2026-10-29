@@ -10,26 +10,53 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+_MAX_LINES = 4
+
 
 class SendEdit(QPlainTextEdit):
-    """2–3 line composer. Enter submits, Shift+Enter inserts a newline."""
+    """One line by default. Extra lines grow the box, then it scrolls."""
 
     submitted = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        # Comfortable two-line composer — do not swallow leftover group height.
-        self.setFixedHeight(52)
+        self._fitting = False
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setPlaceholderText("")
         self.setTabChangesFocus(True)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.textChanged.connect(self._fit_height)
+        self._fit_height()
 
     def text(self) -> str:
         return self.toPlainText()
 
     def setText(self, value: str) -> None:
         self.setPlainText(value or "")
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._fit_height()
+
+    def _fit_height(self) -> None:
+        if self._fitting:
+            return
+        self._fitting = True
+        try:
+            line = max(self.fontMetrics().lineSpacing(), 16)
+            frame = self.frameWidth() * 2 + 8
+            cap = line * _MAX_LINES + frame
+            width = max(1, self.viewport().width())
+            self.document().setTextWidth(width)
+            # QPlainTextDocumentLayout reports height as a line count, not pixels.
+            lines = max(1, int(self.document().size().height()))
+            height = min(cap, line * lines + frame)
+            if self.height() != height:
+                self.setFixedHeight(height)
+        finally:
+            self._fitting = False
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):

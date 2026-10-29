@@ -65,6 +65,7 @@ class TerminalPage(ToolPage):
         self.session_combo.setFixedHeight(28)
         self.session_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.lbl_session = self.form_row(tr("term.session"), self.session_combo)
+        self.expand_field(self.session_combo)
 
         self.session_save_btn = QPushButton(tr("term.session_save"))
         self.session_save_btn.setObjectName("ghost")

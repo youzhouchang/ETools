@@ -6,9 +6,70 @@ import base64
 import hashlib
 import socket
 import threading
+import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
+
+from etools.logger import get_logger
+
+log = get_logger("ssh")
+
+#: Upper bound for one-shot command output kept in memory (per stream).
+EXEC_OUTPUT_LIMIT = 4 * 1024 * 1024
+
+
+class _CappedBuffer:
+    """Keep up to *limit* bytes; count the rest so the caller can say it was cut."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.buf = bytearray()
+        self.truncated = False
+
+    def feed(self, chunk: bytes) -> None:
+        room = self.limit - len(self.buf)
+        if room > 0:
+            self.buf.extend(chunk[:room])
+        if len(chunk) > max(room, 0):
+            self.truncated = True
+
+    def text(self) -> str:
+        data = bytes(self.buf)
+        if self.truncated:
+            data += f"\n[output truncated at {self.limit} bytes]\n".encode()
+        return data.decode("utf-8", errors="replace")
+
+
+def _drain_channel(
+    channel, *, limit: int = EXEC_OUTPUT_LIMIT, idle_timeout: float = 30.0
+) -> tuple[str, str]:
+    """Read stdout and stderr together until the command exits.
+
+    Reading one stream to EOF first can deadlock: the other stream fills the
+    shared SSH window and the server stops sending.
+    """
+    out, err = _CappedBuffer(limit), _CappedBuffer(limit)
+    last = time.monotonic()
+    while True:
+        busy = False
+        while channel.recv_ready():
+            out.feed(channel.recv(64 * 1024))
+            busy = True
+        while channel.recv_stderr_ready():
+            err.feed(channel.recv_stderr(64 * 1024))
+            busy = True
+        if busy:
+            last = time.monotonic()
+            continue
+        if channel.exit_status_ready() and not channel.recv_ready():
+            if not channel.recv_stderr_ready():
+                break
+            continue
+        if idle_timeout and time.monotonic() - last > idle_timeout:
+            raise TimeoutError(f"no command output for {idle_timeout:.0f}s")
+        time.sleep(0.01)
+    return out.text(), err.text()
 
 
 class HostKeyMismatchError(RuntimeError):
@@ -61,8 +122,9 @@ def inspect_host_key(host: str, port: int = 22) -> tuple[str, str]:
     try:
         if known_hosts.exists():
             known.load(str(known_hosts))
-    except Exception:
-        return "missing", fp
+    except Exception as exc:  # noqa: BLE001
+        log.warning("cannot read %s: %s", known_hosts, exc)
+        return "unknown", fp
     candidates = known.lookup(host) or known.lookup(f"[{host}]:{port}")
     if not candidates:
         return "missing", fp
@@ -128,9 +190,9 @@ class SshLink:
                     ssh_client._host_keys.add(hostname, key.get_name(), key)
 
             client.set_missing_host_key_policy(FingerprintPolicy())
-        elif accept_new_host_key:
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         else:
+            # Trusting a new key requires the fingerprint the user confirmed.
+            accept_new_host_key = False
             client.set_missing_host_key_policy(paramiko.RejectPolicy())
 
         kwargs: dict = {
@@ -170,8 +232,8 @@ class SshLink:
             try:
                 known_hosts.parent.mkdir(parents=True, exist_ok=True)
                 client.save_host_keys(str(known_hosts))
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                log.warning("cannot save host key to %s: %s", known_hosts, exc)
 
     def open_shell(self, width: int = 120, height: int = 32) -> None:
         """Open an interactive PTY. Further keystrokes go through shell_write."""
@@ -239,12 +301,11 @@ class SshLink:
         with self._lock:
             if self._client is None:
                 raise RuntimeError("SSH not connected")
-            stdin, stdout, stderr = self._client.exec_command(command, timeout=timeout)
+            stdin, stdout, _stderr = self._client.exec_command(command, timeout=timeout)
             stdin.close()
-            out = stdout.read().decode("utf-8", errors="replace")
-            err = stderr.read().decode("utf-8", errors="replace")
-            status = stdout.channel.recv_exit_status()
-            return status, out, err
+            channel = stdout.channel
+            out, err = _drain_channel(channel, idle_timeout=timeout)
+            return channel.recv_exit_status(), out, err
 
     @contextmanager
     def _sftp(self):

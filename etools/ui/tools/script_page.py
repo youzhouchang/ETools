@@ -73,6 +73,7 @@ class ScriptPage(ToolPage):
         self.file_combo.setFixedHeight(28)
         self.file_combo.setToolTip(tr("script.file_tip"))
         self.lbl_file = self.form_row(tr("script.file"), self.file_combo)
+        self.expand_field(self.file_combo)
 
         self.template_combo = QComboBox()
         self.template_combo.setFixedHeight(28)
@@ -283,6 +284,30 @@ class ScriptPage(ToolPage):
             self._pump.install(self)
         self.svc.set_bridge("term", TermLuaBridge(page, self._pump))
 
+    def _ensure_pump(self):
+        from etools.ui.tools.script_bridges import _QueueBridge
+
+        if not hasattr(self, "_pump"):
+            self._pump = _QueueBridge()
+            self._pump.install(self)
+        return self._pump
+
+    def bind_frames(self) -> None:
+        from etools.ui.tools.script_bridges import FramesLuaBridge
+
+        self._frames_bridge = FramesLuaBridge(self._ensure_pump())
+        self.svc.set_bridge("frames", self._frames_bridge)
+
+    def bind_dash(self, page) -> None:
+        from etools.ui.tools.script_bridges import DashLuaBridge
+
+        self.svc.set_bridge("dash", DashLuaBridge(page, self._ensure_pump()))
+
+    def bind_map(self, page) -> None:
+        from etools.ui.tools.script_bridges import MapLuaBridge
+
+        self.svc.set_bridge("map", MapLuaBridge(page, self._ensure_pump()))
+
     def bind_can(self, page) -> None:
         from etools.ui.tools.script_bridges import CanLuaBridge, _QueueBridge
 
@@ -344,6 +369,9 @@ class ScriptPage(ToolPage):
 
     def shutdown(self) -> None:
         self.svc.stop()
+        frames = getattr(self, "_frames_bridge", None)
+        if frames is not None:
+            frames.shutdown()
 
     def can_close(self) -> bool:
         if not self.editor.document().isModified():
@@ -374,10 +402,20 @@ class ScriptPage(ToolPage):
     def _append_log(self, message: str) -> None:
         self.console.appendPlainText(message)
 
+    def note_toolbar_run(self, name: str) -> None:
+        """A tool-page menu started this script. Show that here too."""
+        self.run_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.status.setText(tr("script.running_name", name=name))
+        self.notify_state()
+
     def _on_script_done(self, ok: bool, message: str) -> None:
         self.run_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
-        self.status.setText(tr("script.done") if ok else tr("script.failed"))
+        if message == "script stopped":
+            self.status.setText(tr("script.stopped"))
+        else:
+            self.status.setText(tr("script.done") if ok else tr("script.failed"))
         self.console.appendPlainText(message)
         self.notify_state()
 

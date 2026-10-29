@@ -230,6 +230,13 @@ class TaskManager(QObject):
         runner.start(fn, ok, fail, cancel, cancelled)
         return True
 
+    def any_running(self) -> bool:
+        return any(info.runner.busy for info in self._tasks.values())
+
+    def cancel_all(self) -> None:
+        for info in list(self._tasks.values()):
+            info.cancel_event.set()
+
     def cancel(self, task_id: str) -> bool:
         info = self._tasks.get(task_id)
         if not info or not info.runner.busy:

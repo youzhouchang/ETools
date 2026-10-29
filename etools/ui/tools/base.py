@@ -5,6 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractButton,
+    QComboBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -255,7 +256,17 @@ class ToolPage(QWidget):
             holder.setLayout(form)
             self.ctx_layout.addWidget(holder)
             self._active_form = form
-        if isinstance(field, QWidget):
+        if isinstance(field, QComboBox):
+            # Share the form column. A contents-sized combo makes "N" and
+            # "115200" end at different places down the sidebar.
+            field.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+            )
+            field.setMinimumContentsLength(1)
+            field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            field.setMinimumWidth(72)
+            field.setMaximumWidth(16777215)
+        elif isinstance(field, QWidget):
             field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             # Composite fields (edit+button, button grids) share the 28px rhythm
             # but may grow taller — never crush multi-button rows.
@@ -269,6 +280,20 @@ class ToolPage(QWidget):
         form.addRow(lab, field)
         self._sync_form_labels(form)
         return lab
+
+    def expand_field(self, field: QWidget, *, minimum: int = 120) -> None:
+        """Undo a hug-content combo when the text is filled in later."""
+        field.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        field.setMinimumWidth(minimum)
+        field.setMaximumWidth(16777215)
+
+    def align_combo(self, combo: QComboBox, *, width: int = 100) -> None:
+        """Give sibling option lists one width so their edges line up."""
+        combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        combo.setFixedHeight(28)
+        combo.setFixedWidth(width)
 
     def _sync_form_labels(self, form: QFormLayout) -> None:
         """Keep all labels in the same column width so 2-char and 4-char

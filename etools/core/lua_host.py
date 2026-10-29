@@ -11,8 +11,18 @@ Host tables exposed to Lua:
     util.append_checksum(data, algo) / util.verify_checksum(frame, algo)
     serial.opened() / serial.send(text) / serial.send_hex(hexstr) / serial.write(bytes_str)
     serial.recv(max_bytes) / serial.expect(needle, timeout_ms)
+    serial.plot(frame) / net.plot(frame)
+        frame is a numeric table ``{a=5, b=4}`` or ``{5, 4, 16}``,
+        or a string parsed by the open plot mode (``/*1,2*/``, JSON, key=value, HEX)
     net.opened() / net.send(text) / net.recv(max_bytes) / net.expect(needle, timeout_ms)
     term.opened() / term.send(text) / term.recv(max_bytes)
+    frames.recv([max[, source]]) / frames.wait([timeout_ms[, source]]) / frames.latest([source])
+    frames.publish(fields) / frames.clear()
+        parsed frames shared by serial / net / MQTT; publish uses source "lua"
+    dash.widgets() / dash.values() / dash.source([name]) / dash.push(fields)
+    dash.add(spec) / dash.remove(index)
+    map.points([n]) / map.last() / map.add(lat, lon) / map.clear()
+    map.source([name]) / map.bind(lat_field, lon_field)
     flash.erase_all() / flash.erase_range(addr, size)
     flash.program(path[, verify]) / flash.read_mem(addr, size) -> hex
     flash.reset([halt]) / flash.connected
@@ -43,6 +53,40 @@ except Exception:  # noqa: BLE001
 
 class LuaError(RuntimeError):
     """Lua compile or runtime failure."""
+
+
+# Binary chunks can corrupt the VM, and string.dump only exists to produce them.
+_HARDEN_LUA = """
+local raw_load = load
+load = function(chunk, name, _mode, env)
+  return raw_load(chunk, name, "t", env)
+end
+string.dump = nil
+"""
+
+
+def _to_lua(lua, value):
+    """Convert bridge results (lists / dicts) to Lua tables so ipairs/pairs work."""
+    if isinstance(value, dict):
+        return lua.table_from({str(k): _to_lua(lua, v) for k, v in value.items()})
+    if isinstance(value, (list, tuple)):
+        return lua.table_from([_to_lua(lua, v) for v in value])
+    return value
+
+
+def _lua_dict(table) -> dict:
+    """Flat Lua table with string keys -> dict (non-table input gives {})."""
+    items = getattr(table, "items", None)
+    if not callable(items):
+        return {}
+    return {str(k): v for k, v in list(items()) if not isinstance(k, bool)}
+
+
+def _attribute_filter(_obj, name, _is_setting):
+    """Block dunder/private attribute access on Python objects seen from Lua."""
+    if not isinstance(name, str) or name.startswith("_"):
+        raise AttributeError(f"access to '{name}' is not allowed")
+    return name
 
 
 class LuaHost:
@@ -96,6 +140,10 @@ class LuaHost:
             raise LuaError("lupa is not installed")
         if self._running:
             raise LuaError("script already running")
+        for bridge in list(self._bridges.values()):
+            hook = getattr(bridge, "script_started", None)
+            if callable(hook):
+                hook()
         self._stop_flag.clear()
         self._running = True
         self._thread = threading.Thread(
@@ -105,6 +153,14 @@ class LuaHost:
 
     def stop(self) -> None:
         self._stop_flag.set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        """Block until the current script finishes. Returns False on timeout."""
+        thread = self._thread
+        if thread is None:
+            return True
+        thread.join(timeout)
+        return not thread.is_alive()
 
     def _run_body(self, source: str) -> None:
         ok = False
@@ -124,7 +180,12 @@ class LuaHost:
     def _execute(self, source: str) -> None:
         from lupa import LuaRuntime  # type: ignore
 
-        lua = LuaRuntime(unpack_returned_tuples=True)
+        lua = LuaRuntime(
+            unpack_returned_tuples=True,
+            register_eval=False,
+            register_builtins=False,
+            attribute_filter=_attribute_filter,
+        )
         host = lua.eval("{}")
         self._install_app(lua, host)
         self._install_util(lua, host)
@@ -133,13 +194,16 @@ class LuaHost:
         self._install_term(lua, host)
         self._install_can(lua, host)
         self._install_flash(lua, host)
+        self._install_frames(lua, host)
+        self._install_dash(lua, host)
+        self._install_map(lua, host)
         lua.globals()["etools"] = host
         lua.globals()["dofile"] = self._blocked("dofile")
         lua.globals()["loadfile"] = self._blocked("loadfile")
-        # Drop dangerous stdlib bits for a lighter sandbox (not a hard jail).
         g = lua.globals()
-        for name in ("os", "io", "debug", "package", "require"):
+        for name in ("os", "io", "debug", "package", "require", "python"):
             g[name] = None
+        lua.execute(_HARDEN_LUA)
         try:
             lua.execute(source)
         except Exception as exc:  # noqa: BLE001
@@ -226,6 +290,7 @@ class LuaHost:
             "serial", "expect", str(needle), int(timeout)
         )
         serial["opened"] = lambda: self._flag("serial", "opened")
+        serial["plot"] = lambda frame: self._bridge_call("serial", "plot", *self._plot_args(frame))
         host["serial"] = serial
 
     def _install_net(self, lua, host) -> None:
@@ -236,6 +301,7 @@ class LuaHost:
             "net", "expect", str(needle), int(timeout)
         )
         net["opened"] = lambda: self._flag("net", "opened")
+        net["plot"] = lambda frame: self._bridge_call("net", "plot", *self._plot_args(frame))
         host["net"] = net
 
     def _install_term(self, lua, host) -> None:
@@ -266,9 +332,11 @@ class LuaHost:
         can["sdo_write"] = lambda node, index, subindex, value: self._bridge_call(
             "can", "sdo_write", int(node), int(index), int(subindex), str(value)
         )
-        can["recv"] = lambda max_frames=16: self._bridge_call("can", "recv", int(max_frames))
-        can["expect_id"] = lambda arb_id, timeout=2000: self._bridge_call(
-            "can", "expect_id", int(arb_id), int(timeout)
+        can["recv"] = lambda max_frames=16: _to_lua(
+            lua, self._bridge_call("can", "recv", int(max_frames))
+        )
+        can["expect_id"] = lambda arb_id, timeout=2000: _to_lua(
+            lua, self._bridge_call("can", "expect_id", int(arb_id), int(timeout))
         )
 
         def _opened():
@@ -296,6 +364,93 @@ class LuaHost:
 
         flash["connected"] = _connected
         host["flash"] = flash
+
+    def _install_frames(self, lua, host) -> None:
+        frames = lua.eval("{}")
+        frames["recv"] = lambda max_frames=32, source="": _to_lua(
+            lua, self._bridge_call("frames", "recv", int(max_frames), str(source or ""))
+        )
+
+        def wait(timeout=1000, source=""):
+            return _to_lua(
+                lua,
+                self._bridge_call(
+                    "frames", "wait", int(timeout), str(source or ""), self._stop_flag.is_set
+                ),
+            )
+
+        frames["wait"] = wait
+        frames["latest"] = lambda source="": _to_lua(
+            lua, self._bridge_call("frames", "latest", str(source or ""))
+        )
+        frames["publish"] = lambda fields: self._bridge_call(
+            "frames", "publish", self._fields(fields)
+        )
+        frames["clear"] = lambda: self._bridge_call("frames", "clear")
+        host["frames"] = frames
+
+    def _install_dash(self, lua, host) -> None:
+        dash = lua.eval("{}")
+        dash["widgets"] = lambda: _to_lua(lua, self._bridge_call("dash", "widgets"))
+        dash["values"] = lambda: _to_lua(lua, self._bridge_call("dash", "values"))
+        dash["source"] = lambda name=None: self._bridge_call(
+            "dash", "source", None if name is None else str(name)
+        )
+        dash["push"] = lambda fields: self._bridge_call("dash", "push", self._fields(fields))
+        dash["add"] = lambda spec: self._bridge_call("dash", "add", _lua_dict(spec))
+        dash["remove"] = lambda index: self._bridge_call("dash", "remove", int(index))
+        host["dash"] = dash
+
+    def _install_map(self, lua, host) -> None:
+        map_ = lua.eval("{}")
+        map_["points"] = lambda n=0: _to_lua(lua, self._bridge_call("map", "points", int(n)))
+        map_["last"] = lambda: _to_lua(lua, self._bridge_call("map", "last"))
+        map_["add"] = lambda lat, lon: self._bridge_call("map", "add", float(lat), float(lon))
+        map_["clear"] = lambda: self._bridge_call("map", "clear")
+        map_["source"] = lambda name=None: self._bridge_call(
+            "map", "source", None if name is None else str(name)
+        )
+        map_["bind"] = lambda lat, lon: self._bridge_call("map", "bind", str(lat), str(lon))
+        host["map"] = map_
+
+    def _fields(self, frame) -> dict[str, float]:
+        """Lua numeric table -> named fields (list entries become f1, f2, …)."""
+        kind, payload = self._plot_args(frame)
+        if kind == "list":
+            return {f"f{i + 1}": float(v) for i, v in enumerate(payload)}
+        if kind == "map":
+            return dict(payload)
+        raise LuaError("expected a numeric table such as {speed = 3.2} or {1, 2, 3}")
+
+    def _plot_args(self, frame) -> tuple[str, object]:
+        """Turn a Lua table or frame string into a bridge payload."""
+        if isinstance(frame, (bytes, bytearray)):
+            return ("bytes", bytes(frame))
+        if isinstance(frame, str):
+            return ("text", frame)
+        items = getattr(frame, "items", None)
+        if not callable(items):
+            raise LuaError("plot expects a table or a frame string")
+        named: dict[str, float] = {}
+        numbered: list[tuple[int, float]] = []
+        for key, value in list(items()):
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(key, bool):
+                continue
+            if isinstance(key, (int, float)) and float(key).is_integer():
+                numbered.append((int(key), number))
+            else:
+                named[str(key)] = number
+        if numbered and not named:
+            return ("list", [value for _index, value in sorted(numbered)])
+        for index, value in numbered:
+            named.setdefault(f"f{index}", value)
+        if not named:
+            raise LuaError("plot table has no numeric fields")
+        return ("map", named)
 
     @staticmethod
     def _to_bytes(data) -> bytes:

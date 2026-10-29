@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from etools.core.lua_host import LuaError, LuaHost
@@ -25,9 +23,7 @@ def test_lua_util_checksum_and_hex():
         assert(etools.util.verify_checksum(frame, 'crc16_modbus'))
         """
     )
-    deadline = time.time() + 3
-    while not done and time.time() < deadline:
-        time.sleep(0.02)
+    assert host.wait(3)
     assert done and done[0][0] is True
     assert any("01 03 00 00 00 01 84 0A" in line for line in logs)
 
@@ -71,11 +67,38 @@ def test_lua_serial_bridge_and_flash_api():
         assert(etools.flash.erase_range(0x08000000, 0x1000))
         """
     )
-    deadline = time.time() + 3
-    while not done and time.time() < deadline:
-        time.sleep(0.02)
+    assert host.wait(3)
     assert done and done[0][0] is True
     assert serial.sent == ["AT"]
+
+
+def test_lua_plot_accepts_a_table_and_a_frame_string():
+    host = LuaHost()
+
+    class PlotStub:
+        def __init__(self):
+            self.frames = []
+
+        def plot(self, kind, payload):
+            self.frames.append((kind, payload))
+            return 1
+
+    serial = PlotStub()
+    host.set_bridge("serial", serial)
+    done: list[tuple[bool, str]] = []
+    host.set_done_hook(lambda ok, msg: done.append((ok, msg)))
+    host.run_script(
+        """
+        assert(etools.serial.plot({a = 5, b = 4, c = 16}) == 1)
+        assert(etools.serial.plot({5, 4, 16}) == 1)
+        assert(etools.serial.plot('/*7,4,16*/') == 1)
+        """
+    )
+    assert host.wait(3)
+    assert done and done[0][0] is True, done
+    assert serial.frames[0] == ("map", {"a": 5.0, "b": 4.0, "c": 16.0})
+    assert serial.frames[1] == ("list", [5.0, 4.0, 16.0])
+    assert serial.frames[2] == ("text", "/*7,4,16*/")
 
 
 def test_lua_can_bridge_api():
@@ -127,9 +150,7 @@ def test_lua_can_bridge_api():
         assert(f and f['id'] == 0x701)
         """
     )
-    deadline = time.time() + 3
-    while not done and time.time() < deadline:
-        time.sleep(0.02)
+    assert host.wait(3)
     assert done and done[0][0] is True, done
     assert can.sent == [(0x123, "01 02 03", False)]
     assert can.nmts == [("start", 5)]
@@ -166,9 +187,7 @@ def test_lua_link_opened_and_net_expect():
         assert(etools.net.expect('pong', 50))
         """
     )
-    deadline = time.time() + 3
-    while not done and time.time() < deadline:
-        time.sleep(0.02)
+    assert host.wait(3)
     assert done and done[0][0] is True, done
 
 
@@ -182,15 +201,60 @@ def test_lua_stops_and_reports_errors():
     with pytest.raises(LuaError):
         host.run_script("etools.app.log('x')")
     host.stop()
-    deadline = time.time() + 3
-    while not done and time.time() < deadline:
-        time.sleep(0.02)
+    assert host.wait(3)
 
     # runtime errors are reported via done(ok=False)
     done.clear()
     host.run_script("error('boom')")
-    deadline = time.time() + 3
-    while not done and time.time() < deadline:
-        time.sleep(0.02)
+    assert host.wait(3)
     assert done and done[0][0] is False
     assert "boom" in done[0][1]
+
+
+def _run(host: LuaHost, source: str) -> tuple[bool, str]:
+    done: list[tuple[bool, str]] = []
+    host.set_done_hook(lambda ok, msg: done.append((ok, msg)))
+    host.run_script(source)
+    assert host.wait(3)
+    return done[0]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "return python.eval('1')",
+        "return python.builtins.open",
+        "return etools.app.log.__globals__",
+        "return os.getenv('HOME')",
+        "return io.open('/etc/passwd')",
+        "return require('os')",
+        "return string.dump(print)",
+        "return loadfile('x.lua')",
+    ],
+)
+def test_lua_sandbox_blocks_escapes(source):
+    ok, _msg = _run(LuaHost(), source)
+    assert ok is False
+
+
+def test_lua_load_rejects_binary_chunks_but_allows_text():
+    ok, msg = _run(LuaHost(), "assert(load('return 1 + 1')() == 2)")
+    assert ok, msg
+    ok, _msg = _run(LuaHost(), "local f, err = load('\\27Lua'); assert(f)")
+    assert ok is False
+
+
+def test_lua_python_dict_fields_still_readable():
+    host = LuaHost()
+
+    class CanStub:
+        def recv(self, max_frames=16):
+            return [{"id": 0x701, "data": "05"}]
+
+    host.set_bridge("can", CanStub())
+    ok, msg = _run(
+        host,
+        "local f = etools.can.recv(1)[1]\n"
+        "assert(#etools.can.recv(1) == 1 and f.id == 0x701 and f.data == '05')",
+    )
+    assert ok, msg

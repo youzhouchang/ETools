@@ -25,6 +25,7 @@ ZH = {
     "mon.hex": "Hex",
     "mon.ascii": "文本",
     "mon.ts": "时间戳",
+    "mon.ts_tip": "显示或隐藏每行日志前面的时间、RX/TX 和对端",
     "mon.autoscroll": "自动滚动",
     "mon.pause": "暂停显示",
     "mon.save": "保存日志…",
@@ -40,7 +41,10 @@ ZH = {
     "mon.dir.tx": "仅 TX",
     "mon.wrap": "自动换行",
     "mon.merge": "分帧",
-    "mon.merge_tip": "相同方向在该毫秒内的数据合并为一帧；0 = 关闭",
+    "mon.merge_tip": (
+        "没有换行时，间隔不超过该毫秒则留在同一行，超出则另起一行；"
+        "0 = 不按时间切段。换行始终另起一行"
+    ),
     "mon.auto_log": "自动日志",
     "mon.auto_log_tip": "勾选后选择文件，收发数据持续追加写入",
     "mon.export_text": "导出文本",
@@ -88,6 +92,7 @@ EN = {
     "mon.hex": "Hex",
     "mon.ascii": "ASCII",
     "mon.ts": "Timestamp",
+    "mon.ts_tip": "Show or hide the time, RX/TX, and peer in front of each log line",
     "mon.autoscroll": "Auto-scroll",
     "mon.pause": "Pause display",
     "mon.save": "Save Log…",
@@ -103,7 +108,11 @@ EN = {
     "mon.dir.tx": "TX only",
     "mon.wrap": "Wrap",
     "mon.merge": "Frame",
-    "mon.merge_tip": "Merge same-direction chunks within this ms into one frame; 0 = off",
+    "mon.merge_tip": (
+        "Without a newline, a gap inside this window stays on the same row "
+        "and a longer gap starts a new row; 0 = do not split on time. "
+        "A newline always starts a new row"
+    ),
     "mon.auto_log": "Auto log",
     "mon.auto_log_tip": "Pick a file and continuously append RX/TX",
     "mon.export_text": "Export text",

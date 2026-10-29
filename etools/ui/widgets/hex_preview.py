@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, QPersistentModelIndex, Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -12,19 +13,13 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QPushButton,
-    QTableWidget,
-    QTableWidgetItem,
+    QTableView,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from etools.core.hexdump import (
-    format_hex_lines,
-    load_image_segments,
-    merge_segments,
-    segments_summary,
-)
+from etools.core.hexdump import load_image_segments, merge_segments
 from etools.core.models import FIRMWARE_EXTENSIONS, format_size
 from etools.i18n import tr
 from etools.logger import get_logger
@@ -32,8 +27,86 @@ from etools.ui.widgets.spin_boxes import hex_spin
 
 log = get_logger("ui.hex")
 
-MAX_PREVIEW_BYTES = 256 * 1024
+MAX_PREVIEW_BYTES = 2 * 1024 * 1024
 PLUS_TAB_INDEX_ROLE = 99  # marker for the "+" placeholder tab
+_ROW_BYTES = 16
+_ASCII_COL = _ROW_BYTES + 1
+_ROOT = QModelIndex()
+_DISPLAY = Qt.ItemDataRole.DisplayRole
+_Index = QModelIndex | QPersistentModelIndex
+
+
+class HexTableModel(QAbstractTableModel):
+    """Address, 16 byte columns, and ASCII. Cells are formatted on demand."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._rows: list[tuple[int, bytes]] = []
+
+    def set_segments(self, segments: list[tuple[int, bytes]], limit: int) -> int:
+        """Load rows up to ``limit`` bytes. Returns how many bytes are shown."""
+        rows: list[tuple[int, bytes]] = []
+        shown = 0
+        for addr, data in segments:
+            room = limit - shown
+            if room <= 0:
+                break
+            chunk = data[:room]
+            for off in range(0, len(chunk), _ROW_BYTES):
+                rows.append((addr + off, chunk[off : off + _ROW_BYTES]))
+            shown += len(chunk)
+        self.beginResetModel()
+        self._rows = rows
+        self.endResetModel()
+        return shown
+
+    def rowCount(self, parent: _Index = _ROOT) -> int:  # noqa: N802
+        return 0 if parent.isValid() else len(self._rows)
+
+    def columnCount(self, parent: _Index = _ROOT) -> int:  # noqa: N802
+        return 0 if parent.isValid() else _ROW_BYTES + 2
+
+    def data(self, index: _Index, role: int = _DISPLAY) -> Any:
+        if not index.isValid():
+            return None
+        col = index.column()
+        if role == Qt.ItemDataRole.DisplayRole:
+            addr, chunk = self._rows[index.row()]
+            if col == 0:
+                return f"0x{addr:08X}"
+            if col == _ASCII_COL:
+                return "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
+            pos = col - 1
+            return f"{chunk[pos]:02X}" if pos < len(chunk) else ""
+        if role == Qt.ItemDataRole.TextAlignmentRole:
+            if col == 0:
+                return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            if col == _ASCII_COL:
+                return int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            return int(Qt.AlignmentFlag.AlignCenter)
+        if role == Qt.ItemDataRole.ForegroundRole and col == 0:
+            return Qt.GlobalColor.gray
+        return None
+
+    def headerData(  # noqa: N802
+        self, section: int, orientation: Qt.Orientation, role: int = _DISPLAY
+    ) -> Any:
+        if orientation != Qt.Orientation.Horizontal or role != Qt.ItemDataRole.DisplayRole:
+            return None
+        if section == 0:
+            return tr("hex.addr_col")
+        if section == _ASCII_COL:
+            return "ASCII"
+        return f"{section - 1:02X}"
+
+
+def segments_text(segments: list[tuple[int, bytes]]) -> str:
+    if not segments:
+        return tr("hex.empty")
+    total = sum(len(d) for _, d in segments)
+    lo = min(a for a, _ in segments)
+    hi = max(a + len(d) for a, d in segments)
+    return tr("hex.summary", n=len(segments), total=total, lo=lo, hi=hi - 1)
 
 
 class HexDocumentView(QWidget):
@@ -42,6 +115,8 @@ class HexDocumentView(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._segments: list[tuple[int, bytes]] = []
+        self._source = ""
+        self._shown = 0
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -49,17 +124,16 @@ class HexDocumentView(QWidget):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
 
-        self.info_label = QLabel("尚未加载数据")
+        self.info_label = QLabel(tr("hex.no_data"))
         self.info_label.setObjectName("hint")
         root.addWidget(self.info_label)
 
-        self.table = QTableWidget(0, 18)
-        self.table.setHorizontalHeaderLabels(
-            [tr("hex.addr_col")] + [f"{i:02X}" for i in range(16)] + ["ASCII"]
-        )
+        self.model = HexTableModel(self)
+        self.table = QTableView()
+        self.table.setModel(self.model)
         self.table.verticalHeader().setVisible(False)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self.table.setEditTriggers(QTableView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionMode(QTableView.SelectionMode.NoSelection)
         self.table.setAlternatingRowColors(False)
         self.table.setShowGrid(False)
         self.table.setWordWrap(False)
@@ -68,15 +142,20 @@ class HexDocumentView(QWidget):
         mono = QFont("Cascadia Mono", 10)
         mono.setStyleHint(QFont.StyleHint.Monospace)
         self.table.setFont(mono)
+        # Uniform rows let the view skip per-row size queries on large dumps.
+        self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        self.table.verticalHeader().setDefaultSectionSize(
+            self.table.fontMetrics().height() + 6
+        )
 
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         hdr.setStretchLastSection(True)
         # Full 32-bit address "0x08000000" needs room
         self.table.setColumnWidth(0, 96)
-        for i in range(1, 17):
+        for i in range(1, _ROW_BYTES + 1):
             self.table.setColumnWidth(i, 30)
-        self.table.setColumnWidth(17, 120)
+        self.table.setColumnWidth(_ASCII_COL, 120)
         root.addWidget(self.table, 1)
 
     def load_segments(self, segments: list[tuple[int, bytes]], source: str = "") -> None:
@@ -94,44 +173,26 @@ class HexDocumentView(QWidget):
     def load_bytes(self, addr: int, data: bytes, source: str | None = None) -> None:
         self.load_segments([(addr, data)], source=source or tr("hex.chip_mem"))
 
+    def retranslate(self) -> None:
+        self.model.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, 0)
+        if self._segments:
+            self._update_info()
+        else:
+            self.info_label.setText(tr("hex.no_data"))
+
     def _render(self, source: str = "") -> None:
-        rows_data: list[tuple[str, str, str]] = []
-        total = 0
-        for addr, data in self._segments:
-            total += len(data)
-            rows_data.extend(
-                format_hex_lines(addr, data, width=16, max_bytes=MAX_PREVIEW_BYTES)
-            )
-            if total >= MAX_PREVIEW_BYTES:
-                break
-
-        self.table.setRowCount(len(rows_data))
-        for r, (addr_s, hex_s, ascii_s) in enumerate(rows_data):
-            item0 = QTableWidgetItem(addr_s)
-            item0.setTextAlignment(
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-            )
-            item0.setForeground(Qt.GlobalColor.gray)
-            self.table.setItem(r, 0, item0)
-            parts = hex_s.split()
-            for c in range(16):
-                it = QTableWidgetItem(parts[c] if c < len(parts) else "")
-                it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                # col 0 = address, cols 1–16 = bytes, col 17 = ASCII
-                self.table.setItem(r, c + 1, it)
-            it_a = QTableWidgetItem(ascii_s)
-            it_a.setTextAlignment(
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-            )
-            self.table.setItem(r, 17, it_a)
-
-        summary = segments_summary(self._segments)
-        shown = f"显示 {len(rows_data)} 行"
-        if total > MAX_PREVIEW_BYTES:
-            shown += f"（截断，共 {format_size(total)}）"
-        src = f" · 来源：{source}" if source else ""
-        self.info_label.setText(f"{summary} · {shown}{src}")
+        self._source = source
+        self._shown = self.model.set_segments(self._segments, MAX_PREVIEW_BYTES)
+        self._update_info()
         self.table.scrollToTop()
+
+    def _update_info(self) -> None:
+        total = sum(len(d) for _, d in self._segments)
+        shown = tr("hex.shown_rows", n=self.model.rowCount())
+        if total > self._shown:
+            shown += tr("hex.truncated", total=format_size(total))
+        src = tr("hex.source", src=self._source) if self._source else ""
+        self.info_label.setText(f"{segments_text(self._segments)} · {shown}{src}")
 
 
 class HexPreviewPanel(QWidget):
@@ -296,9 +357,11 @@ class HexPreviewPanel(QWidget):
                 self.read_btn.setText(tr(k))
         self._fit_read_button()
         for i in range(self.tabs.count()):
-            if self.tabs.widget(i) is self.mem_view:
+            widget = self.tabs.widget(i)
+            if widget is self.mem_view:
                 self.tabs.setTabText(i, tr("hex.mem"))
-                break
+            if isinstance(widget, HexDocumentView):
+                widget.retranslate()
 
     def _read_size_bytes(self) -> int:
         return int(self.size_spin.value())
@@ -322,12 +385,14 @@ class HexPreviewPanel(QWidget):
     def _new_empty_doc(self) -> HexDocumentView:
         view = HexDocumentView()
         idx = max(0, self.tabs.count() - 1)
-        idx = self.tabs.insertTab(idx, view, "文件")
+        idx = self.tabs.insertTab(idx, view, tr("hex.file_tab"))
         self.tabs.setCurrentIndex(idx)
         return view
 
     def _open_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "预览固件", "", FIRMWARE_EXTENSIONS)
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("hex.preview_title"), "", FIRMWARE_EXTENSIONS
+        )
         if path:
             self.load_file(path)
 
@@ -367,7 +432,7 @@ class HexPreviewPanel(QWidget):
             log.exception("load file failed")
             w = self.tabs.currentWidget()
             if isinstance(w, HexDocumentView):
-                w.info_label.setText(f"加载失败：{exc}")
+                w.info_label.setText(tr("hex.load_fail", err=exc))
             return False
 
     def load_bytes(self, addr: int, data: bytes, source: str | None = None) -> None:
@@ -405,7 +470,7 @@ class HexPreviewPanel(QWidget):
 
     def _on_save_as(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
-            self, "另存内存", "memory_dump.bin", "Binary (*.bin);;All files (*)"
+            self, tr("hex.save_mem_title"), "memory_dump.bin", "Binary (*.bin);;All files (*)"
         )
         if not path:
             return
@@ -417,9 +482,9 @@ class HexPreviewPanel(QWidget):
                 return
             blob = b"".join(d for _, d in data)
             Path(path).write_bytes(blob)
-            self.mem_view.info_label.setText(f"已保存 {path} ({len(blob):,} 字节)")
+            self.mem_view.info_label.setText(tr("hex.saved", path=path, n=len(blob)))
         except Exception as exc:
-            self.mem_view.info_label.setText(f"保存失败：{exc}")
+            self.mem_view.info_label.setText(tr("hex.save_fail", err=exc))
 
     def _on_fill_memory(self) -> None:
         """Ask for fill byte, then request a RAM fill of addr/size."""
@@ -433,8 +498,8 @@ class HexPreviewPanel(QWidget):
 
         text, ok = QInputDialog.getText(
             self,
-            "填充内存",
-            "填充字节（十六进制，如 FF 或 0x00）：",
+            tr("hex.fill"),
+            tr("hex.fill_prompt"),
             text="FF",
         )
         if not ok:
@@ -443,10 +508,10 @@ class HexPreviewPanel(QWidget):
         try:
             value = int(raw, 16)
         except ValueError:
-            self.mem_view.info_label.setText("填充字节无效，请输入 00–FF")
+            self.mem_view.info_label.setText(tr("hex.fill_invalid"))
             return
         if not 0 <= value <= 0xFF:
-            self.mem_view.info_label.setText("填充字节需在 00–FF")
+            self.mem_view.info_label.setText(tr("hex.fill_range"))
             return
 
         confirm = QMessageBox.question(
@@ -469,7 +534,7 @@ class HexPreviewPanel(QWidget):
         blank = all(all(b == 0xFF for b in d) for _, d in segs)
         total = sum(len(d) for _, d in segs)
         msg = tr("hex.blank_ok") if blank else tr("hex.blank_fail")
-        self.mem_view.info_label.setText(f"{msg} · {total:,} 字节")
+        self.mem_view.info_label.setText(f"{msg} · {tr('hex.bytes', n=total)}")
 
     def _on_compare_with_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(

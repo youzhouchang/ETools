@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from etools import __app_name__, __version__
-from etools.config import get_config, save_config
+from etools.config import get_config, save_config, take_load_warning
 from etools.core.models import ProbeInfo, ProgressInfo, TargetInfo
 from etools.core.operations import FlashService
 from etools.core.pyocd_driver import PyOCDDriver
@@ -116,6 +116,10 @@ class MainWindow(QMainWindow):
         self._wire()
         self._install_command_palette()
         self._log(tr("app.ready"))
+        corrupt = take_load_warning()
+        if corrupt:
+            self._log(tr("settings.config_corrupt", path=corrupt))
+            self.statusBar().showMessage(tr("settings.config_corrupt", path=corrupt), 15000)
 
         self._probe_timer.start()
         if get_config().auto_probe_scan:
@@ -212,6 +216,9 @@ class MainWindow(QMainWindow):
         self.script_page.bind_net(self.ethernet_page)
         self.script_page.bind_can(self.can_page)
         self.script_page.bind_term(self.terminal_page)
+        self.script_page.bind_frames()
+        self.script_page.bind_dash(self.dashboard_page)
+        self.script_page.bind_map(self.map_page)
         self.setCentralWidget(self.shell)
         self._restore_tool_widths()
 
@@ -375,10 +382,12 @@ class MainWindow(QMainWindow):
 
         m_help = mb.addMenu(tr("menu.help"))
         a_check_update = act(tr("act.check_update"), "refresh", "")
+        a_guide = act(tr("act.guide"), "info", "")
         a_shortcuts = act(tr("act.shortcuts"), "info", "F1")
         a_about = act(tr("act.about"), "info", "")
         m_help.addAction(a_check_update)
         m_help.addSeparator()
+        m_help.addAction(a_guide)
         m_help.addAction(a_shortcuts)
         m_help.addAction(a_about)
 
@@ -391,6 +400,7 @@ class MainWindow(QMainWindow):
         a_read_chip.triggered.connect(self._toolbar_read_chip)
         a_hex.triggered.connect(lambda: self._goto_tab("Hex"))
         a_about.triggered.connect(self._show_about)
+        a_guide.triggered.connect(self._show_guide)
         a_check_update.triggered.connect(lambda: self._check_updates(silent=False))
         a_settings.triggered.connect(self._show_settings)
         a_shortcuts.triggered.connect(self._show_shortcuts)
@@ -575,6 +585,18 @@ class MainWindow(QMainWindow):
 
         ShortcutsDialog(self).exec()
 
+    def _show_guide(self) -> None:
+        from etools.ui.widgets.guide_dialog import GuideDialog
+
+        dlg = getattr(self, "_guide_dialog", None)
+        if dlg is None:
+            dlg = GuideDialog(self)
+            self._guide_dialog = dlg
+            dlg.finished.connect(lambda: setattr(self, "_guide_dialog", None))
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+
     def _install_command_palette(self) -> None:
         """Ctrl+K opens a filterable command list (tools + frequent actions)."""
         from PySide6.QtGui import QKeySequence, QShortcut
@@ -607,6 +629,7 @@ class MainWindow(QMainWindow):
             ("act.hex", tr("act.hex"), lambda: self._goto_tab("Hex")),
             ("act.settings", tr("act.settings"), self._show_settings),
             ("act.shortcuts", tr("act.shortcuts"), self._show_shortcuts),
+            ("act.guide", tr("act.guide"), self._show_guide),
             ("act.check_update", tr("act.check_update"), lambda: self._check_updates(False)),
             ("act.about", tr("act.about"), self._show_about),
             ("batch.title", tr("batch.title"), self._show_batch_program),
@@ -897,6 +920,8 @@ class MainWindow(QMainWindow):
             self._runner,
             self.ethernet_page._runner,
             self.mqtt_page._runner,
+            self.can_page._runner,
+            self.serial_page._open_runner,
             self.terminal_page._runner,
             self.sftp_panel._runner,
         ]
@@ -904,10 +929,12 @@ class MainWindow(QMainWindow):
         if serial_runner is not None:
             runners.append(serial_runner)
         update_running = self._update_thread is not None and self._update_thread.isRunning()
-        if any(runner.busy for runner in runners) or update_running:
+        tasks_running = self.task_manager.any_running()
+        if any(runner.busy for runner in runners) or update_running or tasks_running:
             self.setEnabled(False)
             for runner in runners:
                 runner.cancel()
+            self.task_manager.cancel_all()
             self.terminal_page._ssh.close()
             self.ethernet_page._connect_cancel.set()
             self.statusBar().showMessage(tr("connection.closing"))
@@ -917,20 +944,10 @@ class MainWindow(QMainWindow):
         try:
             self._status_timer.stop()
             self._save_geometry()
+            # The shell owns every tool page, so each page's shutdown runs once.
+            self.task_manager.shutdown()
             if hasattr(self, "shell"):
                 self.shell.shutdown()
-            if hasattr(self, "can_page"):
-                self.can_page.shutdown()
-            for page in (
-                getattr(self, "mqtt_page", None),
-                getattr(self, "map_page", None),
-                getattr(self, "dashboard_page", None),
-            ):
-                if page is not None:
-                    page.shutdown()
-            self.rtt_panel.shutdown()
-            self.swo_panel.shutdown()
-            self.variable_monitor.shutdown()
             self._runner.shutdown()
         except Exception:
             log.exception("shutdown error")

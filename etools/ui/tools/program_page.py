@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import (
     QFrame,
     QGroupBox,
@@ -24,6 +24,7 @@ from etools.ui.icons import set_tab_icon
 from etools.ui.shell import ToolActionSpec
 from etools.ui.tools.base import ToolPage
 from etools.ui.widgets.device_manager import DeviceManagerPanel
+from etools.ui.widgets.diag_panel import DiagPanel
 from etools.ui.widgets.flash_panel import FlashPanel
 from etools.ui.widgets.hex_preview import HexPreviewPanel
 from etools.ui.widgets.log_panel import LogPanel
@@ -33,6 +34,15 @@ from etools.ui.widgets.swo_panel import SwvPanel
 from etools.ui.widgets.target_info_panel import TargetInfoPanel
 from etools.ui.widgets.variable_monitor import VariableMonitorPanel
 
+
+class _ShrinkPane(QWidget):
+    """Right column that may be narrowed so the left splitter handle can move."""
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        hint = super().minimumSizeHint()
+        return QSize(min(hint.width(), 240), hint.height())
+
+
 # object name, tab icon key, i18n key — widget order must follow this list
 _TAB_SPEC = (
     ("tabHex", "hex", "tab.hex"),
@@ -41,6 +51,7 @@ _TAB_SPEC = (
     ("tabRtt", "rtt", "tab.rtt"),
     ("tabSwo", "swv", "tab.swo"),
     ("tabMonitor", "monitor", "tab.monitor"),
+    ("tabDiag", "warning", "tab.diag"),
 )
 
 
@@ -61,6 +72,8 @@ class ProgramPage(ToolPage):
         self.rtt_panel = RttPanel()
         self.swo_panel = SwvPanel()
         self.variable_monitor = VariableMonitorPanel()
+        self.diag_panel = DiagPanel()
+        self.diag_panel.set_firmware_getter(self.flash_panel.firmware_path)
         self.rtt_panel.data_received.connect(self.variable_monitor.feed_rtt_data)
         self.swo_panel.data_received.connect(self.variable_monitor.feed_swo_data)
         self.log_panel = LogPanel()
@@ -102,6 +115,7 @@ class ProgramPage(ToolPage):
             "tabRtt": self.rtt_panel,
             "tabSwo": self.swo_panel,
             "tabMonitor": self.variable_monitor,
+            "tabDiag": self.diag_panel,
         }
         for obj_name, _icon, _key in _TAB_SPEC:
             page = QWidget()
@@ -142,6 +156,18 @@ class ProgramPage(ToolPage):
         right_split.setSizes([400, 280])
 
         self.main_layout.addWidget(right_split, 1)
+        # Hex and device tables report a minimum wider than the window, which
+        # freezes the splitter. Cap the pane so the handle can move.
+        pane = _ShrinkPane()
+        pane_lay = QVBoxLayout(pane)
+        pane_lay.setContentsMargins(0, 0, 0, 0)
+        pane_lay.setSpacing(0)
+        host = self.splitter.replaceWidget(1, pane)
+        pane_lay.addWidget(host)
+        # Keep a Python reference so the pane is not deleted with the splitter.
+        self._right_pane = pane
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
         self._compact_form_layout(self.flash_panel)
         self._compact_form_layout(self.target_info_panel)
         # Target info should sit right under the separator.
@@ -219,27 +245,30 @@ class ProgramPage(ToolPage):
             self.flash_panel,
             self.target_info_panel,
             self.hex_preview,
+            self.device_manager,
             self.rtt_panel,
             self.swo_panel,
             self.variable_monitor,
+            self.diag_panel,
         ):
             if hasattr(panel, "retranslate"):
                 panel.retranslate()
 
     def goto_tab(self, keyword: str) -> None:
-        mapping = {
-            "Hex": (tr("tab.hex"), "Hex"),
-            "flash": (tr("tab.flash"),),
-            "devices": (tr("tab.devices"),),
-            "rtt": (tr("tab.rtt"), "RTT"),
-            "swv": (tr("tab.swo"), "SWV"),
-            "swo": (tr("tab.swo"), "SWV"),
-            "monitor": (tr("tab.monitor"), "变量", "Monitor"),
+        """Switch to a tab by id (``hex``, ``flash``, ``rtt``…), independent of UI language."""
+        aliases = {
+            "hex": "tabHex",
+            "flash": "tabFlash",
+            "devices": "tabDevices",
+            "rtt": "tabRtt",
+            "swv": "tabSwo",
+            "swo": "tabSwo",
+            "monitor": "tabMonitor",
+            "diag": "tabDiag",
         }
-        needles = mapping.get(keyword, (keyword,))
+        target = aliases.get(keyword.lower(), keyword)
         for i in range(self.main_tabs.count()):
-            text = self.main_tabs.tabText(i)
-            if any(n and n in text for n in needles):
+            if self.main_tabs.widget(i).objectName() == target:
                 self.main_tabs.setCurrentIndex(i)
                 return
 
@@ -252,9 +281,21 @@ class ProgramPage(ToolPage):
         self.rtt_panel.set_session_getter(fn)
         self.swo_panel.set_session_getter(fn)
         self.variable_monitor.set_session_getter(fn)
+        self.diag_panel.set_session_getter(fn)
+
+    def shutdown(self) -> None:
+        for panel in (
+            self.rtt_panel,
+            self.swo_panel,
+            self.variable_monitor,
+            self.diag_panel,
+            self.device_manager,
+        ):
+            panel.shutdown()
 
     def set_connected(self, connected: bool) -> None:
         """Propagate target connection state to monitor-capable panels."""
         self.rtt_panel.set_connected(connected)
         self.swo_panel.set_connected(connected)
         self.variable_monitor.set_connected(connected)
+        self.diag_panel.set_connected(connected)

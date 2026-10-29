@@ -207,3 +207,35 @@ def test_markdown_to_html_table():
     assert "<td>Windows</td>" in html
     # Table rows should not be dumped as paragraphs
     assert "<p>|" not in html
+
+
+def test_expected_sha256_prefers_api_digest_then_notes():
+    from etools.core.updater import expected_sha256
+
+    digest = "a" * 64
+    asset = {"name": "ETools-1.0-amd64.deb", "digest": f"sha256:{digest}"}
+    assert expected_sha256(asset) == digest
+
+    notes = f"## Checksums\n```\n{'b' * 64}  ETools-1.0-amd64.deb\n{'c' * 64}  other.zip\n```"
+    assert expected_sha256({"name": "ETools-1.0-amd64.deb"}, notes) == "b" * 64
+    assert expected_sha256({"name": "missing.exe"}, notes) == ""
+
+
+def test_download_file_verifies_sha256(tmp_path):
+    import hashlib
+
+    from etools.core.updater import ChecksumMismatch, download_file
+
+    src = tmp_path / "pkg.bin"
+    src.write_bytes(b"package-bytes" * 100)
+    good = hashlib.sha256(src.read_bytes()).hexdigest()
+
+    dest = tmp_path / "out" / "pkg.bin"
+    download_file(src.as_uri(), dest, sha256=good)
+    assert dest.read_bytes() == src.read_bytes()
+
+    bad_dest = tmp_path / "out" / "bad.bin"
+    with pytest.raises(ChecksumMismatch):
+        download_file(src.as_uri(), bad_dest, sha256="0" * 64)
+    assert not bad_dest.exists()
+    assert not bad_dest.with_suffix(".bin.part").exists()

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import math
+
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLineEdit,
@@ -17,24 +18,23 @@ from etools.ui.widgets.variable_monitor import VIEW_MODES, _Waveform
 
 
 class StudioPlotPanel(QWidget):
-    """Checkbox, parse/view mode, optional field names, and a waveform."""
+    """Parse mode, view mode, optional field names, and a waveform."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._parser = StudioFrameParser()
-        self.toggle = QCheckBox(tr("serial.plot"))
-        self.toggle.setToolTip(tr("serial.plot_tip"))
-        self.toggle.setChecked(False)
+        self._script_parser = StudioFrameParser()
+        self._section_open = False
 
         self.parse_mode = QComboBox()
         self.parse_mode.setFixedHeight(28)
-        self.parse_mode.setFixedWidth(110)
+        self.parse_mode.setFixedWidth(100)
         for mode in PARSE_MODES:
             self.parse_mode.addItem(tr(f"serial.plot_mode.{mode}"), mode)
 
         self.view_mode = QComboBox()
         self.view_mode.setFixedHeight(28)
-        self.view_mode.setFixedWidth(90)
+        self.view_mode.setFixedWidth(100)
         for mode in VIEW_MODES:
             self.view_mode.addItem(tr(f"serial.plot_view.{mode}"), mode)
 
@@ -64,14 +64,11 @@ class StudioPlotPanel(QWidget):
         body_lay.addLayout(mode_row)
         body_lay.addWidget(self.hex_template)
         body_lay.addWidget(self.plot)
-        self.body.setVisible(False)
-        self.toggle.toggled.connect(self.body.setVisible)
         self.parse_mode.currentIndexChanged.connect(self._on_parse_mode_changed)
         self.view_mode.currentIndexChanged.connect(self._on_view_mode_changed)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(4)
-        lay.addWidget(self.toggle)
         lay.addWidget(self.body)
         self._on_parse_mode_changed()
         self._on_view_mode_changed()
@@ -92,24 +89,64 @@ class StudioPlotPanel(QWidget):
             return []
         self.configure_parser(self._parser)
         frames = self._parser.feed(data)
-        if self.toggle.isChecked():
+        if self._section_open:
             for frame in frames:
                 self.plot.push_batch(frame)
         return frames
+
+    def accept_script(self, kind: str, payload) -> list[dict[str, float]]:
+        """Draw frames pushed by a script. Text uses a parser of its own."""
+        if kind == "map":
+            frames = [_finite_numbers(payload)]
+        elif kind == "list":
+            frames = [self._named_values(payload)]
+        else:
+            self.configure_parser(self._script_parser)
+            if kind == "bytes":
+                raw = bytes(payload)
+            else:
+                raw = str(payload).encode("utf-8")
+                if raw and not raw.endswith((b"\n", b"\r")):
+                    raw += b"\n"
+            frames = self._script_parser.feed(raw)
+        shown: list[dict[str, float]] = []
+        for frame in frames:
+            clean = _finite_numbers(frame)
+            if not clean:
+                continue
+            self.plot.push_batch(clean)
+            shown.append(clean)
+        return shown
+
+    def _named_values(self, values) -> dict[str, float]:
+        names = [part.strip() for part in self.names.text().split(",") if part.strip()]
+        named: dict[str, float] = {}
+        for index, value in enumerate(values):
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(number):
+                continue
+            key = names[index] if index < len(names) else f"f{index + 1}"
+            named[key] = number
+        return named
 
     def _on_parse_mode_changed(self, _index: int = 0) -> None:
         mode = self.parse_mode_name()
         self.hex_template.setVisible(mode == "hex")
         self.names.setVisible(mode == "studio")
         self._parser.reset()
+        self._script_parser.reset()
         self.configure_parser(self._parser)
 
     def _on_view_mode_changed(self, _index: int = 0) -> None:
         self.plot.set_view_mode(str(self.view_mode.currentData() or "time"))
 
+    def set_section_open(self, open_: bool) -> None:
+        self._section_open = bool(open_)
+
     def retranslate(self) -> None:
-        self.toggle.setText(tr("serial.plot"))
-        self.toggle.setToolTip(tr("serial.plot_tip"))
         self.names.setPlaceholderText(tr("serial.plot_names_ph"))
         self.hex_template.setPlaceholderText(tr("serial.plot_hex_ph"))
         self.plot.set_caption(tr("serial.plot"), tr("serial.plot_empty"))
@@ -133,3 +170,15 @@ class StudioPlotPanel(QWidget):
         self.view_mode.blockSignals(False)
         self._on_parse_mode_changed()
         self._on_view_mode_changed()
+
+
+def _finite_numbers(values) -> dict[str, float]:
+    named: dict[str, float] = {}
+    for key, value in dict(values).items():
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            named[str(key)] = number
+    return named

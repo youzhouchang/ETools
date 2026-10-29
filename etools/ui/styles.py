@@ -176,18 +176,18 @@ def theme_combo_stylesheet(t: Theme) -> str:
         color: {t.text};
         border: 1px solid {t.border};
         border-radius: 5px;
-        padding: 4px 26px 4px 8px;
+        padding: 2px 4px 2px 8px;
         font-size: 12px;
     }}
     QComboBox:hover {{
         border-color: {t.accent};
     }}
     QComboBox::drop-down {{
-        subcontrol-origin: border;
+        subcontrol-origin: padding;
         subcontrol-position: center right;
         border: none;
         background: transparent;
-        width: 22px;
+        width: 16px;
     }}
     QComboBox::down-arrow {{
         image: url({arrow_qss});

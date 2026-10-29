@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QObject, Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from etools.core.probe_io import PROBE_LOCK
 from etools.i18n import tr
 from etools.logger import get_logger
 
@@ -32,15 +34,23 @@ class _RttReader(QObject):
     raw_received = Signal(int, bytes)
     status = Signal(str)
     channels_ready = Signal(int, int)  # n_up, n_down
+    # The leading int is the session generation; a reader abandoned by a slow
+    # stop() must not feed or stop the session started after it.
+    _polled = Signal(int, int, bytes)
+    _poll_failed = Signal(int, str)
+
+    POLL_INTERVAL_S = 0.05
 
     def __init__(self) -> None:
         super().__init__()
-        self._timer = QTimer(self)
-        self._timer.setInterval(50)
-        self._timer.timeout.connect(self._poll)
         self._cb: Any = None
-        self._io_lock: Any = None
         self._running = False
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._generation = 0
+        # Bound-method slots on this GUI-thread object make delivery queued.
+        self._polled.connect(self._deliver, Qt.ConnectionType.QueuedConnection)
+        self._poll_failed.connect(self._on_poll_failed, Qt.ConnectionType.QueuedConnection)
 
     @property
     def running(self) -> bool:
@@ -76,21 +86,24 @@ class _RttReader(QObject):
             else:
                 addr = int(address)
                 sz = int(size or 0)
-            self._io_lock = getattr(session, "_etools_io_lock", None)
-            if self._io_lock is None:
+            with PROBE_LOCK:
                 cb = RTTControlBlock.from_target(session.target, address=addr, size=sz)
                 cb.start()
-            else:
-                with self._io_lock:
-                    cb = RTTControlBlock.from_target(session.target, address=addr, size=sz)
-                    cb.start()
             ups = getattr(cb, "up_channels", None) or []
             if not ups:
                 self.status.emit(tr("rtt.no_channel"))
                 return False
             self._cb = cb
             self._running = True
-            self._timer.start()
+            self._stop_event = threading.Event()
+            self._generation += 1
+            self._thread = threading.Thread(
+                target=self._poll_loop,
+                args=(cb, self._stop_event, self._generation),
+                name="etools-rtt",
+                daemon=True,
+            )
+            self._thread.start()
             self.channels_ready.emit(len(ups), self.n_down)
             self.status.emit(tr("rtt.started", up=len(ups), down=self.n_down))
             return True
@@ -100,10 +113,13 @@ class _RttReader(QObject):
             return False
 
     def stop(self) -> None:
-        self._timer.stop()
+        self._stop_event.set()
+        self._generation += 1
+        thread, self._thread = self._thread, None
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=0.5)
         self._running = False
         self._cb = None
-        self._io_lock = None
 
     def write_down(self, channel: int, data: bytes) -> None:
         if not self._cb:
@@ -111,43 +127,52 @@ class _RttReader(QObject):
         try:
             downs = getattr(self._cb, "down_channels", None) or []
             if 0 <= channel < len(downs):
-                if self._io_lock is None:
+                # Runs on the GUI thread: skip instead of freezing during a flash job.
+                if not PROBE_LOCK.acquire(blocking=False):
+                    return
+                try:
                     downs[channel].write(data)
-                else:
-                    if not self._io_lock.acquire(blocking=False):
-                        return
-                    try:
-                        downs[channel].write(data)
-                    finally:
-                        self._io_lock.release()
+                finally:
+                    PROBE_LOCK.release()
         except Exception:
             log.exception("RTT write down failed")
 
-    def _poll(self) -> None:
-        if not self._cb:
-            return
-        try:
-            ups = getattr(self._cb, "up_channels", None) or []
-            for i, ch in enumerate(ups):
-                if self._io_lock is None:
-                    raw = ch.read()
-                else:
-                    if not self._io_lock.acquire(blocking=False):
-                        return
+    def _poll_loop(self, cb: Any, stop: threading.Event, generation: int) -> None:
+        """Worker thread: read every up-channel without touching Qt widgets."""
+        while not stop.wait(self.POLL_INTERVAL_S):
+            try:
+                ups = getattr(cb, "up_channels", None) or []
+                for i, ch in enumerate(ups):
+                    # Flash jobs hold the lock for long; skip this round instead of queuing.
+                    if not PROBE_LOCK.acquire(timeout=self.POLL_INTERVAL_S):
+                        break
                     try:
                         raw = ch.read()
                     finally:
-                        self._io_lock.release()
-                if raw:
-                    payload = bytes(raw)
-                    self.raw_received.emit(i, payload)
-                    text = payload.decode("utf-8", errors="replace")
-                    if text:
-                        self.text_received.emit(i, text)
-        except Exception as exc:
-            log.debug("RTT poll error: %s", exc)
-            self.status.emit(f"RTT 读取错误：{exc}")
-            self.stop()
+                        PROBE_LOCK.release()
+                    if raw and not stop.is_set():
+                        self._polled.emit(generation, i, bytes(raw))
+            except Exception as exc:  # noqa: BLE001
+                log.debug("RTT poll error: %s", exc)
+                if not stop.is_set():
+                    self._poll_failed.emit(generation, str(exc))
+                return
+
+    @Slot(int, int, bytes)
+    def _deliver(self, generation: int, channel: int, payload: bytes) -> None:
+        if not self._running or generation != self._generation:
+            return
+        self.raw_received.emit(channel, payload)
+        text = payload.decode("utf-8", errors="replace")
+        if text:
+            self.text_received.emit(channel, text)
+
+    @Slot(int, str)
+    def _on_poll_failed(self, generation: int, message: str) -> None:
+        if generation != self._generation:
+            return
+        self.status.emit(tr("rtt.read_error", err=message))
+        self.stop()
 
 
 class RttPanel(QWidget):
@@ -175,17 +200,19 @@ class RttPanel(QWidget):
         bar.addWidget(title)
         bar.addStretch(1)
 
-        bar.addWidget(QLabel(tr("rtt.addr")))
+        self.addr_label = QLabel(tr("rtt.addr"))
+        bar.addWidget(self.addr_label)
         from etools.ui.widgets.spin_boxes import hex_spin
 
         self.addr_spin = hex_spin(0, step=0x100, width=130)
-        self.addr_spin.setSpecialValueText("自动")
+        self.addr_spin.setSpecialValueText(tr("rtt.auto"))
         self.addr_edit = self.addr_spin
         bar.addWidget(self.addr_spin)
 
-        bar.addWidget(QLabel(tr("rtt.size")))
+        self.size_label = QLabel(tr("rtt.size"))
+        bar.addWidget(self.size_label)
         self.size_spin = hex_spin(0, step=0x1000, width=110)
-        self.size_spin.setSpecialValueText("自动")
+        self.size_spin.setSpecialValueText(tr("rtt.auto"))
         self.size_edit = self.size_spin
         bar.addWidget(self.size_spin)
 
@@ -213,12 +240,12 @@ class RttPanel(QWidget):
         send_row = QHBoxLayout()
         self.ch_spin = QSpinBox()
         self.ch_spin.setRange(0, 0)
-        self.ch_spin.setPrefix("通道 ")
+        self.ch_spin.setPrefix(tr("rtt.channel") + " ")
         self.ch_spin.setFixedWidth(90)
         self.send_edit = QLineEdit()
-        self.send_edit.setPlaceholderText("向所选下行通道发送…（回车）")
+        self.send_edit.setPlaceholderText(tr("rtt.send_ph"))
         self.send_edit.setEnabled(False)
-        self.send_btn = QPushButton("发送")
+        self.send_btn = QPushButton(tr("rtt.send"))
         self.send_btn.setObjectName("ghost")
         self.send_btn.setEnabled(False)
         send_row.addWidget(self.ch_spin)
@@ -233,7 +260,7 @@ class RttPanel(QWidget):
         ph.setObjectName("logView")
         ph.setReadOnly(True)
         ph.setPlaceholderText(tr("rtt.ph"))
-        self.tabs.addTab(ph, "通道 —")
+        self.tabs.addTab(ph, tr("rtt.channel_none"))
 
     def _wire(self) -> None:
         self.start_btn.clicked.connect(self._toggle)
@@ -247,8 +274,20 @@ class RttPanel(QWidget):
 
     def retranslate(self) -> None:
         self.clear_btn.setText(tr("rtt.clear"))
-        if not getattr(self, "_running", False):
-            self.start_btn.setText(tr("rtt.start"))
+        running = self._reader.running
+        self.start_btn.setText(tr("rtt.stop_rtt") if running else tr("rtt.start"))
+        self.addr_label.setText(tr("rtt.addr"))
+        self.size_label.setText(tr("rtt.size"))
+        self.addr_spin.setSpecialValueText(tr("rtt.auto"))
+        self.size_spin.setSpecialValueText(tr("rtt.auto"))
+        self.ch_spin.setPrefix(tr("rtt.channel") + " ")
+        self.send_edit.setPlaceholderText(tr("rtt.send_ph"))
+        self.send_btn.setText(tr("rtt.send"))
+        if self._views:
+            for index in range(self.tabs.count()):
+                self.tabs.setTabText(index, tr("rtt.up_tab", n=index))
+        elif self.tabs.count():
+            self.tabs.setTabText(0, tr("rtt.channel_none"))
 
     def set_connected(self, connected: bool) -> None:
         self.start_btn.setEnabled(connected)
@@ -275,7 +314,7 @@ class RttPanel(QWidget):
             self.send_btn.setEnabled(False)
             self.ch_spin.setRange(0, 0)
             self._ensure_placeholder()
-            self.status_label.setText("RTT 已停止")
+            self.status_label.setText(tr("rtt.stopped"))
             return
         sess = self._session_getter() if callable(self._session_getter) else None
         ok = self._reader.start(
@@ -284,7 +323,7 @@ class RttPanel(QWidget):
             size=int(self.size_spin.value()),
         )
         if ok:
-            self.start_btn.setText("停止 RTT")
+            self.start_btn.setText(tr("rtt.stop_rtt"))
             self.send_edit.setEnabled(True)
             self.send_btn.setEnabled(True)
 
@@ -297,8 +336,7 @@ class RttPanel(QWidget):
             view.setReadOnly(True)
             view.setMaximumBlockCount(MAX_VIEW_LINES)
             self._views.append(view)
-            name = f"上行 {i}" if n_up > 1 else "上行 0"
-            self.tabs.addTab(view, name)
+            self.tabs.addTab(view, tr("rtt.up_tab", n=i))
         self.ch_spin.setRange(0, max(0, n_down - 1))
 
     def _on_text(self, channel: int, text: str) -> None:

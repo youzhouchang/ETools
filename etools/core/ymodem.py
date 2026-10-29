@@ -78,11 +78,20 @@ def parse_ymodem_header(payload: bytes) -> tuple[str, int]:
     name = name_part.decode("utf-8", errors="replace").strip() or "ymodem.bin"
     # Keep only the basename — peers sometimes send paths.
     name = Path(name.replace("\\", "/")).name or "ymodem.bin"
+    # Standard senders append " mtime mode serial" after the decimal size.
+    fields = size_part.decode("ascii", errors="ignore").split()
     try:
-        size = int(size_part.decode("ascii", errors="ignore").strip() or "0")
+        size = int(fields[0]) if fields else 0
     except ValueError:
         size = 0
     return name, max(0, size)
+
+
+def _header_has_size(payload: bytes) -> bool:
+    """True when block 0 carries a numeric size field (``0`` included)."""
+    _, _, rest = bytes(payload or b"").partition(b"\x00")
+    fields = rest.split(b"\x00", 1)[0].split()
+    return bool(fields) and fields[0].isdigit()
 
 
 def parse_data_packet(
@@ -194,6 +203,18 @@ class _Session:
                     raise YmodemError("cancelled by peer")
         raise YmodemError("timeout waiting for handshake")
 
+    def start_handshake(self, cancel) -> None:
+        """Wait for the receiver's start byte and follow its checksum choice."""
+        if self.handshake_byte(cancel) == NAK_CHECKSUM:
+            self.mode = MODE_CHECKSUM
+
+    def absorb_data_request(self, wait: float = 1.0) -> None:
+        """Drop the optional ``C``/NAK a YMODEM receiver sends after block 0 / EOT."""
+        b = self.read_byte(time.monotonic() + max(0.0, wait))
+        if b is None or b in (CRC_REQUEST, NAK_CHECKSUM):
+            return
+        self._rx.buf[:0] = bytes([b])
+
     def await_reply(self, deadline: float | None = None) -> int:
         deadline = deadline or (time.monotonic() + self.packet_timeout)
         b = self.read_byte(deadline)
@@ -238,8 +259,9 @@ class YmodemSender(_Session):
     ) -> TransferResult:
         total = len(data)
         try:
-            self.handshake_byte(cancel)
+            self.start_handshake(cancel)
             self._send_packet(0, ymodem_header_block(filename, total), one_k=False, cancel=cancel)
+            self.absorb_data_request()
             seq = 1
             sent = 0
             size = PKT_1024 if self.one_k else PKT_128
@@ -256,6 +278,7 @@ class YmodemSender(_Session):
                 if total == 0:
                     break
             self._send_eot(cancel)
+            self.absorb_data_request()
             self._send_packet(0, b"\x00" * PKT_128, one_k=False, cancel=cancel, final=True)
             return TransferResult(True, sent, seq - 1, "ok", filename=Path(filename).name)
         except YmodemError as exc:
@@ -306,7 +329,7 @@ class XmodemSender(YmodemSender):
         cancel: Callable[[], bool] | None = None,
     ) -> TransferResult:
         try:
-            self.handshake_byte(cancel)
+            self.start_handshake(cancel)
             seq = 1
             sent = 0
             while sent < len(data) or (not data and seq == 1):
@@ -367,6 +390,7 @@ class YmodemReceiver(_Session):
             self._request_start(ymodem=ymodem)
             filename = "xmodem.bin"
             expected = 0
+            size_known = False
             payload = bytearray()
             packets = 0
             expect_seq = 1 if not ymodem else 0
@@ -379,8 +403,12 @@ class YmodemReceiver(_Session):
                 kind, seq, body = self._read_one_packet(deadline_all)
                 if kind == "eot":
                     self.write(bytes([ACK]))
+                    if size_known and len(payload) > expected:
+                        # Drop the 0x1A padding of the last data block.
+                        del payload[expected:]
                     if ymodem:
                         # Sender closes with an empty block 0 after EOT/ACK.
+                        self._request_start(ymodem=True)
                         self._read_one_packet(deadline_all, allow_empty=True)
                         self.write(bytes([ACK]))
                     return TransferResult(
@@ -399,11 +427,20 @@ class YmodemReceiver(_Session):
                     continue
                 if ymodem and expect_seq == 0:
                     filename, expected = parse_ymodem_header(body)
+                    size_known = _header_has_size(body)
                     self.write(bytes([ACK]))
                     expect_seq = 1
-                    # Ask for data with CRC after header
-                    if self.mode != MODE_CHECKSUM:
-                        self.write(bytes([CRC_REQUEST]))
+                    # Ask for the first data block: 'C' for CRC, NAK for checksum.
+                    self._request_start(ymodem=True)
+                    continue
+                if ymodem and not packets and seq == 0:
+                    # Block 0 again: our header ACK was lost.
+                    self.write(bytes([ACK]))
+                    self._request_start(ymodem=True)
+                    continue
+                if packets and seq == ((expect_seq - 1) & 0xFF):
+                    # Retransmission after a lost ACK: acknowledge, do not append.
+                    self.write(bytes([ACK]))
                     continue
                 if seq != (expect_seq & 0xFF):
                     self.write(bytes([NAK]))
@@ -422,8 +459,8 @@ class YmodemReceiver(_Session):
             return TransferResult(False, 0, 0, str(exc))
 
     def _request_start(self, *, ymodem: bool) -> None:
-        # YMODEM / CRC XMODEM start with 'C'; checksum XMODEM starts with NAK.
-        if self.mode == MODE_CHECKSUM and not ymodem:
+        # CRC sessions start with 'C'; checksum sessions start with NAK.
+        if self.mode == MODE_CHECKSUM:
             self.write(bytes([NAK]))
         else:
             self.write(bytes([CRC_REQUEST]))

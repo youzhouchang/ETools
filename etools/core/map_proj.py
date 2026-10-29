@@ -31,3 +31,11 @@ def tile_xy(lat: float, lon: float, zoom: int) -> tuple[int, int]:
     x, y = latlon_to_world(lat, lon, zoom)
     limit = 2**int(zoom)
     return int(x // TILE) % limit, int(y // TILE) % limit
+
+
+def overzoom_source(x: int, y: int, levels_up: int) -> tuple[int, int, float, float, float]:
+    """Parent tile index and this child's source square inside that 256px tile."""
+    levels = max(1, int(levels_up))
+    scale = 1 << levels
+    size = TILE / scale
+    return x >> levels, y >> levels, (x & (scale - 1)) * size, (y & (scale - 1)) * size, size

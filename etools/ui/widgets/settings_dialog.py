@@ -94,18 +94,22 @@ class SettingsDialog(QDialog):
         root.addLayout(io_row)
 
     def _export(self) -> None:
-        from PySide6.QtWidgets import QFileDialog
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
 
         from etools.config import export_config
 
         path, _ = QFileDialog.getSaveFileName(
             self, tr("settings.export"), "etools-config.json", "JSON (*.json)"
         )
-        if path:
+        if not path:
+            return
+        try:
             export_config(path)
+        except OSError as exc:
+            QMessageBox.warning(self, tr("settings.title"), tr("settings.export_failed", err=exc))
 
     def _import(self) -> None:
-        from PySide6.QtWidgets import QFileDialog
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
 
         from etools.config import import_config
 
@@ -114,7 +118,8 @@ class SettingsDialog(QDialog):
             return
         try:
             import_config(path)
-        except Exception:  # noqa: BLE001
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, tr("settings.title"), tr("settings.import_failed", err=exc))
             return
         cfg = get_config()
         idx = self.theme.findData((cfg.theme or "dark").lower())
