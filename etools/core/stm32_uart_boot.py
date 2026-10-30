@@ -349,12 +349,20 @@ class Stm32UartBoot:
         progress: Callable[[str, int, int], None] | None = None,
         cancelled: Callable[[], bool] | None = None,
     ) -> bytes:
+        # AN3155 Read Memory requires a 4-byte-aligned start address. Round the
+        # window outward to the alignment and trim the extra bytes afterwards,
+        # so callers can pass any address/size without hitting a NACK.
+        aligned_addr = address & ~3
+        lead = address - aligned_addr
+        aligned_size = -(-(lead + size) // 4) * 4  # round up to a multiple of 4
         out = bytearray()
-        while len(out) < size:
+        while len(out) < aligned_size:
             if cancelled is not None and cancelled():
                 raise BootloaderError("Cancelled")
-            n = min(BLOCK, size - len(out))
-            out.extend(self.read_memory(address + len(out), n))
+            # BLOCK (256) and aligned_size are both multiples of 4, so n stays
+            # 4-byte aligned for every chunk, including the last one.
+            n = min(BLOCK, aligned_size - len(out))
+            out.extend(self.read_memory(aligned_addr + len(out), n))
             if progress:
-                progress("read", len(out), size)
-        return bytes(out)
+                progress("read", min(len(out), size), size)
+        return bytes(out[lead : lead + size])

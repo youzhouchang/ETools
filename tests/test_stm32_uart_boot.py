@@ -106,6 +106,18 @@ def test_read_range_spans_blocks() -> None:
     assert boot.read_range(0x0800_0000, 600) == bytes(i & 0xFF for i in range(600))
 
 
+def test_read_range_handles_unaligned_address_and_size() -> None:
+    # The fake NACKs any Read Memory whose address isn't a multiple of 4
+    # (per AN3155), so this only passes if read_range rounds the window to
+    # the alignment and trims the extra bytes itself.
+    boot, fake = _client()
+    boot.connect()
+    fake.mem[:600] = bytes(i & 0xFF for i in range(600))
+    assert boot.read_range(0x0800_0001, 513) == bytes(
+        i & 0xFF for i in range(1, 514)
+    )
+
+
 def test_write_pads_to_word() -> None:
     boot, fake = _client()
     boot.connect()

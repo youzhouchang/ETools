@@ -455,7 +455,8 @@ _F4_BOR = ObField(
     "OPTCR",
     2,
     2,
-    choices=((3, "ob.v.off"), (2, "2.2 V"), (1, "2.5 V"), (0, "2.8 V")),
+    # RM0090: BOR_LEV encodes VBOR1/2/3 falling thresholds, roughly 2.1/2.4/2.7 V.
+    choices=((3, "ob.v.off"), (2, "2.1 V"), (1, "2.4 V"), (0, "2.7 V")),
     default=3,
 )
 

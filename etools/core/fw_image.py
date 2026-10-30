@@ -225,11 +225,28 @@ class SparseImage:
             raise ImageError("Image span too large for a flat binary")
         return self.start, self.read(self.start, self.end - self.start, fill)
 
-    def crc32(self, fill: int = 0xFF) -> int:
-        return zlib.crc32(self.to_bin(fill)[1]) & 0xFFFFFFFF
+    def _digest_stream(self) -> bytes:
+        """Address-framed concatenation of the real segment bytes.
 
-    def sha256(self, fill: int = 0xFF) -> str:
-        return hashlib.sha256(self.to_bin(fill)[1]).hexdigest()
+        Unlike ``to_bin``, this never materialises the gap-filled range
+        between segments, so it stays well-defined even when an image spans
+        far-apart regions (e.g. on-chip flash plus an external QSPI chip at
+        0x90000000) that would otherwise blow past ``MAX_SPAN``. Each segment
+        is framed with its address and length so the digest still changes if
+        content moves between regions.
+        """
+        out = bytearray()
+        for start, data in self.segments():
+            out += start.to_bytes(4, "big")
+            out += len(data).to_bytes(4, "big")
+            out += data
+        return bytes(out)
+
+    def crc32(self) -> int:
+        return zlib.crc32(self._digest_stream()) & 0xFFFFFFFF
+
+    def sha256(self) -> str:
+        return hashlib.sha256(self._digest_stream()).hexdigest()
 
     def save(self, path: str | Path, *, fill: int = 0xFF) -> str:
         """Write HEX / SREC / BIN by suffix; returns the format name."""
@@ -285,5 +302,8 @@ def to_srec(image: SparseImage, row: int = 32, header: str = "ETools") -> str:
     for start, data in image.segments():
         for offset in range(0, len(data), row):
             lines.append(_srec_record("3", start + offset, data[offset : offset + row], 4))
-    lines.append(_srec_record("7", 0, b"", 4))
+    # The S7 termination record's address is the execution start address;
+    # use the image's lowest address so tools that jump there land in range
+    # instead of at 0x00000000.
+    lines.append(_srec_record("7", image.start, b"", 4))
     return "\n".join(lines) + "\n"

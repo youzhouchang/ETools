@@ -105,7 +105,8 @@ class FakeStm32Bootloader:
                     continue
                 self.tx.append(ACK)
                 addr = yield from self._addr()
-                if addr is None:
+                # AN3155 Read Memory requires a word-aligned start address.
+                if addr is None or addr % 4:
                     self.tx.append(NACK)
                     continue
                 self.tx.append(ACK)
