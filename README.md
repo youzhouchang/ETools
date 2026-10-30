@@ -22,6 +22,12 @@ CAN / SSH 终端**工具，并提供地图和可配置仪表盘。
 - 目标信息：UID / Flash / RAM / 电压 / Device ID
 - 复位 / 挂起目标
 - RTT / SWV 调试视图、Hex 预览（空白检查 / 文件比较 / 填充 RAM）
+- 增量烧录（只擦写有变化的扇区）
+- 选项字节编辑：RDP 读保护 Level 0/1、写保护、BOR、看门狗、启动地址（STM32 F0/F1/F3/F4/G0/G4/L4/H7；不提供 Level 2）
+- 量产烧录：一键擦除 / 烧录 / 校验 / 读保护 / 运行，序列号与 UID 写入，CSV 日志
+- 镜像工具：合并、重定位、裁剪、填充、改写字节、CRC32 / SHA256，导出 HEX / SREC / BIN
+- 外部 Flash：挂载 CMSIS `.FLM` 下载算法（QSPI / SPI Flash 等）
+- STM32 串口 Bootloader（AN3155）：无调试器烧录、读取、擦除、解除保护，支持 DTR/RTS 自动进入
 
 ### CAN 助手（CAN / CANopen）
 

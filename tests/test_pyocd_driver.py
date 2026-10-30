@@ -135,6 +135,128 @@ def test_program_rewrites_every_page(tmp_path, monkeypatch) -> None:
     assert captured["trust_crc"] is False
 
 
+class _MemTarget:
+    """Fake pyOCD target backed by a dict, for loader/verify tests."""
+
+    def __init__(self) -> None:
+        self.mem: dict[int, int] = {}
+        self.resets = 0
+
+    def read_memory_block8(self, addr: int, n: int) -> list[int]:
+        return [self.mem.get(addr + i, 0xFF) for i in range(n)]
+
+    def reset_and_halt(self) -> None:
+        self.resets += 1
+
+    def selected_core_or_raise(self):
+        raise RuntimeError("no core")
+
+
+def _connected_driver(target) -> PyOCDDriver:
+    class Session:
+        pass
+
+    session = Session()
+    session.target = target
+    driver = PyOCDDriver()
+    driver._session = session
+    driver._set_state(ConnectionState.CONNECTED)
+    return driver
+
+
+def test_incremental_program_uses_smart_flash(tmp_path, monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class Programmer:
+        def __init__(self, _session, **kwargs) -> None:
+            captured.update(kwargs)
+
+        def program(self, path: str) -> None:
+            pass
+
+    import pyocd.flash.file_programmer as file_programmer
+
+    monkeypatch.setattr(file_programmer, "FileProgrammer", Programmer)
+    target = _MemTarget()
+    driver = _connected_driver(target)
+    path = tmp_path / "fw.hex"
+    path.write_text(":00000001FF\n", encoding="ascii")
+
+    result = driver.program(str(path), verify=False, incremental=True)
+
+    assert result.ok and "incremental" in result.message
+    assert captured["smart_flash"] is True
+    assert captured["chip_erase"] == "sector"
+    assert target.resets == 1  # fresh read before comparing sectors
+
+
+def test_program_segments_loads_and_verifies(monkeypatch) -> None:
+    target = _MemTarget()
+    captured: dict[str, object] = {}
+
+    class Loader:
+        def __init__(self, _session, **kwargs) -> None:
+            captured.update(kwargs)
+            self.data: list[tuple[int, bytes]] = []
+
+        def add_data(self, addr: int, data: bytes) -> None:
+            self.data.append((addr, data))
+
+        def commit(self) -> None:
+            for addr, data in self.data:
+                for i, b in enumerate(data):
+                    target.mem[addr + i] = b
+
+    import pyocd.flash.loader as loader_module
+
+    monkeypatch.setattr(loader_module, "MemoryLoader", Loader)
+    driver = _connected_driver(target)
+    segs = [(0x0800_0000, b"\x01\x02"), (0x0800_0100, b"\x03")]
+
+    ok = driver.program_segments(segs, erase="chip", label="prod")
+    assert ok.ok and ok.message == "Programmed prod"
+    assert captured["chip_erase"] == "chip"
+    assert captured["smart_flash"] is False
+
+    target.mem[0x0800_0100] = 0x00
+    bad = driver.verify_segments(segs)
+    assert not bad.ok and "0x08000100" in bad.message
+    assert not driver.program_segments([]).ok
+
+
+def test_after_option_write_reconnects_on_obl(monkeypatch) -> None:
+    from etools.core.models import OperationResult, ProbeInfo, TargetInfo
+
+    driver = _connected_driver(_MemTarget())
+    driver._probe = ProbeInfo(ProbeType.STLINK, "X")
+    driver._target = TargetInfo()
+    calls: list[str] = []
+    monkeypatch.setattr(driver, "disconnect", lambda: calls.append("disconnect"))
+    monkeypatch.setattr(
+        driver,
+        "connect",
+        lambda probe, target: calls.append("connect") or OperationResult(ok=True, message="ok"),
+    )
+    monkeypatch.setattr(driver_module.time, "sleep", lambda s: None)
+
+    assert driver.after_option_write("obl").ok
+    assert calls == ["disconnect", "connect"]
+    calls.clear()
+    assert _connected_driver(_MemTarget()).after_option_write("none").ok
+
+
+def test_set_external_flm_without_session_only_inspects(tmp_path) -> None:
+    import pytest
+
+    from etools.core.ext_flash import ExtFlashError
+
+    driver = PyOCDDriver()
+    assert driver.set_external_flm("") is None
+    with pytest.raises(ExtFlashError):
+        driver.set_external_flm(str(tmp_path / "missing.FLM"))
+    assert driver.ext_flm_path.endswith("missing.FLM")
+
+
 def test_pyinstaller_keeps_pyocd_entry_point_metadata() -> None:
     spec = Path("packaging/etools.spec").read_text(encoding="utf-8")
 

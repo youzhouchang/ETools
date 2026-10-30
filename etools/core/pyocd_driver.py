@@ -90,6 +90,9 @@ class PyOCDDriver(ProbeDriver):
         self._probe: ProbeInfo | None = None
         self._target: TargetInfo | None = None
         self._details: TargetDetails | None = None
+        # Optional CMSIS FLM attached as an extra flash region after connect.
+        self.ext_flm_path: str = ""
+        self.ext_flash_info: Any = None
 
     @property
     def session(self) -> Any:
@@ -262,6 +265,7 @@ class PyOCDDriver(ProbeDriver):
         self._probe = probe
         self._target = target
         self._set_state(ConnectionState.CONNECTED)
+        self._attach_ext_flash(session)
 
         self.emit_progress(
             ProgressInfo(stage=ProgressStage.CONNECT, percent=50, message="Reading target info …")
@@ -283,6 +287,54 @@ class PyOCDDriver(ProbeDriver):
             detail=details.summary_line(),
             data=details,
         )
+
+    def _attach_ext_flash(self, session: Any) -> None:
+        self.ext_flash_info = None
+        if not self.ext_flm_path:
+            return
+        from etools.core.ext_flash import attach_flm
+
+        try:
+            self.ext_flash_info = attach_flm(session.target, self.ext_flm_path)
+            self._emit(f"External flash: {self.ext_flash_info.summary()}")
+        except Exception as exc:
+            log.warning("FLM attach failed: %s", exc)
+            self._emit(f"External flash algorithm not attached: {exc}", True)
+
+    def set_external_flm(self, path: str) -> Any:
+        """Remember the FLM path; attach (or detach) it on the live session."""
+        from etools.core.ext_flash import detach_flm
+
+        self.ext_flm_path = str(path or "")
+        session = self.session
+        if session is None:
+            if self.ext_flm_path:
+                from etools.core.ext_flash import inspect_flm
+
+                return inspect_flm(self.ext_flm_path)
+            return None
+        if not self.ext_flm_path:
+            detach_flm(session.target)
+            self.ext_flash_info = None
+            return None
+        from etools.core.ext_flash import attach_flm
+
+        self.ext_flash_info = attach_flm(session.target, self.ext_flm_path)
+        return self.ext_flash_info
+
+    def reconnect(self, attempts: int = 6, delay: float = 0.5) -> OperationResult:
+        """Re-open the last probe/target pair (e.g. after an option-byte reload)."""
+        probe, target = self._probe, self._target
+        if probe is None or target is None:
+            return self._fail("Nothing to reconnect")
+        self.disconnect()
+        result = self._fail("Reconnect failed")
+        for _ in range(max(1, attempts)):
+            time.sleep(delay)
+            result = self.connect(probe, target)
+            if result.ok:
+                return result
+        return result
 
     def disconnect(self) -> None:
         session, self._session = self._session, None
@@ -544,54 +596,60 @@ class PyOCDDriver(ProbeDriver):
             duration_s=dur,
         )
 
-    def program(self, firmware_path: str, verify: bool = True) -> OperationResult:
+    def _progress_reporter(self, stage: ProgressStage, size: int, label: str):
+        last = {"pct": -1}
+
+        def _progress(value: int | float) -> None:
+            # pyOCD loaders report 0.0–1.0
+            frac = float(value)
+            if frac > 1.0:
+                frac = frac / 100.0
+            pct = max(0, min(100, int(frac * 100)))
+            if pct != last["pct"]:
+                last["pct"] = pct
+                self.emit_progress(
+                    ProgressInfo(
+                        stage=stage,
+                        percent=pct,
+                        message=f"{label} {pct}%",
+                        bytes_done=int(size * frac),
+                        bytes_total=size,
+                    )
+                )
+
+        return _progress
+
+    def program(
+        self, firmware_path: str, verify: bool = True, incremental: bool = False
+    ) -> OperationResult:
         session = self._require_session()
         path = Path(firmware_path)
         if not path.exists():
             return self._fail(f"Firmware not found: {path}")
 
         size = path.stat().st_size
+        mode = " (incremental)" if incremental else ""
         self.emit_progress(
             ProgressInfo(
                 stage=ProgressStage.PROGRAM,
                 percent=0,
-                message=f"Programming {path.name} ({size:,} bytes) …",
+                message=f"Programming {path.name}{mode} ({size:,} bytes) …",
                 bytes_total=size,
             )
         )
         t0 = time.perf_counter()
-        last = {"pct": -1}
-
-        def _progress(value: int | float) -> None:
-            # pyOCD FileProgrammer reports 0.0–1.0
-            frac = float(value)
-            if frac > 1.0:
-                frac = frac / 100.0
-            pct = max(0, min(100, int(frac * 100)))
-            # throttle to 1% steps
-            if pct != last["pct"]:
-                last["pct"] = pct
-                done = int(size * frac)
-                self.emit_progress(
-                    ProgressInfo(
-                        stage=ProgressStage.PROGRAM,
-                        percent=pct,
-                        message=f"Program {pct}%",
-                        bytes_done=done,
-                        bytes_total=size,
-                    )
-                )
-
         try:
             from pyocd.flash.file_programmer import FileProgrammer
 
+            if incremental:
+                # Smart flash compares against what it reads back; make sure
+                # that read hits the device and not pyOCD's memory cache.
+                self._prepare_fresh_flash_read(session)
             programmer = FileProgrammer(
                 session,
-                progress=_progress,
-                chip_erase=None,
-                # Always rewrite pages. Smart-flash compares against the memory
-                # cache, which still holds the previous flash contents.
-                smart_flash=False,
+                progress=self._progress_reporter(ProgressStage.PROGRAM, size, "Program"),
+                chip_erase="sector" if incremental else None,
+                smart_flash=bool(incremental),
                 trust_crc=False,
             )
             programmer.program(str(path.resolve()))
@@ -605,32 +663,93 @@ class PyOCDDriver(ProbeDriver):
 
         dur = time.perf_counter() - t0
         if verify:
-            self.emit_progress(
-                ProgressInfo(
-                    stage=ProgressStage.VERIFY,
-                    percent=0,
-                    message="Verifying …",
-                    bytes_total=size,
-                )
-            )
-            v = self.verify(str(path))
-            if not v.ok:
-                self.emit_progress(
-                    ProgressInfo(
-                        stage=ProgressStage.ERROR,
-                        percent=0,
-                        message=f"Program done but verify failed ({dur:.2f}s)",
-                        is_error=True,
-                    )
-                )
-                return OperationResult(
-                    ok=False,
-                    message=f"Verify failed: {v.message}",
-                    duration_s=dur,
-                    bytes_processed=size,
-                    detail=v.detail,
-                )
+            failed = self._verify_after_program(lambda: self.verify(str(path)), dur, size)
+            if failed is not None:
+                return failed
+        return self._program_done(f"Programmed {path.name}{mode}", dur, size)
 
+    def program_segments(
+        self,
+        segments: list[tuple[int, bytes]],
+        *,
+        verify: bool = True,
+        erase: str = "sector",
+        incremental: bool = False,
+        label: str = "image",
+    ) -> OperationResult:
+        """Program in-memory (address, data) segments through pyOCD's MemoryLoader."""
+        session = self._require_session()
+        segments = [(int(a), bytes(d)) for a, d in segments if d]
+        if not segments:
+            return self._fail("Image has no data")
+        size = sum(len(d) for _, d in segments)
+        self.emit_progress(
+            ProgressInfo(
+                stage=ProgressStage.PROGRAM,
+                percent=0,
+                message=f"Programming {label} ({size:,} bytes, {erase} erase) …",
+                bytes_total=size,
+            )
+        )
+        t0 = time.perf_counter()
+        try:
+            from pyocd.flash.loader import MemoryLoader
+
+            if incremental:
+                self._prepare_fresh_flash_read(session)
+            loader = MemoryLoader(
+                session,
+                progress=self._progress_reporter(ProgressStage.PROGRAM, size, "Program"),
+                chip_erase="chip" if erase == "chip" else "sector",
+                smart_flash=bool(incremental),
+                trust_crc=False,
+            )
+            for addr, data in segments:
+                loader.add_data(addr, data)
+            loader.commit()
+        except Exception as exc:
+            log.exception("program segments failed")
+            msg = f"Program failed: {exc}"
+            self.emit_progress(
+                ProgressInfo(stage=ProgressStage.ERROR, percent=0, message=msg, is_error=True)
+            )
+            return self._fail(str(exc), exc)
+
+        dur = time.perf_counter() - t0
+        if verify:
+            failed = self._verify_after_program(
+                lambda: self.verify_segments(segments), dur, size
+            )
+            if failed is not None:
+                return failed
+        return self._program_done(f"Programmed {label}", dur, size)
+
+    def _verify_after_program(self, run, dur: float, size: int) -> OperationResult | None:
+        self.emit_progress(
+            ProgressInfo(
+                stage=ProgressStage.VERIFY, percent=0, message="Verifying …", bytes_total=size
+            )
+        )
+        v = run()
+        if v.ok:
+            return None
+        self.emit_progress(
+            ProgressInfo(
+                stage=ProgressStage.ERROR,
+                percent=0,
+                message=f"Program done but verify failed ({dur:.2f}s)",
+                is_error=True,
+            )
+        )
+        return OperationResult(
+            ok=False,
+            message=f"Verify failed: {v.message}",
+            duration_s=dur,
+            bytes_processed=size,
+            detail=v.detail,
+        )
+
+    def _program_done(self, message: str, dur: float, size: int) -> OperationResult:
         self.emit_progress(
             ProgressInfo(
                 stage=ProgressStage.DONE,
@@ -640,12 +759,49 @@ class PyOCDDriver(ProbeDriver):
                 bytes_total=size,
             )
         )
-        return OperationResult(
-            ok=True,
-            message=f"Programmed {path.name}",
-            duration_s=dur,
-            bytes_processed=size,
-        )
+        return OperationResult(ok=True, message=message, duration_s=dur, bytes_processed=size)
+
+    def verify_segments(self, segments: list[tuple[int, bytes]]) -> OperationResult:
+        session = self._require_session()
+        t0 = time.perf_counter()
+        try:
+            ok, detail = self._verify_segments(session, segments)
+        except Exception as exc:
+            log.exception("verify failed")
+            return self._fail(f"Verify failed: {exc}", exc)
+        dur = time.perf_counter() - t0
+        if ok:
+            return OperationResult(ok=True, message="Verify OK", duration_s=dur, detail=detail)
+        return self._fail(detail or "Verify failed", duration_s=dur, detail=detail)
+
+    def read_uid_bytes(self) -> bytes:
+        """Raw 96-bit STM32 unique ID (empty when not available)."""
+        target = self._require_session().target
+        for addr in STM32_UID_CANDIDATES:
+            raw = self._read_bytes(target, addr, 12)
+            if raw and _looks_like_valid_uid(raw):
+                return raw
+        return b""
+
+    def option_bytes(self) -> Any:
+        from etools.core.option_bytes import OptionBytes
+
+        return OptionBytes.detect(self._require_session().target)
+
+    def after_option_write(self, reload: str) -> OperationResult:
+        """Make new option bytes effective and refresh the session."""
+        session = self._require_session()
+        if reload == "obl":
+            return self.reconnect()
+        if reload == "reset":
+            try:
+                session.target.reset_and_halt()
+            except Exception as exc:
+                log.debug("reset after option write failed, reconnecting", exc_info=True)
+                self._emit(f"Reset failed ({exc}); reconnecting", True)
+                return self.reconnect()
+        self._invalidate_memory_cache(session.target)
+        return OperationResult(ok=True, message="Option bytes applied")
 
     def _invalidate_memory_cache(self, target: Any) -> None:
         """Drop pyOCD's cached memory so the next read hits the device."""
@@ -896,7 +1052,11 @@ class PyOCDDriver(ProbeDriver):
 
     def _verify_image(self, session: Any, path: Path) -> tuple[bool, str]:
         """Compare flash against the file's address/data segments."""
-        segments = self._load_image_segments(path)
+        return self._verify_segments(session, self._load_image_segments(path))
+
+    def _verify_segments(
+        self, session: Any, segments: list[tuple[int, bytes]]
+    ) -> tuple[bool, str]:
         if not segments:
             return False, "No loadable segments in image"
 

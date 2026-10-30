@@ -252,6 +252,7 @@ class ProgramController:
                 self.host.rtt_panel.set_connected(True)
                 self.host.swo_panel.set_connected(True)
                 self.host.variable_monitor.set_connected(True)
+                self._tools_connected(True)
                 details_for_flash = getattr(result, "data", None)
                 if details_for_flash is not None and getattr(details_for_flash, "flash_size", 0):
                     self.host.hex_preview._flash_size_hint = int(details_for_flash.flash_size)
@@ -276,6 +277,7 @@ class ProgramController:
                 self.host.flash_panel.set_ops_enabled(False)
                 self.host.hex_preview.set_chip_read_enabled(False)
                 self.host.target_info_panel.clear()
+                self._tools_connected(False)
                 self._set_status(
                     result.message if absent else tr("status.failed"),
                     "warn" if absent else "err",
@@ -288,9 +290,16 @@ class ProgramController:
             self.host.flash_panel.set_ops_enabled(False)
             self.host.hex_preview.set_chip_read_enabled(False)
             self.host.target_info_panel.clear()
+            self._tools_connected(False)
             self._set_status(tr("status.failed"), "err")
 
         self._run_async(lambda: self.host.service.connect(probe, target), on_ok, on_err)
+
+    def _tools_connected(self, connected: bool) -> None:
+        page = getattr(self.host, "program_page", None)
+        tools = getattr(page, "flash_tools", None)
+        if tools is not None:
+            tools.set_connected(connected)
 
     def _auto_preview_chip(self, details: object | None) -> None:
         addr = 0x0800_0000
@@ -322,6 +331,7 @@ class ProgramController:
         self.host.swo_panel.set_connected(False)
         self.host.variable_monitor.set_connected(False)
         self.host.target_info_panel.clear()
+        self._tools_connected(False)
         self._set_status(tr("status.disconnected"), "warn")
         self._hide_progress()
         self._log(tr("log.disconnected"))
@@ -389,10 +399,56 @@ class ProgramController:
             self._hide_progress()
             self._notify(tr("op.program_fail"), msg, error=True)
 
-        if not self._run_async(
-            lambda: self.host.service.program_file(path, verify=verify), on_ok, on_err
-        ):
+        incremental = bool(getattr(self.host.flash_panel, "incremental", False))
+
+        def work():
+            if incremental:
+                return self.host.service.program_file(path, verify=verify, incremental=True)
+            return self.host.service.program_file(path, verify=verify)
+
+        if not self._run_async(work, on_ok, on_err):
             self._log(tr("log.busy"), True)
+
+    # -- host API for the flash tool panels (option bytes, production, …) --
+
+    @property
+    def service(self):
+        return self.host.service
+
+    @property
+    def connected(self) -> bool:
+        return bool(self.host.service.connected)
+
+    def run_job(self, fn, on_ok, on_err=None) -> bool:
+        started = self._run_async(fn, on_ok, on_err)
+        if not started:
+            self._log(tr("log.busy"), True)
+        return started
+
+    def log(self, message: str, is_error: bool = False) -> None:
+        self._log(message, is_error)
+
+    def progress(self, percent: int, label: str = "") -> None:
+        if percent < 0:
+            self._hide_progress()
+        else:
+            self._show_progress(percent, label)
+
+    def firmware_path(self) -> str:
+        return self._firmware_to_program()
+
+    def use_firmware(self, path: str) -> None:
+        """Make ``path`` the firmware of the Flash tab."""
+        self.host.flash_panel.fw_edit.setText(path)
+        self.host.flash_panel.remember_firmware(path)
+        self._log(tr("log.firmware_opened", name=Path(path).name))
+
+    def refresh_target(self) -> None:
+        """Re-read target details after the session was re-opened."""
+        self._start_refresh_info()
+
+    def mark_disconnected(self) -> None:
+        self._do_disconnect()
 
     def _start_erase(self) -> None:
         self._show_progress(0, tr("log.erasing"))

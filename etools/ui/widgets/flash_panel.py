@@ -101,15 +101,45 @@ class FlashPanel(QFrame):
         set_button_icon(self.reset_btn, "reset", 16)
         set_button_icon(self.read_btn, "read", 16)
 
+        from PySide6.QtWidgets import QHBoxLayout
+
+        self.incremental_check = QCheckBox()
+        self.incremental_check.setObjectName("incrementalCheck")
+        lay = self._form.layout()
+        idx = lay.indexOf(self.verify_check)
+        if idx >= 0:
+            lay.removeWidget(self.verify_check)
+            row = QHBoxLayout()
+            row.setSpacing(16)
+            row.addWidget(self.verify_check)
+            row.addWidget(self.incremental_check)
+            row.addStretch(1)
+            lay.insertLayout(idx, row)
+
         cfg = get_config()
         if cfg.last_firmware:
             self.fw_edit.setText(cfg.last_firmware)
         self.verify_check.setChecked(cfg.verify_after_program)
+        self.incremental_check.setChecked(bool((cfg.extra or {}).get("incremental_program")))
+        self.incremental_check.toggled.connect(self._save_incremental)
         self._update_fw_info()
         self.retranslate()
 
+    def _save_incremental(self, checked: bool) -> None:
+        cfg = get_config()
+        extra = dict(cfg.extra or {})
+        extra["incremental_program"] = bool(checked)
+        cfg.extra = extra
+        save_config()
+
+    @property
+    def incremental(self) -> bool:
+        return self.incremental_check.isChecked()
+
     def retranslate(self) -> None:
         self.verify_check.setText(tr("flash.verify_after"))
+        self.incremental_check.setText(tr("flash.incremental"))
+        self.incremental_check.setToolTip(tr("flash.incremental_tip"))
         self.program_btn.setText(tr("act.program"))
         self.erase_btn.setText(tr("act.erase"))
         self.verify_btn.setText(tr("act.verify"))

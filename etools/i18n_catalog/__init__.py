@@ -4,6 +4,7 @@ from etools.i18n_catalog import (
     can,
     common,
     ethernet,
+    flashtools,
     link,
     program,
     script,
@@ -12,4 +13,4 @@ from etools.i18n_catalog import (
     terminal,
 )
 
-CATALOGS = (common, program, serial, ethernet, can, terminal, script, link, studio)
+CATALOGS = (common, program, flashtools, serial, ethernet, can, terminal, script, link, studio)

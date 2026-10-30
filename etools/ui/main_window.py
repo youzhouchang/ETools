@@ -252,6 +252,7 @@ class MainWindow(QMainWindow):
 
         self.apply_theme(get_config().theme or "dark")
         self.program = ProgramController(self)
+        self.program_page.bind_tools_host(self.program)
 
     def _active_page(self):
         tool = self.shell.current_tool

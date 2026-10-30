@@ -11,6 +11,7 @@ from etools.core.models import (
     TargetDetails,
     TargetInfo,
 )
+from etools.core.option_bytes import ObSnapshot
 from etools.core.probe import ProbeDriver
 from etools.core.probe_io import PROBE_LOCK
 from etools.logger import get_logger
@@ -58,13 +59,81 @@ class FlashService:
                 raise RuntimeError("Driver does not support erase_range")
             return eraser(int(address), int(size))
 
-    def program_file(self, path: str | Path, verify: bool = True) -> OperationResult:
+    def program_file(
+        self, path: str | Path, verify: bool = True, *, incremental: bool = False
+    ) -> OperationResult:
         img = FirmwareImage(path=Path(path))
         if not img.exists:
             return OperationResult(ok=False, message=f"File not found: {img.path}")
-        log.info("Programming %s (%d bytes, %s)", img.display_name, img.size, img.format)
+        log.info(
+            "Programming %s (%d bytes, %s%s)",
+            img.display_name,
+            img.size,
+            img.format,
+            ", incremental" if incremental else "",
+        )
         with self._lock:
+            if incremental:
+                return self.driver.program(str(img.path), verify=verify, incremental=True)
             return self.driver.program(str(img.path), verify=verify)
+
+    def _driver_op(self, name: str):
+        op = getattr(self.driver, name, None)
+        if op is None:
+            raise RuntimeError(f"Driver does not support {name}")
+        return op
+
+    def program_segments(
+        self,
+        segments: list[tuple[int, bytes]],
+        *,
+        verify: bool = True,
+        erase: str = "sector",
+        incremental: bool = False,
+        label: str = "image",
+    ) -> OperationResult:
+        with self._lock:
+            return self._driver_op("program_segments")(
+                segments, verify=verify, erase=erase, incremental=incremental, label=label
+            )
+
+    def verify_segments(self, segments: list[tuple[int, bytes]]) -> OperationResult:
+        with self._lock:
+            return self._driver_op("verify_segments")(segments)
+
+    def read_uid(self) -> bytes:
+        with self._lock:
+            return self._driver_op("read_uid_bytes")()
+
+    def read_option_bytes(self) -> ObSnapshot:
+        with self._lock:
+            ob = self._driver_op("option_bytes")()
+            return ObSnapshot.capture(ob)
+
+    def write_option_bytes(
+        self, values: dict[str, int], *, allow_level2: bool = False
+    ) -> OperationResult:
+        """Program option bytes, then reload them (reset / reconnect as needed)."""
+        with self._lock:
+            ob = self._driver_op("option_bytes")()
+            outcome = ob.write(values, allow_level2=allow_level2)
+            if not outcome.changes:
+                return OperationResult(ok=True, message="Option bytes unchanged", data=outcome)
+            applied = self._driver_op("after_option_write")(outcome.reload)
+            summary = ", ".join(f"{c.key}={c.new:#x}" for c in outcome.changes)
+            if not applied.ok:
+                return OperationResult(
+                    ok=False,
+                    message=f"Option bytes written ({summary}) but {applied.message}",
+                    data=outcome,
+                )
+            return OperationResult(
+                ok=True, message=f"Option bytes written: {summary}", data=outcome
+            )
+
+    def set_external_flm(self, path: str):
+        with self._lock:
+            return self._driver_op("set_external_flm")(path)
 
     def read_flash(self, address: int, size: int, out_path: str | Path) -> OperationResult:
         with self._lock:

@@ -299,6 +299,7 @@ def test_program_tabs_match_their_panels(qapp):
     panels = {
         "tabHex": page.hex_preview,
         "tabFlash": page.flash_panel,
+        "tabTools": page.flash_tools,
         "tabDevices": page.device_manager,
         "tabRtt": page.rtt_panel,
         "tabSwo": page.swo_panel,

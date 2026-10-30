@@ -25,7 +25,9 @@ from etools.ui.shell import ToolActionSpec
 from etools.ui.tools.base import ToolPage
 from etools.ui.widgets.device_manager import DeviceManagerPanel
 from etools.ui.widgets.diag_panel import DiagPanel
+from etools.ui.widgets.ext_flash_box import ExtFlashBox
 from etools.ui.widgets.flash_panel import FlashPanel
+from etools.ui.widgets.flash_tools_panel import FlashToolsPanel
 from etools.ui.widgets.hex_preview import HexPreviewPanel
 from etools.ui.widgets.log_panel import LogPanel
 from etools.ui.widgets.probe_panel import ProbePanel
@@ -47,6 +49,7 @@ class _ShrinkPane(QWidget):
 _TAB_SPEC = (
     ("tabHex", "hex", "tab.hex"),
     ("tabFlash", "program", "tab.flash"),
+    ("tabTools", "chip", "tab.tools"),
     ("tabDevices", "devices", "tab.devices"),
     ("tabRtt", "rtt", "tab.rtt"),
     ("tabSwo", "swv", "tab.swo"),
@@ -73,6 +76,8 @@ class ProgramPage(ToolPage):
         self.swo_panel = SwvPanel()
         self.variable_monitor = VariableMonitorPanel()
         self.diag_panel = DiagPanel()
+        self.flash_tools = FlashToolsPanel()
+        self.ext_flash_box = ExtFlashBox()
         self.diag_panel.set_firmware_getter(self.flash_panel.firmware_path)
         self.rtt_panel.data_received.connect(self.variable_monitor.feed_rtt_data)
         self.swo_panel.data_received.connect(self.variable_monitor.feed_swo_data)
@@ -111,6 +116,7 @@ class ProgramPage(ToolPage):
         tab_widgets = {
             "tabHex": self.hex_preview,
             "tabFlash": self.flash_panel,
+            "tabTools": self.flash_tools,
             "tabDevices": self.device_manager,
             "tabRtt": self.rtt_panel,
             "tabSwo": self.swo_panel,
@@ -123,6 +129,10 @@ class ProgramPage(ToolPage):
             lay = QVBoxLayout(page)
             lay.setContentsMargins(0, 0, 0, 0)
             lay.addWidget(tab_widgets[obj_name], 1)
+            if obj_name == "tabFlash":
+                lay.setStretch(0, 0)
+                lay.addWidget(self.ext_flash_box, 0)
+                lay.addStretch(1)
             self.main_tabs.addTab(page, "")
 
         bottom = QWidget()
@@ -250,6 +260,8 @@ class ProgramPage(ToolPage):
             self.swo_panel,
             self.variable_monitor,
             self.diag_panel,
+            self.flash_tools,
+            self.ext_flash_box,
         ):
             if hasattr(panel, "retranslate"):
                 panel.retranslate()
@@ -259,6 +271,12 @@ class ProgramPage(ToolPage):
         aliases = {
             "hex": "tabHex",
             "flash": "tabFlash",
+            "tools": "tabTools",
+            "ob": "tabTools",
+            "option_bytes": "tabTools",
+            "production": "tabTools",
+            "image": "tabTools",
+            "uart_boot": "tabTools",
             "devices": "tabDevices",
             "rtt": "tabRtt",
             "swv": "tabSwo",
@@ -267,6 +285,15 @@ class ProgramPage(ToolPage):
             "diag": "tabDiag",
         }
         target = aliases.get(keyword.lower(), keyword)
+        sub = {
+            "ob": "option_bytes",
+            "option_bytes": "option_bytes",
+            "production": "production",
+            "image": "image_tools",
+            "uart_boot": "uart_boot",
+        }.get(keyword.lower())
+        if sub:
+            self.flash_tools.goto(sub)
         for i in range(self.main_tabs.count()):
             if self.main_tabs.widget(i).objectName() == target:
                 self.main_tabs.setCurrentIndex(i)
@@ -299,3 +326,9 @@ class ProgramPage(ToolPage):
         self.swo_panel.set_connected(connected)
         self.variable_monitor.set_connected(connected)
         self.diag_panel.set_connected(connected)
+        self.flash_tools.set_connected(connected)
+
+    def bind_tools_host(self, host: Any) -> None:
+        """Give the flash tool panels access to the flash service and runner."""
+        self.flash_tools.bind(host)
+        self.ext_flash_box.bind(host)
