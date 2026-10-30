@@ -335,4 +335,5 @@ class OptionBytesPanel(QWidget):
             self.status.setText(tr("ob.write_fail", err=msg))
 
         self._host.log(tr("ob.writing", changes=", ".join(lines)))
+        self._host.stop_debug_views()
         self._host.run_job(work, on_ok, on_err)

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import zlib
+
 import pytest
 
 from etools.core.fw_image import ImageError, SparseImage, to_ihex, to_srec
@@ -53,24 +56,20 @@ def test_bin_crc_sha() -> None:
     img = SparseImage([(0x10, b"\x01"), (0x13, b"\x02")])
     base, data = img.to_bin(fill=0x00)
     assert base == 0x10 and data == b"\x01\x00\x00\x02"
-    assert len(img.sha256()) == 64
-    # The digest is framed per segment (address + length + data), not the
-    # gap-filled flat binary, so it stays well-defined across far-apart
-    # regions (on-chip flash + external QSPI) that would blow past MAX_SPAN.
-    same = SparseImage([(0x10, b"\x01"), (0x13, b"\x02")])
-    assert img.crc32() == same.crc32()
-    moved = SparseImage([(0x20, b"\x01"), (0x23, b"\x02")])
-    assert img.crc32() != moved.crc32()
+    # Standard CRC32 / SHA256 of the flat binary, matching other tools.
+    assert img.digest_is_flat
+    assert img.crc32(fill=0x00) == zlib.crc32(data)
+    assert img.sha256(fill=0x00) == hashlib.sha256(data).hexdigest()
 
 
-def test_crc_sha_do_not_need_contiguous_binary() -> None:
-    # Two regions 2 GiB apart would exceed MAX_SPAN / to_bin, but crc32 and
-    # sha256 only hash the actual segment bytes, so they still work.
+def test_crc_sha_fall_back_to_segments_for_huge_span() -> None:
     img = SparseImage([(0x0800_0000, b"\x01\x02"), (0x9000_0000, b"\x03")])
     with pytest.raises(ImageError):
         img.to_bin()
-    assert isinstance(img.crc32(), int)
+    assert not img.digest_is_flat
     assert len(img.sha256()) == 64
+    moved = SparseImage([(0x0800_0000, b"\x01\x02"), (0x9000_0004, b"\x03")])
+    assert img.crc32() != moved.crc32()
 
 
 def test_ihex_and_srec_roundtrip_across_64k_boundary() -> None:

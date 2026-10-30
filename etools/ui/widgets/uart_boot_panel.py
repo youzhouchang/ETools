@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ from etools.core.stm32_uart_boot import (
     open_serial,
 )
 from etools.i18n import tr
+from etools.ui.runtime import OpRunner
 from etools.ui.tool_prefs import load_tool_prefs, save_tool_prefs
 from etools.ui.widgets.flash_tools_common import confirm, int_edit, parse_int, tool_button
 
@@ -52,10 +54,17 @@ class UartBootPanel(QWidget):
         parent: QWidget | None = None,
         *,
         port_factory: Callable[[str, int], Any] | None = None,
+        run_job: Callable[..., bool] | None = None,
     ) -> None:
         super().__init__(parent)
         self._host: Any = None
         self._open = port_factory or (lambda port, baud: open_serial(port, baud))
+        # The UART bootloader needs no debug probe, so it runs on its own
+        # runner instead of queueing behind (and blocking) probe jobs.
+        self._runner = OpRunner(self)
+        self._runner.busy_changed.connect(self._apply_busy)
+        self._run_job = run_job or self._runner.start
+        self._cancel = threading.Event()
         self._build()
         self._progressed.connect(self._on_progress, Qt.ConnectionType.QueuedConnection)
         self._load_prefs()
@@ -170,16 +179,21 @@ class UartBootPanel(QWidget):
         self.unprotect_btn = tool_button("warning", kind="danger")
         self.protect_btn = tool_button("warning")
         self.wunprotect_btn = tool_button("refresh")
-        for w in (
+        self._action_btns = (
             self.connect_btn,
             self.program_btn,
             self.erase_btn,
             self.protect_btn,
             self.unprotect_btn,
             self.wunprotect_btn,
-        ):
+            self.read_btn,
+        )
+        for w in self._action_btns[:-1]:
             bar.addWidget(w)
         bar.addStretch(1)
+        self.cancel_btn = tool_button("stop")
+        self.cancel_btn.setEnabled(False)
+        bar.addWidget(self.cancel_btn)
         root.addLayout(bar)
         root.addStretch(1)
 
@@ -190,6 +204,7 @@ class UartBootPanel(QWidget):
         self.program_btn.clicked.connect(self.program)
         self.erase_btn.clicked.connect(self._erase)
         self.read_btn.clicked.connect(self._read)
+        self.cancel_btn.clicked.connect(self.cancel)
         self.protect_btn.clicked.connect(lambda: self._protect_cmd("rdp"))
         self.unprotect_btn.clicked.connect(lambda: self._protect_cmd("rup"))
         self.wunprotect_btn.clicked.connect(lambda: self._protect_cmd("wup"))
@@ -226,11 +241,22 @@ class UartBootPanel(QWidget):
         self.protect_btn.setText(tr("uboot.rdp"))
         self.unprotect_btn.setText(tr("uboot.rup"))
         self.wunprotect_btn.setText(tr("uboot.wup"))
+        self.cancel_btn.setText(tr("prod.cancel"))
         if not self.info_label.text():
             self.info_label.setText(tr("uboot.hint"))
 
     def set_connected(self, connected: bool) -> None:
         """UART bootloader does not depend on the debug probe."""
+
+    def _apply_busy(self, busy: bool) -> None:
+        for btn in self._action_btns:
+            btn.setEnabled(not busy)
+        self.cancel_btn.setEnabled(busy)
+
+    def cancel(self) -> None:
+        self._cancel.set()
+        if self._host is not None:
+            self._host.log(tr("prod.cancelling"))
 
     # -- prefs ------------------------------------------------------------
 
@@ -356,9 +382,13 @@ class UartBootPanel(QWidget):
 
         def on_err(msg: str) -> None:
             self.info_label.setText(tr("uboot.fail", err=msg))
+            self._host.log(tr("uboot.fail", err=msg), True)
+            self._host.progress(-1)
 
+        self._cancel.clear()
         self._host.log(tr("uboot.start", op=label, port=self.port_name()))
-        self._host.run_job(work, on_ok, on_err)
+        if not self._run_job(work, on_ok, on_err):
+            self._host.log(tr("log.busy"), True)
 
     def _show_info(self, info) -> None:
         if info is None:
@@ -389,6 +419,7 @@ class UartBootPanel(QWidget):
         verify = self.verify_check.isChecked()
         run = self.run_check.isChecked()
         emit = self._progressed.emit
+        cancelled = self._cancel.is_set
         entry = self.entry()
         # Reset into the app via the control lines when both are wired,
         # otherwise jump there with the Go command.
@@ -396,7 +427,9 @@ class UartBootPanel(QWidget):
         go = run and not leave
 
         def job(boot: Stm32UartBoot, port):
-            written = boot.program(image, erase=erase, verify=verify, progress=emit)
+            written = boot.program(
+                image, erase=erase, verify=verify, progress=emit, cancelled=cancelled
+            )
             if go:
                 boot.go(image.start)
             return written
@@ -429,9 +462,10 @@ class UartBootPanel(QWidget):
         if not out:
             return
         emit = self._progressed.emit
+        cancelled = self._cancel.is_set
 
         def job(boot: Stm32UartBoot, port):
-            data = boot.read_range(addr, size, progress=emit)
+            data = boot.read_range(addr, size, progress=emit, cancelled=cancelled)
             Path(out).write_bytes(data)
             return len(data)
 

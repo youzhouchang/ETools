@@ -450,6 +450,21 @@ class ProgramController:
     def mark_disconnected(self) -> None:
         self._do_disconnect()
 
+    def stop_debug_views(self) -> None:
+        """Stop RTT / SWO / variable sampling before the session may be re-opened.
+
+        They hold the current pyOCD session; an option-byte reload replaces it
+        and their readers would otherwise fail on the closed one.
+        """
+        page = self.host.program_page
+        streaming = page.rtt_panel._reader.running or page.swo_panel._reader.running
+        connected = self.connected
+        for panel in (page.rtt_panel, page.swo_panel, page.variable_monitor):
+            panel.set_connected(False)
+            panel.set_connected(connected)
+        if streaming:
+            self._log(tr("log.debug_views_stopped"))
+
     def _start_erase(self) -> None:
         self._show_progress(0, tr("log.erasing"))
         address, size = self._memory_window()

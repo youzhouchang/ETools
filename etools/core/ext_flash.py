@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -71,6 +73,27 @@ def _maps(target: Any) -> list[Any]:
         if mm is not None and all(mm is not m for m in maps):
             maps.append(mm)
     return maps
+
+
+@contextmanager
+def suspended(target: Any) -> Iterator[bool]:
+    """Temporarily hide the FLM region from the memory maps.
+
+    pyOCD's chip / mass erase walks every FLASH region (regions without a
+    ``pname`` match any core), so a "full chip erase" would otherwise also
+    wipe the external memory. Yields True when a region was hidden.
+    """
+    hidden: list[tuple[Any, Any]] = []
+    for mm in _maps(target):
+        for region in list(mm.regions):
+            if region.name == REGION_NAME:
+                mm.remove_region(region)
+                hidden.append((mm, region))
+    try:
+        yield bool(hidden)
+    finally:
+        for mm, region in hidden:
+            mm.add_region(region)
 
 
 def detach_flm(target: Any) -> bool:

@@ -115,6 +115,8 @@ class ProductionPlan:
     def validate(self, image: SparseImage) -> None:
         if self.erase not in ERASE_MODES:
             raise ProductionError(f"Unknown erase mode: {self.erase}")
+        if self.incremental and self.erase == "chip":
+            raise ProductionError("Incremental programming needs sector erase")
         if self.serial.enabled:
             if self.serial.fmt not in SERIAL_FORMATS:
                 raise ProductionError(f"Unknown serial format: {self.serial.fmt}")
@@ -157,6 +159,9 @@ class ProductionResult:
     started: str = ""
     duration_s: float = 0.0
     error: str = ""
+    # The serial number reached the chip (programming succeeded), so it must
+    # not be reused even if a later step (protect / run) failed.
+    serial_consumed: bool = False
 
     def steps_text(self) -> str:
         return " ".join(f"{s.name}:{'ok' if s.ok else 'fail'}" for s in self.steps)
@@ -246,6 +251,7 @@ class ProductionRunner:
             )
             if not res.ok:
                 raise ProductionError(res.message)
+            result.serial_consumed = result.serial is not None
             return res.message
 
         def protect() -> str:

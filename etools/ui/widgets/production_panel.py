@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,7 @@ class ProductionPanel(QWidget):
         self._passed = 0
         self._failed = 0
         self._protect_confirmed = False
+        self._cancel: threading.Event | None = None
         self._build()
         self._load_prefs()
 
@@ -164,6 +166,8 @@ class ProductionPanel(QWidget):
         self.start_btn = tool_button("program", kind="accent")
         self.start_btn.setFixedHeight(44)
         right.addWidget(self.start_btn)
+        self.cancel_btn = tool_button("stop")
+        right.addWidget(self.cancel_btn)
         self.result_label = QLabel("—")
         self.result_label.setObjectName("prodResult")
         self.result_label.setStyleSheet("font-size: 28px; font-weight: 700;")
@@ -180,6 +184,8 @@ class ProductionPanel(QWidget):
         self.fw_use_current.clicked.connect(self._use_current_fw)
         self.log_browse.clicked.connect(self._browse_log)
         self.start_btn.clicked.connect(self.start)
+        self.cancel_btn.clicked.connect(self.cancel)
+        self.erase_combo.currentIndexChanged.connect(self._erase_changed)
         self.reset_stats_btn.clicked.connect(self._reset_stats)
         self.sn_fmt.currentIndexChanged.connect(self._update_preview)
         self.sn_width.valueChanged.connect(self._update_preview)
@@ -216,6 +222,8 @@ class ProductionPanel(QWidget):
         self.log_edit.setPlaceholderText(tr("prod.log_placeholder"))
         self.log_browse.setText(tr("prod.browse"))
         self.start_btn.setText(tr("prod.start"))
+        self.cancel_btn.setText(tr("prod.cancel"))
+        self.cancel_btn.setToolTip(tr("prod.cancel_tip"))
         self.reset_stats_btn.setText(tr("prod.reset_stats"))
         self._update_stats()
         self._update_preview()
@@ -226,6 +234,19 @@ class ProductionPanel(QWidget):
 
     def _apply_enabled(self) -> None:
         self.start_btn.setEnabled(self._connected and not self._running)
+        self.cancel_btn.setEnabled(self._running)
+
+    def _erase_changed(self, *_args) -> None:
+        chip = self.erase_combo.currentData() == "chip"
+        if chip:
+            self.incremental_check.setChecked(False)
+        self.incremental_check.setEnabled(not chip)
+
+    def cancel(self) -> None:
+        if self._cancel is not None:
+            self._cancel.set()
+            if self._host is not None:
+                self._host.log(tr("prod.cancelling"))
 
     # -- prefs ------------------------------------------------------------
 
@@ -280,6 +301,7 @@ class ProductionPanel(QWidget):
         self.uid_box.setChecked(plan.uid.enabled)
         self.uid_addr.setText(f"0x{plan.uid.address:08X}")
         self.log_edit.setText(plan.log_path)
+        self._erase_changed()
         self._update_preview()
 
     def _save_prefs(self, plan: ProductionPlan) -> None:
@@ -348,8 +370,11 @@ class ProductionPanel(QWidget):
         serial_no = plan.serial.start if plan.serial.enabled else None
         service = self._host.service
 
+        cancel = threading.Event()
+        self._cancel = cancel
+
         def work() -> ProductionResult:
-            return ProductionRunner(service, plan).run(serial_no)
+            return ProductionRunner(service, plan).run(serial_no, cancelled=cancel.is_set)
 
         def on_ok(result: ProductionResult) -> None:
             self._running = False
@@ -357,11 +382,13 @@ class ProductionPanel(QWidget):
             self._show_result(result)
             if result.ok:
                 self._passed += 1
-                if plan.serial.enabled:
-                    self.sn_next.setValue(min(_INT_MAX, plan.serial.start + plan.serial.step))
-                    self._save_prefs(self.plan())
             else:
                 self._failed += 1
+            if plan.serial.enabled and result.serial_consumed:
+                self.sn_next.setValue(min(_INT_MAX, plan.serial.start + plan.serial.step))
+                self._save_prefs(self.plan())
+                if not result.ok:
+                    self._host.log(tr("prod.sn_consumed", sn=result.serial_text), True)
             self._update_stats()
 
         def on_err(msg: str) -> None:
@@ -376,6 +403,9 @@ class ProductionPanel(QWidget):
         self.result_label.setStyleSheet("font-size: 28px; font-weight: 700;")
         sn = f" SN={plan.serial.text(serial_no)}" if serial_no is not None else ""
         self._host.log(tr("prod.started", name=Path(plan.firmware).name) + sn)
+        if plan.protect:
+            # Enabling RDP may reload option bytes and re-open the session.
+            self._host.stop_debug_views()
         self._running = True
         self._apply_enabled()
         if not self._host.run_job(work, on_ok, on_err):

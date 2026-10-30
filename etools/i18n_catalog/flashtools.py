@@ -145,6 +145,14 @@ ZH = {
     "prod.start": "开始量产烧录",
     "prod.reset_stats": "清零统计",
     "prod.stats": "通过 {ok} · 失败 {fail}",
+    "prod.cancel": "取消",
+    "prod.cancel_tip": "在当前步骤结束后停止（正在擦写的扇区不会被打断）",
+    "prod.cancelling": "正在取消，当前步骤结束后停止…",
+    "prod.sn_consumed": "序列号 {sn} 已写入芯片但流程未通过，下一片使用新序列号",
+    "log.debug_views_stopped": (
+        "已停止 RTT / SWO / 变量监控：写选项字节可能重连调试会话，"
+        "完成后请重新启动"
+    ),
     "prod.preview": "预览：{text} → {raw}",
     "prod.no_firmware": "请先选择存在的固件文件",
     "prod.protect_confirm": (
@@ -185,6 +193,7 @@ ZH = {
     "img.patch_placeholder": "十六进制字节，例如 DE AD BE EF",
     "img.patch_apply": "写入",
     "img.empty": "添加 HEX / BIN / SREC / ELF 文件以合并和编辑。",
+    "img.crc_segmented": "{crc}（分段指纹：地址跨度过大，不是扁平 BIN 的 CRC）",
     "img.summary": (
         "来源：{files} · {segs} 段 · {size} 字节 · {start}..{end} · CRC32 {crc} "
         "· SHA256 {sha}"
@@ -249,6 +258,7 @@ ZH = {
     "ext.remove": "移除",
     "ext.hint": (
         "挂载后，地址落在该算法区间内的 HEX/ELF 可直接烧录、擦除和校验；每次连接都会自动挂载。"
+        "「全片擦除」只擦片内 Flash，不会擦外部 Flash。"
     ),
     "ext.removed": "已移除外部 Flash 算法",
     "ext.attached": "已挂载外部 Flash：{info}",
@@ -421,6 +431,17 @@ EN = {
     "prod.start": "Start production run",
     "prod.reset_stats": "Reset counters",
     "prod.stats": "Pass {ok} · Fail {fail}",
+    "prod.cancel": "Cancel",
+    "prod.cancel_tip": "Stop after the current step (a sector being written is not interrupted)",
+    "prod.cancelling": "Cancelling; stopping after the current step…",
+    "prod.sn_consumed": (
+        "Serial {sn} was written to the chip but the run did not pass; "
+        "the next chip gets a new serial"
+    ),
+    "log.debug_views_stopped": (
+        "RTT / SWO / variable monitor stopped: writing option bytes may "
+        "re-open the debug session. Restart them afterwards"
+    ),
     "prod.preview": "Preview: {text} → {raw}",
     "prod.no_firmware": "Choose an existing firmware file first",
     "prod.protect_confirm": (
@@ -462,6 +483,7 @@ EN = {
     "img.patch_placeholder": "Hex bytes, e.g. DE AD BE EF",
     "img.patch_apply": "Write",
     "img.empty": "Add HEX / BIN / SREC / ELF files to merge and edit them.",
+    "img.crc_segmented": "{crc} (segment digest: span too large, not a flat-BIN CRC)",
     "img.summary": (
         "Sources: {files} · {segs} segment(s) · {size} bytes · {start}..{end} "
         "· CRC32 {crc} · SHA256 {sha}"
@@ -537,7 +559,8 @@ EN = {
     "ext.hint": (
         "Once attached, HEX/ELF data inside the algorithm range can be "
         "programmed, erased and verified. It is re-attached on every "
-        "connect."
+        "connect. Full chip erase only erases on-chip flash, never the "
+        "external memory."
     ),
     "ext.removed": "External flash algorithm removed",
     "ext.attached": "External flash attached: {info}",

@@ -32,6 +32,8 @@ class ToolsHost(Protocol):
 
     def mark_disconnected(self) -> None: ...
 
+    def stop_debug_views(self) -> None: ...
+
 
 def parse_int(text: str, default: int | None = None) -> int:
     """Parse ``0x1234`` / ``4660`` / ``0x0800_0000``; raise ValueError when invalid."""

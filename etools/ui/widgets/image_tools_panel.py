@@ -195,6 +195,8 @@ class ImageToolsPanel(QWidget):
             try:
                 crc = f"{self.image.crc32():08X}"
                 sha = self.image.sha256()[:16] + "…"
+                if not self.image.digest_is_flat:
+                    crc = tr("img.crc_segmented", crc=crc)
             except ImageError:
                 crc = sha = "—"
             self.summary.setText(

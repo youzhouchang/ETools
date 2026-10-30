@@ -76,6 +76,9 @@ class SyncHost:
     def mark_disconnected(self) -> None:
         self.disconnected += 1
 
+    def stop_debug_views(self) -> None:
+        self.views_stopped = getattr(self, "views_stopped", 0) + 1
+
 
 class ObService:
     def __init__(self) -> None:
@@ -84,8 +87,8 @@ class ObService:
     def read_option_bytes(self):
         return OptionBytes.detect(self.sim).snapshot()
 
-    def write_option_bytes(self, values, allow_level2=False):
-        outcome = OptionBytes.detect(self.sim).write(values, allow_level2=allow_level2)
+    def write_option_bytes(self, values):
+        outcome = OptionBytes.detect(self.sim).write(values)
         return OperationResult(ok=True, message="Option bytes written", data=outcome)
 
 
@@ -160,6 +163,7 @@ def test_option_bytes_panel_read_edit_write(qapp, no_confirm) -> None:
     assert (svc.sim.regs[H7Sim.B + 0x1C] >> 2) & 3 == 2
     assert panel.pending_values() == {}
     assert len(no_confirm) == 1
+    assert host.views_stopped == 1  # RTT/SWO stopped before the session may reload
 
     panel._factory_clicked()
     assert panel.pending_values() == {"BOR_LEV": 0}
@@ -212,6 +216,49 @@ def test_production_panel_run_increments_serial(qapp, tmp_path, monkeypatch) -> 
     panel.start()
     assert panel.result_label.text() == "FAIL"
     assert panel.sn_next.value() == 42
+    panel.close()
+
+
+def test_production_panel_consumes_serial_when_protect_fails(qapp, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("etools.ui.widgets.production_panel.save_tool_prefs", lambda *a: None)
+    monkeypatch.setattr("etools.ui.widgets.production_panel.load_tool_prefs", lambda *a: {})
+    monkeypatch.setattr("etools.ui.widgets.production_panel.confirm", lambda *a, **k: True)
+    from etools.ui.widgets.production_panel import ProductionPanel
+
+    class ProtectFails(FakeService):
+        def write_option_bytes(self, values):
+            return OperationResult(ok=False, message="Option byte change error")
+
+    fw = tmp_path / "app.bin"
+    fw.write_bytes(b"\x00" * 64)
+    host = SyncHost(ProtectFails())
+    panel = ProductionPanel()
+    panel.bind(host)
+    panel.set_connected(True)
+    panel.fw_edit.setText(str(fw))
+    panel.protect_check.setChecked(True)
+    panel.sn_box.setChecked(True)
+    panel.sn_addr.setText("0x08000010")
+    panel.sn_next.setValue(7)
+    panel.start()
+    assert panel.result_label.text() == "FAIL"
+    assert panel.sn_next.value() == 8  # 7 is on the chip; never reuse it
+    assert getattr(host, "views_stopped", 0) == 1
+    assert any("7" in m and err for m, err in host.logs)
+    panel.close()
+
+
+def test_production_panel_chip_erase_disables_incremental(qapp, monkeypatch) -> None:
+    monkeypatch.setattr("etools.ui.widgets.production_panel.load_tool_prefs", lambda *a: {})
+    from etools.ui.widgets.production_panel import ProductionPanel
+
+    panel = ProductionPanel()
+    panel.incremental_check.setChecked(True)
+    panel.erase_combo.setCurrentIndex(panel.erase_combo.findData("chip"))
+    assert not panel.incremental_check.isChecked()
+    assert not panel.incremental_check.isEnabled()
+    panel.erase_combo.setCurrentIndex(panel.erase_combo.findData("sector"))
+    assert panel.incremental_check.isEnabled()
     panel.close()
 
 
@@ -302,7 +349,7 @@ def test_uart_boot_panel_programs_fake_chip(qapp, tmp_path, monkeypatch) -> None
     fw = tmp_path / "app.bin"
     fw.write_bytes(bytes(range(256)) * 2)
     host = SyncHost(None)
-    panel = UartBootPanel(port_factory=factory)
+    panel = UartBootPanel(port_factory=factory, run_job=host.run_job)
     panel.bind(host)
     panel.port_combo.setEditText("/dev/ttyFAKE")
     panel.fw_edit.setText(str(fw))
@@ -325,11 +372,40 @@ def test_uart_boot_panel_reports_failure(qapp, monkeypatch) -> None:
     def factory(port: str, baud: int):
         raise OSError("port busy")
 
-    panel = UartBootPanel(port_factory=factory)
-    panel.bind(SyncHost(None))
+    host = SyncHost(None)
+    panel = UartBootPanel(port_factory=factory, run_job=host.run_job)
+    panel.bind(host)
     panel.port_combo.setEditText("/dev/ttyFAKE")
     panel.probe()
     assert "port busy" in panel.info_label.text()
+    panel.close()
+
+
+def test_uart_boot_panel_cancel_stops_programming(qapp, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("etools.ui.widgets.uart_boot_panel.save_tool_prefs", lambda *a: None)
+    monkeypatch.setattr("etools.ui.widgets.uart_boot_panel.load_tool_prefs", lambda *a: {})
+    from etools.ui.widgets.uart_boot_panel import UartBootPanel
+
+    fake = FakeStm32Bootloader(pid=0x450)
+    fw = tmp_path / "app.bin"
+    fw.write_bytes(bytes(range(256)) * 8)
+    host = SyncHost(None)
+    panel = UartBootPanel(port_factory=lambda p, b: fake, run_job=host.run_job)
+    panel.bind(host)
+    panel.port_combo.setEditText("/dev/ttyFAKE")
+    panel.fw_edit.setText(str(fw))
+    panel.boot_line.setCurrentIndex(panel.boot_line.findData("none"))
+    class CancelOnProgress:
+        """Stands in for the progress signal: cancels on the first report."""
+
+        @staticmethod
+        def emit(*_args) -> None:
+            panel._cancel.set()
+
+    monkeypatch.setattr(panel, "_progressed", CancelOnProgress())
+    panel.program()
+    assert "Cancelled" in panel.info_label.text()
+    assert fake.writes < 8
     panel.close()
 
 
@@ -371,3 +447,18 @@ def test_program_page_has_tools_tab(qapp) -> None:
     assert not page.flash_tools.option_bytes.read_btn.isEnabled()
     assert page.flash_panel.incremental_check.text()
     page.close()
+
+
+def test_main_window_stop_debug_views_and_cancel_buttons(qapp) -> None:
+    from etools.ui.main_window import MainWindow
+
+    w = MainWindow()
+    page = w.program_page
+    w.program.stop_debug_views()
+    assert not page.rtt_panel._reader.running
+    assert not page.swo_panel._reader.running
+    tools = page.flash_tools
+    assert not tools.production.cancel_btn.isEnabled()
+    assert not tools.uart_boot.cancel_btn.isEnabled()
+    assert tools.uart_boot._runner is not w._runner
+    w.close()

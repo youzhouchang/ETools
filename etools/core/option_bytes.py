@@ -210,7 +210,9 @@ class F1StyleFamily(ObFamily):
         _clear_bits(t, cr, opter | strt)
 
         _set_bits(t, cr, optpg)
-        # RDP first so an interrupted write never leaves the chip locked.
+        # The erase above leaves RDP = 0xFF, which already reads as Level 1, so
+        # program RDP first to keep that window short. An interruption here
+        # leaves the chip at Level 1 (recoverable by unprotect + mass erase).
         for i, name in enumerate(self.registers):
             value = regs[name] & 0xFF
             t.write16(self.ob_addr + 2 * i, value | ((~value & 0xFF) << 8))
@@ -717,10 +719,12 @@ class OptionBytes:
     def rdp_level(self, regs: dict[str, int] | None = None) -> int:
         return self.family.rdp_level(self.values(regs)["RDP"])
 
-    def plan(
-        self, current: dict[str, int], values: dict[str, int], *, allow_level2: bool = False
-    ) -> ObWriteOutcome:
-        """Validate the requested field values and compute the new registers."""
+    def plan(self, current: dict[str, int], values: dict[str, int]) -> ObWriteOutcome:
+        """Validate the requested field values and compute the new registers.
+
+        RDP Level 2 is irreversible, so it is refused unconditionally; there is
+        deliberately no override.
+        """
         regs = dict(current)
         changes: list[ObChange] = []
         for key, value in values.items():
@@ -734,7 +738,7 @@ class OptionBytes:
             changes.append(ObChange(key, old, int(value)))
         old_level = self.family.rdp_level(self.family.get_field("RDP").get(current))
         new_level = self.family.rdp_level(self.family.get_field("RDP").get(regs))
-        if new_level == 2 and old_level != 2 and not allow_level2:
+        if new_level == 2 and old_level != 2:
             raise OptionBytesError("RDP Level 2 is permanent and refused")
         if old_level == 2:
             raise OptionBytesError("Device is at RDP Level 2; option bytes are frozen")
@@ -745,11 +749,9 @@ class OptionBytes:
             action = "unprotect"
         return ObWriteOutcome(changes, action, self.family.reload, regs)
 
-    def write(
-        self, values: dict[str, int], *, allow_level2: bool = False
-    ) -> ObWriteOutcome:
+    def write(self, values: dict[str, int]) -> ObWriteOutcome:
         current = self.read()
-        outcome = self.plan(current, values, allow_level2=allow_level2)
+        outcome = self.plan(current, values)
         if not outcome.changes:
             return outcome
         halt = getattr(self.target, "halt", None)

@@ -162,6 +162,28 @@ def test_cancel_before_first_step() -> None:
     assert not result.ok and result.error == "Cancelled"
 
 
+def test_serial_is_consumed_once_programmed_even_if_protect_fails() -> None:
+    class ProtectFails(FakeService):
+        def write_option_bytes(self, values):
+            return OperationResult(ok=False, message="Option byte change error")
+
+    plan = ProductionPlan(
+        protect=True, serial=SerialSpec(enabled=True, address=0x0800_0030, fmt="u32le")
+    )
+    result = ProductionRunner(ProtectFails(), plan, _image()).run(9)
+    assert not result.ok and result.serial_consumed
+
+    failed_program = ProductionRunner(FakeService(fail_program=True), plan, _image()).run(9)
+    assert not failed_program.serial_consumed
+    no_serial = ProductionRunner(FakeService(), ProductionPlan(), _image()).run()
+    assert no_serial.ok and not no_serial.serial_consumed
+
+
+def test_incremental_requires_sector_erase() -> None:
+    with pytest.raises(ProductionError, match="sector"):
+        ProductionRunner(FakeService(), ProductionPlan(erase="chip", incremental=True), _image())
+
+
 def test_plan_dict_roundtrip_ignores_unknown_keys() -> None:
     plan = ProductionPlan(firmware="x.hex", serial=SerialSpec(enabled=True, start=100))
     data = plan.to_dict()

@@ -225,28 +225,36 @@ class SparseImage:
             raise ImageError("Image span too large for a flat binary")
         return self.start, self.read(self.start, self.end - self.start, fill)
 
-    def _digest_stream(self) -> bytes:
-        """Address-framed concatenation of the real segment bytes.
+    @property
+    def digest_is_flat(self) -> bool:
+        """True when crc32/sha256 cover the gap-filled flat binary.
 
-        Unlike ``to_bin``, this never materialises the gap-filled range
-        between segments, so it stays well-defined even when an image spans
-        far-apart regions (e.g. on-chip flash plus an external QSPI chip at
-        0x90000000) that would otherwise blow past ``MAX_SPAN``. Each segment
-        is framed with its address and length so the digest still changes if
-        content moves between regions.
+        That is the value other tools (srec_cat, CubeProgrammer, a firmware
+        self-check) compute. Images spanning more than ``MAX_SPAN`` (e.g.
+        on-chip flash plus QSPI at 0x90000000) fall back to a segment digest.
         """
-        out = bytearray()
+        return self.end - self.start <= MAX_SPAN
+
+    def _digest_chunks(self, fill: int):
+        if self.digest_is_flat:
+            yield self.to_bin(fill)[1]
+            return
+        # Address/length framing keeps the digest sensitive to layout.
         for start, data in self.segments():
-            out += start.to_bytes(4, "big")
-            out += len(data).to_bytes(4, "big")
-            out += data
-        return bytes(out)
+            yield start.to_bytes(4, "big") + len(data).to_bytes(4, "big")
+            yield data
 
-    def crc32(self) -> int:
-        return zlib.crc32(self._digest_stream()) & 0xFFFFFFFF
+    def crc32(self, fill: int = 0xFF) -> int:
+        crc = 0
+        for chunk in self._digest_chunks(fill):
+            crc = zlib.crc32(chunk, crc)
+        return crc & 0xFFFFFFFF
 
-    def sha256(self) -> str:
-        return hashlib.sha256(self._digest_stream()).hexdigest()
+    def sha256(self, fill: int = 0xFF) -> str:
+        h = hashlib.sha256()
+        for chunk in self._digest_chunks(fill):
+            h.update(chunk)
+        return h.hexdigest()
 
     def save(self, path: str | Path, *, fill: int = 0xFF) -> str:
         """Write HEX / SREC / BIN by suffix; returns the format name."""

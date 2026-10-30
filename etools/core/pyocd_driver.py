@@ -534,8 +534,11 @@ class PyOCDDriver(ProbeDriver):
         try:
             from pyocd.flash.eraser import FlashEraser
 
+            from etools.core.ext_flash import suspended
+
             mode = FlashEraser.Mode.MASS if full_chip else FlashEraser.Mode.SECTOR
-            FlashEraser(session, mode).erase()
+            with suspended(session.target):
+                FlashEraser(session, mode).erase()
         except Exception as exc:
             log.exception("erase failed")
             msg = f"Erase failed: {exc}"

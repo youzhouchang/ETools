@@ -110,13 +110,11 @@ class FlashService:
             ob = self._driver_op("option_bytes")()
             return ObSnapshot.capture(ob)
 
-    def write_option_bytes(
-        self, values: dict[str, int], *, allow_level2: bool = False
-    ) -> OperationResult:
+    def write_option_bytes(self, values: dict[str, int]) -> OperationResult:
         """Program option bytes, then reload them (reset / reconnect as needed)."""
         with self._lock:
             ob = self._driver_op("option_bytes")()
-            outcome = ob.write(values, allow_level2=allow_level2)
+            outcome = ob.write(values)
             if not outcome.changes:
                 return OperationResult(ok=True, message="Option bytes unchanged", data=outcome)
             applied = self._driver_op("after_option_write")(outcome.reload)
